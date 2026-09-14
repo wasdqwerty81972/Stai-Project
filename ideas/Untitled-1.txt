@@ -1,0 +1,2365 @@
+#1. Identity & Access Management (IAM)
+
+
+#active_directory_privilege_audit (ToolPermission.READ_ONLY)
+
+#Functionality: Runs PowerShell commands (Get-ADUser, Get-ADGroupMember) to identify dormant admin accounts, unconstrained delegation, or over-privileged service accounts.
+
+#Use Case: Spots privilege escalation risks and stale credentials on domain controllers or local host accounts.
+
+#ssh_key_auditor (ToolPermission.READ_ONLY)
+
+#Functionality: Scans ~/.ssh/authorized_keys and /etc/ssh/sshd_config across system profiles.
+
+#Use Case: Flags weak public key types (e.g., short RSA keys), missing passphrase requirements, or unauthorized root access via SSH.
+
+#2. Cloud & Infrastructure Security
+s
+
+
+#s3_bucket_leak_checker (ToolPermission.READ_ONLY)
+
+#Functionality: Audits local environment configuration files or AWS CLI configs (aws s3api get-bucket-acl) for publicly readable/writable cloud storage buckets.
+
+#Use Case: Prevents accidental public exposure of enterprise data backups and environment files.
+
+#container_security_audit (ToolPermission.READ_ONLY)
+
+#Functionality: Interrogates local Docker or Podman daemons (docker inspect, docker ps) for containers running with --privileged flags or mounting root host directories (/).
+
+#Use Case: Catches container breakout risks and misconfigured microservices.
+
+
+
+
+
+#\(To beat a team building an OS, position your agent as an Autonomous Kernel Security Guardrail & OS-Level Incident Responder. 
+#Instead of just running high-level Python tools, elevate your project into an Autonomous EDR (Endpoint Detection & Response)
+#Agent that actively enforces security policies on the OS kernel, process space, and memory.Core Upgrades to Dominate the OS 
+#TeamKernel-Level Intrusive Monitoring (eBPF / Sysmon Integration)The Pivot: While they manage system calls, your agent inter
+#cepts them in real time.Implementation: Upgrade SystemMonitor to hook into Windows Sysmon logs or Linux eBPF tracepoints to 
+#catch unauthorized kernel calls, privilege escalation attempts, and memory injection.Autonomous Real-Time Remediation Engine
+#The Pivot: Move beyond static guardrail prompts (input("Approve action execution?")) to programmatic, risk-score-based autom
+#ated response.  Implementation: When StaticCodeAnalyzer or SystemMonitor detects high-severity threats, automatically trigger F
+#irewallManager.block_ip_address() and ProcessManager.terminate_process_by_pid() in under 50 milliseconds without human delay.  
+#Self-Healing File System Integrity DaemonThe Pivot: Turn SystemMonitor.check_integrity_drift() into an active defense mechanism
+#.  Implementation: When check_integrity_drift() flags a modified core system binary, automatically restore the file from a secure,
+#cryptographically signed shadow copy in real time.)
+
+
+
+#What I would turn your project into
+
+Think of it as:
+
+An AI-powered autonomous cybersecurity command center that can inspect, reason about, monitor, and safely respond to a computer.
+
+The OS becomes their main feature.
+Your agent becomes your main feature.
+
+🔥 1. Make the AI agent the center of everything
+
+Right now you have:
+
+GUI
+ ↓
+CyberAgent
+ ↓
+Tools
+
+I'd evolve it into:
+
+                    ┌─────────────────────┐
+                    │     AI SECURITY     │
+                    │       AGENT         │
+                    └──────────┬──────────┘
+                               │
+        ┌──────────────┬───────┼────────┬──────────────┐
+        ↓              ↓       ↓        ↓              ↓
+   System Intel    Network   Files    Processes    Security
+        │              │       │        │              │
+        └──────────────┴───────┼────────┴──────────────┘
+                               ↓
+                       ANALYSIS ENGINE
+                               ↓
+                     ┌─────────┴─────────┐
+                     ↓                   ↓
+                  DETECT              EXPLAIN
+                     ↓                   ↓
+                  RISK SCORE        ATTACK PATH
+                     └─────────┬─────────┘
+                               ↓
+                       RESPONSE ENGINE
+                               ↓
+                 ┌─────────────┴─────────────┐
+                 ↓                           ↓
+             Recommend                   Remediate
+
+The important part is that the AI isn't just a chatbot.
+
+It should be able to say:
+
+"I detected an unusual PowerShell process spawned by Microsoft Word. This behavior matches characteristics associated with command execution techniques. Here is the evidence I found."
+
+Then show exactly why it reached that conclusion.
+
+🧠 2. Build an actual Security Copilot
+
+Your chat window should be much more powerful.
+
+For example:
+
+YOU:
+Scan my computer for suspicious activity.
+
+AI:
+Starting security assessment...
+
+✓ Processes scanned: 184
+✓ Startup entries: 42
+✓ Network connections: 31
+✓ Scheduled tasks: 67
+✓ Services: 143
+✓ Recent executable files: 892
+
+Threats found: 3
+
+[HIGH]
+powershell.exe
+Parent: WINWORD.EXE
+Command line: ...
+
+Reason:
+Unusual parent-child process relationship.
+
+MITRE ATT&CK:
+T1059.001 - PowerShell
+
+Recommended action:
+[Investigate] [Isolate] [Terminate]
+
+That's way more impressive than:
+
+"Hello, I'm your cybersecurity AI."
+
+🛡️ 3. Add a real-time SOC
+
+This is probably the biggest upgrade I'd make.
+
+Your GUI should have a LIVE SECURITY CENTER.
+
+Something like:
+
+┌───────────────────────────────────────────────────────────┐
+│ CYBERGUARD AI                         ● SYSTEM PROTECTED  │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│ CPU       17%          NETWORK       NORMAL               │
+│ RAM       42%          PROCESSES     184                  │
+│ DISK      NORMAL       THREATS       0                    │
+│                                                           │
+├───────────────────────┬───────────────────────────────────┤
+│ LIVE EVENTS           │ AI ANALYSIS                       │
+│                       │                                   │
+│ 09:42 Process started │ Monitoring system...              │
+│ 09:42 DNS request     │ No suspicious activity detected   │
+│ 09:43 File modified   │                                   │
+│ 09:43 Network connect │                                   │
+│                       │                                   │
+├───────────────────────┴───────────────────────────────────┤
+│ [SCAN] [NETWORK] [PROCESSES] [FILES] [INCIDENTS] [AI]     │
+└───────────────────────────────────────────────────────────┘
+
+Now you're not just making an application.
+
+You're making a mini SOC platform.
+
+🔬 4. Add a forensic investigation engine
+
+This could seriously differentiate you.
+
+When something suspicious happens, create an Incident Case.
+
+For example:
+
+INCIDENT #00027
+
+Severity: HIGH
+Status: INVESTIGATING
+
+Initial Event
+     ↓
+WINWORD.EXE
+     ↓
+powershell.exe
+     ↓
+cmd.exe
+     ↓
+network connection
+     ↓
+suspicious executable
+
+MITRE ATT&CK
+├── T1059.001 PowerShell
+├── T1059 Command Shell
+└── T1071 Network Communication
+
+Then allow the AI to investigate the chain.
+
+The user could ask:
+
+"Why is this suspicious?"
+
+and the agent answers based on actual collected evidence, rather than hallucinating.
+
+🤖 5. Give the AI controlled tools
+
+Your existing ToolRegistry is actually a very good foundation.
+
+Don't give the AI unrestricted shell access.
+
+Instead:
+
+ToolRegistry
+│
+├── system_info
+├── process_list
+├── process_details
+├── network_connections
+├── dns_lookup
+├── file_hash
+├── file_metadata
+├── startup_entries
+├── scheduled_tasks
+├── service_list
+├── event_log
+├── firewall_status
+├── code_scan
+├── malware_scan
+└── incident_create
+
+Then each tool has permissions.
+
+For example:
+
+READ
+├── process_list
+├── system_info
+├── event_log
+
+ANALYZE
+├── file_hash
+├── static_analysis
+├── network_analysis
+
+ACTION
+├── terminate_process
+├── disable_startup
+├── block_connection
+└── quarantine_file
+
+And ACTION tools require confirmation.
+
+That gives you a proper security architecture.
+
+🔐 6. Add an AI safety/permission layer
+
+This is something I'd specifically emphasize during judging.
+
+Don't let the AI randomly execute commands.
+
+Have:
+
+AI
+ ↓
+Intent Parser
+ ↓
+Risk Engine
+ ↓
+Permission Check
+ ↓
+Human Approval
+ ↓
+Tool
+ ↓
+Audit Log
+
+Example:
+
+AI wants to:
+
+Terminate suspicious process
+PID: 4216
+
+Risk: MEDIUM
+
+Reason:
+Process exhibits suspicious behavior.
+
+[ALLOW ONCE]
+[DENY]
+[ALWAYS ALLOW THIS TOOL]
+
+Every action gets logged:
+
+AUDIT LOG
+
+09:44:21
+Agent: CyberAgent
+Action: process_terminate
+PID: 4216
+User approval: YES
+Result: SUCCESS
+
+That's much more defensible than an AI with unrestricted administrator privileges.
+
+🌐 7. Network Security Center
+
+Give it a dedicated network view.
+
+Show:
+
+NETWORK SECURITY
+
+Connections
+──────────────────────────────────
+Process       Remote IP       Port
+chrome.exe    xxx.xxx.xxx     443
+python.exe    xxx.xxx.xxx     443
+svchost.exe   xxx.xxx.xxx     53
+
+DNS
+──────────────────────────────────
+Requests/min: 37
+
+Suspicious domains: 1
+
+Firewall
+──────────────────────────────────
+Inbound:  BLOCKED
+Outbound: MONITORED
+
+You can then let the AI correlate:
+
+Process → connection → DNS → file → event
+
+That's where the project starts getting genuinely interesting.
+
+🧬 8. File intelligence
+
+Don't just say:
+
+"This file is suspicious."
+
+Give the agent an evidence panel:
+
+FILE ANALYSIS
+
+sample.exe
+
+SHA256
+████████████████████████████
+
+Size
+2.8 MB
+
+Signature
+Unsigned
+
+Created
+2026-08-24 09:31
+
+Entropy
+High
+
+Imports
+Suspicious API usage detected
+
+AI assessment
+HIGH RISK
+
+Confidence
+87%
+
+You can also implement local static analysis without sending files anywhere.
+
+🎯 9. MITRE ATT&CK visualization
+
+You already mention MITRE in your project description.
+
+Actually visualize it.
+
+For example:
+
+ATTACK TECHNIQUES DETECTED
+
+[✓] T1059.001
+    PowerShell
+
+[✓] T1059.003
+    Windows Command Shell
+
+[!] T1071.001
+    Web Protocols
+
+[ ] T1547.001
+    Registry Run Keys
+
+Then:
+
+"Show me how these techniques relate."
+
+The agent generates an attack-chain visualization.
+
+That would look very impressive in a competition demo.
+
+💥 10. Add an "AI Investigation Mode"
+
+This could become your killer feature.
+
+User presses:
+
+INVESTIGATE
+
+The agent autonomously performs:
+
+Collecting system information       ✓
+Analyzing running processes        ✓
+Checking persistence mechanisms     ✓
+Analyzing network connections      ✓
+Checking recent file activity      ✓
+Analyzing event logs               ✓
+Correlating indicators              ✓
+Mapping MITRE techniques            ✓
+Generating incident report          ✓
+
+Then:
+
+INVESTIGATION COMPLETE
+
+Risk: MEDIUM
+
+3 suspicious indicators found.
+
+1. Unusual process relationship
+2. Suspicious scheduled task
+3. Outbound connection from unknown executable
+
+Confidence: 82%
+
+[VIEW INCIDENT]
+[GENERATE REPORT]
+[REMEDIATE]
+
+That is much more compelling than having an AI chat box.
+
+📊 11. Make the dashboard look like an actual security product
+
+Your screenshot currently looks like a developer dashboard.
+
+I'd make the final UI have:
+
+Dashboard
+CYBERGUARD
+AI SECURITY PLATFORM
+
+SYSTEM STATUS
+● PROTECTED
+
+Threat Level
+LOW
+
+────────────────────────────
+
+LIVE TELEMETRY
+
+CPU             18%
+MEMORY          42%
+NETWORK         NORMAL
+
+────────────────────────────
+
+SECURITY
+
+Threats         0
+Warnings        2
+Incidents       0
+
+────────────────────────────
+
+AI AGENT
+
+"System appears healthy.
+2 low-risk anomalies require review."
+
+[INVESTIGATE]
+
+Then separate pages:
+
+Dashboard
+AI Agent
+Live Monitor
+Processes
+Network
+Files
+Threats
+Incidents
+MITRE ATT&CK
+Forensics
+Automation
+Audit Logs
+Settings
+🧩 12. Your architecture should become modular
+
+Your project already has a decent structure.
+
+I'd move toward:
+
+cyberguard/
+│
+├── core/
+│   ├── agent.py
+│   ├── permissions.py
+│   ├── policy.py
+│   └── event_bus.py
+│
+├── intelligence/
+│   ├── process_analyzer.py
+│   ├── network_analyzer.py
+│   ├── file_analyzer.py
+│   ├── behavior_engine.py
+│   └── mitre_engine.py
+│
+├── collectors/
+│   ├── processes.py
+│   ├── network.py
+│   ├── filesystem.py
+│   ├── events.py
+│   └── registry.py
+│
+├── response/
+│   ├── quarantine.py
+│   ├── firewall.py
+│   ├── process_control.py
+│   └── remediation.py
+│
+├── database/
+│   ├── incidents.py
+│   ├── telemetry.py
+│   └── audit.py
+│
+├── ai/
+│   ├── reasoning.py
+│   ├── planner.py
+│   ├── memory.py
+│   └── prompts.py
+│
+├── ui/
+│   ├── dashboard.py
+│   ├── incidents.py
+│   ├── network.py
+│   ├── processes.py
+│   └── ai_chat.py
+│
+└── main.py
+🥊 And here's the important part about the other team
+
+Don't compete with:
+
+"We built an OS."
+
+Compete with:
+
+"Their OS contains an AI assistant. Our platform can understand and investigate the entire security state of an operating system."
+
+Their stack might be:
+
+Ubuntu
+ ↓
+Custom kernel/system
+ ↓
+AI
+ ↓
+GUI
+
+Yours could be:
+
+Windows / Linux
+      ↓
+Telemetry Layer
+      ↓
+Security Intelligence Engine
+      ↓
+AI CyberAgent
+      ↓
+Investigation + Detection
+      ↓
+MITRE Correlation
+      ↓
+Controlled Response
+      ↓
+Forensics + Audit
+
+And your software could theoretically run on their OS too.
+
+That's a strong argument.
+
+🏆 If this is a competition, I'd prioritize these 7 features
+
+Don't try to build 50 half-working features.
+
+Build these really well:
+
+Priority	Feature
+🔥 1	AI Investigation Agent
+🔥 2	Real-time system telemetry
+🔥 3	Process/network/file correlation
+🔥 4	MITRE ATT&CK mapping
+🔥 5	Incident + forensic timeline
+🔥 6	Controlled AI remediation
+🔥 7	Professional SOC dashboard
+
+And your demo should be something like:
+
+Start → system scan → suspicious event appears → AI investigates → builds attack chain → maps MITRE → explains evidence → asks permission → performs safe remediation → generates incident report.
+
+That would be far more impressive than just opening a custom Ubuntu desktop and showing an AI chatbot.
+
+If you want to take your existing cyber_ui.py + cyber_agent.py + cyber_tools.py and turn it into this architecture, 
+I can restructure the actual project rather than just giving you ideas.#3. AUTONOMOUS OS SECURITY & INCIDENT RESPONSE PLATFORM
+
+The goal is to evolve this project from a collection of cybersecurity tools into
+an AI-powered Endpoint Detection & Response (EDR) and Security Operations Center
+(SOC) platform.
+
+The AI agent should not simply answer cybersecurity questions.
+
+It should be able to:
+
+- Observe the operating system.
+- Collect security telemetry.
+- Analyze processes, files, users, network activity, services, persistence,
+  authentication events, and system configuration.
+- Correlate multiple events into a single security incident.
+- Explain why something is suspicious.
+- Map detected behavior to MITRE ATT&CK techniques.
+- Assign a risk score and confidence score.
+- Recommend appropriate remediation.
+- Execute only explicitly permitted remediation actions.
+- Maintain a complete audit trail of every observation, decision, and action.
+
+The core principle is:
+
+OBSERVE → CORRELATE → ANALYZE → EXPLAIN → SCORE → RECOMMEND → APPROVE → RESPOND → VERIFY
+
+
+#4. SECURITY TELEMETRY ENGINE
+
+Create a centralized telemetry layer that continuously collects security-relevant
+events from the operating system.
+
+Architecture:
+
+Operating System
+       ↓
+Telemetry Collectors
+       ↓
+Event Normalizer
+       ↓
+Event Bus
+       ↓
+Security Intelligence Engine
+       ↓
+AI CyberAgent
+
+
+The telemetry system should support:
+
+- Running processes
+- Process creation
+- Parent/child process relationships
+- Command lines
+- Network connections
+- DNS activity where available
+- File creation/modification
+- File hashes
+- File metadata
+- Services
+- Scheduled tasks
+- Startup/persistence mechanisms
+- Authentication events
+- User and group information
+- Security-relevant system events
+- Firewall state
+- SSH configuration
+- Active Directory security information where available
+- Container configuration
+- Cloud configuration where locally accessible
+
+
+Every event should have a normalized structure such as:
+
+{
+    "event_id": "...",
+    "timestamp": "...",
+    "event_type": "...",
+    "severity": "LOW|MEDIUM|HIGH|CRITICAL",
+    "source": "...",
+    "host": "...",
+    "user": "...",
+    "process": "...",
+    "pid": "...",
+    "parent_pid": "...",
+    "command_line": "...",
+    "network": {},
+    "file": {},
+    "evidence": [],
+    "metadata": {}
+}
+
+
+The telemetry layer must be modular.
+
+Do not hard-code Windows-only functionality into the entire application.
+
+Use platform-specific collectors behind common interfaces.
+
+Example:
+
+collectors/
+├── base.py
+├── process_collector.py
+├── network_collector.py
+├── filesystem_collector.py
+├── persistence_collector.py
+├── event_collector.py
+├── windows/
+│   ├── sysmon.py
+│   └── event_log.py
+└── linux/
+    ├── auditd.py
+    └── ebpf.py
+
+
+If a collector is unavailable because of operating-system limitations or missing
+permissions, the application should gracefully report:
+
+"Collector unavailable"
+
+instead of crashing.
+
+
+#5. REAL-TIME EVENT CORRELATION
+
+Do not analyze every event independently.
+
+Create an Event Correlation Engine.
+
+Example:
+
+WINWORD.EXE
+      ↓
+powershell.exe
+      ↓
+cmd.exe
+      ↓
+unknown.exe
+      ↓
+outbound network connection
+
+
+Instead of producing five unrelated alerts, correlate them into one incident.
+
+The correlation engine should consider:
+
+- Process ancestry
+- Time proximity
+- User identity
+- File relationships
+- Network relationships
+- Repeated behavior
+- Persistence mechanisms
+- Authentication events
+- Known suspicious patterns
+- MITRE ATT&CK relationships
+
+
+Example:
+
+EVENT 1
+Microsoft Word launched PowerShell.
+
+EVENT 2
+PowerShell launched cmd.exe.
+
+EVENT 3
+cmd.exe launched an unsigned executable.
+
+EVENT 4
+The executable initiated an outbound connection.
+
+The system should produce:
+
+INCIDENT #0001
+
+Severity: HIGH
+
+Attack chain:
+
+WINWORD.EXE
+    ↓
+powershell.exe
+    ↓
+cmd.exe
+    ↓
+unknown.exe
+    ↓
+network connection
+
+
+Evidence:
+
+- Office application spawned PowerShell.
+- PowerShell spawned command shell.
+- Unknown executable was launched.
+- Executable is unsigned.
+- Executable initiated external communication.
+
+MITRE ATT&CK:
+
+T1059.001 PowerShell
+T1059.003 Windows Command Shell
+T1071 Network Communication
+
+
+#6. SECURITY INTELLIGENCE ENGINE
+
+Create a dedicated analysis engine.
+
+The engine should combine:
+
+1. Rule-based detection
+2. Behavioral analysis
+3. Configuration analysis
+4. Statistical/anomaly detection where practical
+5. File metadata analysis
+6. Process relationship analysis
+7. Network analysis
+8. IAM analysis
+9. Container security analysis
+10. AI-assisted explanation
+
+
+The AI must NOT be the sole source of truth.
+
+Detections should be based on actual collected evidence.
+
+Bad:
+
+"The AI thinks this process might be malicious."
+
+
+Good:
+
+"powershell.exe was launched by WINWORD.EXE, which is unusual for this
+environment. The process then launched cmd.exe and initiated an external
+connection. These observations contributed to the HIGH risk score."
+
+
+Every finding should contain:
+
+- Finding ID
+- Severity
+- Confidence
+- Evidence
+- Detection reason
+- Related events
+- Related entities
+- MITRE technique
+- Recommended action
+- Current status
+
+
+Example:
+
+FINDING-00042
+
+Severity: HIGH
+Confidence: 87%
+
+Detection:
+Suspicious process execution chain.
+
+Evidence:
+- WINWORD.EXE → powershell.exe
+- powershell.exe → cmd.exe
+- cmd.exe → unknown.exe
+- unknown.exe → external connection
+
+MITRE:
+T1059.001
+
+Recommendation:
+Investigate process chain and verify executable.
+
+
+#7. RISK SCORING ENGINE
+
+Create a deterministic risk scoring system.
+
+Do not allow the AI to arbitrarily choose severity.
+
+Use weighted signals.
+
+Example:
+
+Process anomaly                  +20
+Unsigned executable              +15
+Suspicious parent process        +20
+Persistence mechanism            +20
+External network connection      +10
+Known malicious indicator         +40
+Privilege escalation behavior    +30
+Critical IAM misconfiguration    +30
+
+
+Normalize the final result:
+
+0-24     INFORMATIONAL
+25-49    LOW
+50-74    MEDIUM
+75-89    HIGH
+90-100   CRITICAL
+
+
+The system should also maintain:
+
+Risk score
+Confidence score
+Evidence count
+Detection count
+
+
+Example:
+
+Risk Score: 82/100
+Confidence: 91%
+Severity: HIGH
+Evidence Items: 7
+
+
+The AI can explain the score, but the underlying scoring calculation should
+remain deterministic and auditable.
+
+
+#8. AI SECURITY COPILOT
+
+Transform the existing chat interface into a real Security Copilot.
+
+The AI should have access to controlled read-only security tools.
+
+Example tool registry:
+
+READ_ONLY
+├── system_info
+├── process_list
+├── process_details
+├── network_connections
+├── dns_events
+├── file_metadata
+├── file_hash
+├── startup_entries
+├── scheduled_tasks
+├── service_list
+├── event_logs
+├── firewall_status
+├── active_directory_privilege_audit
+├── ssh_key_auditor
+├── s3_bucket_leak_checker
+└── container_security_audit
+
+
+ANALYSIS
+├── process_analyzer
+├── network_analyzer
+├── file_analyzer
+├── behavior_analyzer
+├── attack_chain_analyzer
+└── mitre_mapper
+
+
+ACTION
+├── terminate_process
+├── quarantine_file
+├── block_ip
+├── disable_persistence
+└── remediation_action
+
+
+The AI should never receive unrestricted shell access simply because a task
+requires privileged operations.
+
+All operations must go through ToolRegistry and PermissionManager.
+
+
+#9. AI INVESTIGATION MODE
+
+Add a dedicated "INVESTIGATE" capability.
+
+When the user asks:
+
+"Investigate my system."
+
+The AI should execute a controlled investigation workflow.
+
+Example:
+
+INITIALIZING INVESTIGATION...
+
+✓ System information collected
+✓ Running processes analyzed
+✓ Process relationships analyzed
+✓ Network connections analyzed
+✓ Persistence mechanisms checked
+✓ Security events collected
+✓ File activity analyzed
+✓ IAM configuration checked
+✓ Container configuration checked
+✓ Security findings correlated
+✓ MITRE techniques mapped
+
+
+INVESTIGATION COMPLETE
+
+Risk: MEDIUM
+
+Findings: 4
+
+HIGH    1
+MEDIUM  2
+LOW     1
+
+
+The AI should then produce:
+
+1. Executive summary
+2. Findings
+3. Evidence
+4. Attack chains
+5. MITRE techniques
+6. Risk score
+7. Recommended actions
+8. Remediation options
+
+
+The investigation must be reproducible.
+
+Store the investigation ID and all collected evidence.
+
+
+#10. INCIDENT RESPONSE ENGINE
+
+Create an Incident Response subsystem.
+
+Every serious finding should be capable of becoming an incident.
+
+Architecture:
+
+Detection
+   ↓
+Finding
+   ↓
+Correlation
+   ↓
+Incident
+   ↓
+Investigation
+   ↓
+Decision
+   ↓
+Approval
+   ↓
+Response
+   ↓
+Verification
+   ↓
+Closure
+
+
+Incident object:
+
+{
+    "incident_id": "...",
+    "title": "...",
+    "severity": "HIGH",
+    "status": "OPEN",
+    "created_at": "...",
+    "updated_at": "...",
+    "findings": [],
+    "events": [],
+    "entities": [],
+    "attack_chain": [],
+    "mitre_techniques": [],
+    "recommended_actions": [],
+    "actions_taken": [],
+    "audit_entries": []
+}
+
+
+Incident statuses:
+
+NEW
+INVESTIGATING
+CONTAINED
+REMEDIATING
+RESOLVED
+CLOSED
+
+
+#11. CONTROLLED AUTONOMOUS RESPONSE
+
+The response engine should support automated response while maintaining
+strict safety boundaries.
+
+Architecture:
+
+AI Agent
+   ↓
+Intent
+   ↓
+Risk Engine
+   ↓
+Policy Engine
+   ↓
+Permission Manager
+   ↓
+Approval Requirement
+   ↓
+Response Tool
+   ↓
+Verification
+   ↓
+Audit Log
+
+
+Examples of response actions:
+
+- Terminate a suspicious process.
+- Quarantine a suspicious file.
+- Disable a persistence mechanism.
+- Block a network indicator.
+- Disable an unauthorized account.
+- Remove an unauthorized SSH key.
+- Correct an unsafe security configuration.
+
+
+However:
+
+READ_ONLY tools require no confirmation.
+
+LOW-RISK actions may require confirmation depending on policy.
+
+HIGH-RISK actions MUST require explicit user approval by default.
+
+CRITICAL actions MUST require explicit approval and should provide a clear
+impact warning before execution.
+
+
+Example:
+
+PROPOSED ACTION
+
+Action:
+Terminate process
+
+PID:
+4216
+
+Process:
+unknown.exe
+
+Reason:
+Associated with HIGH severity incident #00042.
+
+Impact:
+The process will be terminated immediately.
+
+[APPROVE]
+[DENY]
+[CANCEL]
+
+
+Never silently execute destructive actions.
+
+
+#12. RESPONSE VERIFICATION
+
+After performing remediation, do not simply report "success."
+
+Verify the result.
+
+Example:
+
+Action:
+Terminate PID 4216
+
+Execution:
+SUCCESS
+
+Verification:
+✓ Process no longer running
+✓ No child process detected
+✓ Associated network connection closed
+
+Result:
+THREAT CONTAINED
+
+
+For file quarantine:
+
+✓ Original file isolated
+✓ Original path inaccessible
+✓ SHA256 preserved
+✓ Quarantine record created
+
+
+The response engine should distinguish:
+
+REQUESTED
+EXECUTING
+SUCCESS
+FAILED
+VERIFICATION_FAILED
+
+
+#13. FILE INTELLIGENCE ENGINE
+
+Create a local file analysis subsystem.
+
+For selected files, collect:
+
+- SHA256
+- SHA1 where appropriate
+- MD5 where appropriate
+- File size
+- File type
+- Creation time
+- Modification time
+- Digital signature status
+- Executable metadata
+- Entropy
+- Import information where supported
+- Parent process
+- Origin/path
+- Related network connections
+
+
+Example UI:
+
+FILE ANALYSIS
+
+sample.exe
+
+SHA256
+<hash>
+
+Size
+2.8 MB
+
+Signature
+UNSIGNED
+
+Created
+2026-08-24 09:31
+
+Entropy
+HIGH
+
+Parent
+powershell.exe
+
+Network
+1 external connection
+
+AI ASSESSMENT
+
+HIGH RISK
+
+Confidence: 87%
+
+
+Do not claim a file is malware solely because it is unsigned or has high entropy.
+
+Present those as evidence signals.
+
+
+#14. NETWORK SECURITY CENTER
+
+Create a dedicated Network Security page.
+
+Display:
+
+NETWORK STATUS
+● MONITORED
+
+Active connections
+DNS activity
+Listening ports
+Firewall status
+Suspicious connections
+Connection history
+
+
+Example:
+
+PROCESS          REMOTE IP        PORT    STATUS
+chrome.exe       xxx.xxx.xxx      443     NORMAL
+python.exe       xxx.xxx.xxx      443     REVIEW
+unknown.exe      xxx.xxx.xxx      443     SUSPICIOUS
+
+
+Allow the user to select a connection and see:
+
+Process
+PID
+User
+Executable
+SHA256
+Remote address
+Remote port
+Protocol
+First seen
+Last seen
+Related DNS events
+Related incidents
+
+
+The AI should be able to correlate:
+
+PROCESS
+   ↓
+FILE
+   ↓
+DNS
+   ↓
+NETWORK CONNECTION
+   ↓
+INCIDENT
+
+
+#15. IAM SECURITY CENTER
+
+Integrate the IAM tools into the main security platform.
+
+Display:
+
+IDENTITY SECURITY
+
+Users
+Groups
+Privileged accounts
+Dormant accounts
+Service accounts
+SSH access
+Delegation risks
+Privilege anomalies
+
+
+For Active Directory:
+
+Detect and report:
+
+- Dormant privileged accounts
+- Excessive group membership
+- Suspicious service-account privileges
+- Unconstrained delegation
+- Unexpected administrative membership
+
+
+For SSH:
+
+Detect:
+
+- Weak key types
+- Short RSA keys
+- Unauthorized authorized_keys entries
+- Root SSH access
+- Unsafe sshd configuration
+
+
+Every IAM finding should contain:
+
+Account
+Privilege
+Evidence
+Risk
+Recommended remediation
+
+
+#16. CLOUD & CONTAINER SECURITY CENTER
+
+Integrate the cloud and container tools into the same security model.
+
+Cloud findings:
+
+- Public storage permissions
+- Unexpected bucket ACLs
+- Dangerous local cloud configuration
+- Exposed credentials/configuration indicators
+
+
+Container findings:
+
+- Privileged containers
+- Host filesystem mounts
+- Dangerous capabilities
+- Root containers
+- Exposed container ports
+- Unsafe configuration
+
+
+Example:
+
+CONTAINER SECURITY
+
+Container:
+web-api
+
+Risk:
+HIGH
+
+Findings:
+
+[HIGH] Privileged mode enabled
+[HIGH] Host filesystem mounted
+[MEDIUM] Container running as root
+
+Recommendation:
+Remove privileged mode and unnecessary host mounts.
+
+
+#17. MITRE ATT&CK ENGINE
+
+Create a MITRE ATT&CK mapping subsystem.
+
+Each detection can optionally map to:
+
+Tactic
+Technique
+Sub-technique
+Evidence
+Confidence
+
+
+Example:
+
+TACTIC:
+Execution
+
+TECHNIQUE:
+T1059
+
+SUB-TECHNIQUE:
+T1059.001 PowerShell
+
+
+Create a visualization:
+
+ATTACK CHAIN
+
+Initial Access
+      ↓
+Execution
+      ↓
+Persistence
+      ↓
+Privilege Escalation
+      ↓
+Defense Evasion
+      ↓
+Command & Control
+
+
+Only display techniques supported by collected evidence.
+
+Do not invent ATT&CK mappings merely to make the dashboard look impressive.
+
+
+#18. FORENSIC TIMELINE
+
+Create a forensic timeline for incidents.
+
+Example:
+
+09:41:12
+WINWORD.EXE started
+
+09:41:14
+PowerShell spawned
+
+09:41:15
+Command shell spawned
+
+09:41:17
+Executable created
+
+09:41:20
+Network connection established
+
+09:41:23
+Detection generated
+
+09:41:25
+Incident created
+
+
+Allow filtering by:
+
+- Process
+- User
+- IP
+- File
+- Event type
+- Severity
+- MITRE technique
+
+
+#19. SECURITY DASHBOARD
+
+Replace the basic developer-style dashboard with a professional SOC interface.
+
+Main dashboard:
+
+CYBERGUARD
+AI SECURITY PLATFORM
+
+SYSTEM STATUS
+● PROTECTED
+
+THREAT LEVEL
+LOW
+
+────────────────────────────────────
+
+SYSTEM
+
+CPU             18%
+MEMORY          42%
+PROCESSES       184
+NETWORK         NORMAL
+
+────────────────────────────────────
+
+SECURITY
+
+Critical        0
+High            0
+Medium          2
+Low             4
+Incidents       0
+
+────────────────────────────────────
+
+AI SECURITY COPILOT
+
+"System appears healthy.
+2 medium-risk findings require review."
+
+[INVESTIGATE]
+
+
+Navigation:
+
+- Dashboard
+- AI Copilot
+- Live Monitor
+- Processes
+- Network
+- Files
+- IAM
+- Cloud
+- Containers
+- Threats
+- Incidents
+- Forensics
+- MITRE ATT&CK
+- Automation
+- Audit Logs
+- Settings
+
+
+#20. LIVE SECURITY MONITOR
+
+Create a real-time event stream.
+
+Example:
+
+LIVE EVENTS
+
+09:42:01  Process created
+09:42:02  DNS request
+09:42:03  File modified
+09:42:04  Network connection
+09:42:05  Process terminated
+09:42:06  Detection generated
+
+
+Use color coding:
+
+GREEN   Normal
+BLUE    Informational
+YELLOW  Warning
+ORANGE  Suspicious
+RED     High/Critical
+
+
+The UI should update without requiring the user to manually refresh the page.
+
+
+#21. AUDIT LOG
+
+Every security-sensitive operation must generate an immutable-style audit record.
+
+Example:
+
+AUDIT LOG
+
+Timestamp:
+2026-08-24 09:44:21
+
+Actor:
+CyberAgent
+
+Action:
+process_terminate
+
+Target:
+PID 4216
+
+Reason:
+Associated with incident #00042
+
+Approval:
+USER_APPROVED
+
+Result:
+SUCCESS
+
+Verification:
+PASSED
+
+
+Also log:
+
+- Tool invocation
+- Tool parameters where safe
+- User approval
+- AI recommendation
+- Actual execution result
+- Verification result
+- Policy decision
+
+
+Do not log secrets, passwords, private keys, or sensitive credentials.
+
+
+#22. SECURITY POLICY ENGINE
+
+Create centralized policy management.
+
+Example policy:
+
+{
+    "terminate_process": {
+        "requires_approval": true,
+        "minimum_role": "administrator"
+    },
+
+    "read_processes": {
+        "requires_approval": false
+    },
+
+    "block_network": {
+        "requires_approval": true
+    }
+}
+
+
+The policy engine must be consulted before every action.
+
+Never bypass the policy engine because an AI model requested an action.
+
+
+#23. SAFE FAILURE DESIGN
+
+Security software must fail safely.
+
+If:
+
+- A permission is denied
+- A collector crashes
+- A command is unavailable
+- A platform is unsupported
+- A tool times out
+- A response action fails
+- Verification fails
+
+The system should:
+
+1. Record the failure.
+2. Explain the failure.
+3. Continue unaffected monitoring where possible.
+4. Never pretend the action succeeded.
+5. Never automatically retry dangerous actions indefinitely.
+
+
+Example:
+
+RESPONSE FAILED
+
+Action:
+Block IP
+
+Result:
+FAILED
+
+Reason:
+Insufficient privileges.
+
+Verification:
+NOT PERFORMED
+
+Recommendation:
+Run the application with the required permissions or perform the action
+manually.
+
+
+#24. CROSS-PLATFORM ARCHITECTURE
+
+The platform should support Windows and Linux where practical.
+
+Use a common interface:
+
+SecurityCollector
+SecurityAnalyzer
+ResponseAction
+
+
+Platform-specific implementations should live separately.
+
+Example:
+
+platform/
+├── base/
+├── windows/
+│   ├── processes.py
+│   ├── network.py
+│   ├── events.py
+│   └── persistence.py
+└── linux/
+    ├── processes.py
+    ├── network.py
+    ├── audit.py
+    └── persistence.py
+
+
+Do not fake unsupported functionality.
+
+If a feature cannot operate on the current OS, show:
+
+NOT AVAILABLE ON THIS PLATFORM
+
+
+#25. DATABASE & STATE MANAGEMENT
+
+Persist security state.
+
+Store:
+
+- Telemetry
+- Findings
+- Incidents
+- Investigations
+- Evidence
+- MITRE mappings
+- Audit logs
+- Response actions
+- User approvals
+
+
+Use a clean repository/data-access layer rather than scattering database
+operations throughout UI code.
+
+Example:
+
+database/
+├── models/
+│   ├── event.py
+│   ├── finding.py
+│   ├── incident.py
+│   ├── investigation.py
+│   └── audit.py
+├── repositories/
+└── database.py
+
+
+#26. AI MEMORY & INVESTIGATION CONTEXT
+
+The AI should maintain context during an investigation.
+
+Example:
+
+Investigation #00042
+
+Known entities:
+
+User:
+alice
+
+Process:
+powershell.exe
+
+PID:
+4216
+
+File:
+sample.exe
+
+SHA256:
+<hash>
+
+Remote IP:
+xxx.xxx.xxx
+
+Related events:
+17
+
+MITRE techniques:
+2
+
+The AI should be able to answer:
+
+"What happened?"
+
+"Why is this suspicious?"
+
+"What process started it?"
+
+"What files are involved?"
+
+"Did it communicate externally?"
+
+"What MITRE techniques apply?"
+
+"What should I do next?"
+
+Answers must be grounded in stored investigation evidence.
+
+
+#27. EVIDENCE-FIRST AI
+
+This is critical.
+
+The AI must distinguish between:
+
+OBSERVED
+INFERRED
+UNKNOWN
+
+
+Example:
+
+OBSERVED:
+powershell.exe was launched by WINWORD.EXE.
+
+OBSERVED:
+The process connected to an external IP.
+
+INFERRED:
+This behavior may indicate suspicious command execution.
+
+UNKNOWN:
+Whether the remote server is malicious.
+
+
+Never present an inference as a confirmed fact.
+
+
+#28. INCIDENT REPORT GENERATION
+
+Allow the AI to generate a professional incident report.
+
+Report structure:
+
+CYBERGUARD INCIDENT REPORT
+
+Incident:
+#00042
+
+Severity:
+HIGH
+
+Status:
+RESOLVED
+
+Executive Summary:
+...
+
+Timeline:
+...
+
+Affected Processes:
+...
+
+Files:
+...
+
+Network Indicators:
+...
+
+Evidence:
+...
+
+MITRE ATT&CK:
+...
+
+Risk Assessment:
+...
+
+Actions Taken:
+...
+
+Verification:
+...
+
+Recommendations:
+...
+
+
+Allow export to a clean human-readable format.
+
+
+#29. AUTOMATION RULES
+
+Create an optional automation engine.
+
+Example:
+
+IF:
+Risk score >= 90
+
+AND:
+Confidence >= 90%
+
+AND:
+Action == "quarantine"
+
+THEN:
+Require approval before execution.
+
+
+Another example:
+
+IF:
+Unauthorized SSH key detected
+
+THEN:
+Create HIGH severity finding
+
+AND:
+Create incident
+
+AND:
+Recommend key removal
+
+
+Automation rules should never silently bypass safety policies.
+
+
+#30. PERFORMANCE REQUIREMENTS
+
+Do not build the architecture in a way that causes the UI to freeze.
+
+Security collection should run asynchronously.
+
+Long-running tasks must execute outside the UI thread.
+
+Use:
+
+- Background workers
+- Async tasks where appropriate
+- Event queues
+- Bounded buffers
+- Rate limiting
+- Caching
+
+
+Telemetry collection must not consume excessive CPU or memory.
+
+The platform should degrade gracefully under high event volume.
+
+
+#31. SECURITY OF THE SECURITY AGENT
+
+The CyberGuard application itself must be treated as a security-sensitive
+application.
+
+Protect:
+
+- Configuration
+- API keys
+- AI credentials
+- Database
+- Audit logs
+- User permissions
+- Tool registry
+
+
+Never expose secrets in:
+
+- Logs
+- UI
+- AI prompts
+- Error messages
+- Incident reports
+
+
+The AI should never be allowed to retrieve arbitrary secrets from the system.
+
+
+#32. IMPLEMENTATION STRATEGY
+
+Do NOT attempt to rewrite the entire application blindly.
+
+First:
+
+1. Inspect the existing repository.
+2. Identify the current architecture.
+3. Identify existing tools.
+4. Identify existing UI components.
+5. Identify existing agent implementation.
+6. Identify duplicate functionality.
+7. Identify missing abstractions.
+8. Create a migration plan.
+
+
+Then implement incrementally.
+
+Priority order:
+
+PHASE 1
+Core architecture
+- ToolRegistry
+- PermissionManager
+- Event model
+- Event bus
+- Policy engine
+- Audit logging
+
+PHASE 2
+Telemetry
+- Process collector
+- Network collector
+- File collector
+- Persistence collector
+- Event collector
+
+PHASE 3
+Intelligence
+- Detection engine
+- Correlation engine
+- Risk scoring
+- MITRE mapper
+
+PHASE 4
+AI
+- Security Copilot
+- Investigation mode
+- Evidence-grounded reasoning
+- Incident analysis
+
+PHASE 5
+Response
+- Approval workflow
+- Response engine
+- Verification
+- Remediation
+
+PHASE 6
+UI
+- SOC dashboard
+- Live telemetry
+- Threats
+- Incidents
+- Forensics
+- MITRE
+- Audit logs
+
+PHASE 7
+Polish
+- Error handling
+- Performance
+- Cross-platform compatibility
+- Testing
+- Documentation
+
+
+#33. IMPORTANT KILO CODE DEVELOPMENT RULES
+
+Before modifying code:
+
+- Inspect the repository.
+- Understand existing architecture.
+- Do not delete working functionality unnecessarily.
+- Reuse existing components when appropriate.
+- Avoid creating duplicate implementations.
+- Keep security tools modular.
+- Keep UI separate from security logic.
+- Keep platform-specific code isolated.
+- Add tests for important security logic.
+
+
+When implementing a feature:
+
+1. Explain what is being changed.
+2. Identify affected files.
+3. Implement the smallest coherent change.
+4. Run tests/lint/type checks where available.
+5. Fix errors.
+6. Verify behavior.
+7. Update documentation if necessary.
+
+
+Do not create fake telemetry for production functionality.
+
+Mock data may be used only for UI development and must be clearly separated from
+real collectors.
+
+
+#34. FINAL PRODUCT VISION
+
+The finished project should feel like an actual endpoint security platform.
+
+The user opens CyberGuard and sees:
+
+                    CYBERGUARD
+              AI SECURITY PLATFORM
+
+                    ● PROTECTED
+
+        ┌──────────────────────────────┐
+        │       THREAT LEVEL: LOW      │
+        └──────────────────────────────┘
+
+Processes       184
+Connections      31
+Findings          2
+Incidents         0
+
+────────────────────────────────────────
+
+LIVE SECURITY EVENTS
+
+09:42 Process created
+09:42 Network connection
+09:43 File modified
+09:43 Detection analyzed
+
+────────────────────────────────────────
+
+AI SECURITY COPILOT
+
+"System appears healthy.
+I found 2 medium-risk configuration issues."
+
+[INVESTIGATE SYSTEM]
+
+
+The key differentiator is not simply having an AI chatbot.
+
+The differentiator is:
+
+AI
+ ↓
+REAL SYSTEM TELEMETRY
+ ↓
+SECURITY ANALYSIS
+ ↓
+CORRELATION
+ ↓
+EVIDENCE
+ ↓
+RISK SCORE
+ ↓
+MITRE ATT&CK
+ ↓
+INCIDENT
+ ↓
+CONTROLLED RESPONSE
+ ↓
+VERIFICATION
+ ↓
+AUDIT TRAIL
+
+
+#35. COMPETITION / DEMO FLOW
+
+The ideal demonstration should tell a complete story.
+
+START
+
+↓
+Launch CyberGuard
+
+↓
+Dashboard shows healthy system
+
+↓
+Trigger or detect a controlled suspicious test event
+
+↓
+Live Monitor displays the event
+
+↓
+Detection Engine analyzes it
+
+↓
+Correlation Engine connects related events
+
+↓
+AI Investigation Mode starts
+
+↓
+AI explains the evidence
+
+↓
+Risk Engine assigns a score
+
+↓
+MITRE ATT&CK techniques are mapped
+
+↓
+Incident is created
+
+↓
+AI recommends remediation
+
+↓
+Permission Engine asks for approval
+
+↓
+User approves
+
+↓
+Response Engine performs the permitted action
+
+↓
+Verification confirms the threat was contained
+
+↓
+Incident timeline updates
+
+↓
+Audit log records everything
+
+↓
+AI generates final incident report
+
+
+The final message to the judges should effectively be:
+
+"This isn't an AI chatbot with some security tools.
+
+It is an AI-driven security platform that can observe an operating system,
+correlate security telemetry, investigate incidents, explain its reasoning using
+real evidence, map activity to MITRE ATT&CK, recommend controlled remediation,
+execute approved response actions, verify the result, and preserve a complete
+audit trail."
+
+
+#36. DO NOT OVERBUILD WITHOUT WORKING FUNCTIONALITY
+
+Prioritize working functionality over visual complexity.
+
+A smaller number of genuinely functional security capabilities is better than
+dozens of simulated features.
+
+Priority:
+
+1. Reliable telemetry
+2. Reliable detection
+3. Evidence-based AI analysis
+4. Reliable incident correlation
+5. Safe permissions
+6. Verified remediation
+7. Excellent UI
+
+Do not sacrifice security correctness merely to make the dashboard look
+impressive.
+
+
+#37. SUCCESS CRITERIA
+
+The implementation is successful when:
+
+✓ Existing functionality still works.
+
+✓ IAM auditing works where supported.
+
+✓ SSH auditing works where supported.
+
+✓ Cloud/container auditing works where supported.
+
+✓ System telemetry can be collected.
+
+✓ Events are normalized.
+
+✓ Security findings can be generated.
+
+✓ Related findings can become incidents.
+
+✓ Risk scores are deterministic and explainable.
+
+✓ AI explanations reference actual evidence.
+
+✓ MITRE mappings are evidence-based.
+
+✓ Response actions are permission-controlled.
+
+✓ Destructive actions require approval.
+
+✓ Response results are verified.
+
+✓ Audit logs record security-sensitive operations.
+
+✓ The UI presents the platform as a coherent SOC/EDR product.
+
+✓ Unsupported platform functionality fails gracefully.
+
+✓ The application does not pretend that simulated data is real telemetry.
+
+
+# FINAL INSTRUCTION TO KILO CODE
+
+Treat the above as the target architecture and product direction, NOT as a
+request to blindly rewrite every file.
+
+First inspect the current project and determine what already exists.
+
+Then:
+
+1. Preserve working functionality.
+2. Refactor where necessary.
+3. Implement missing foundations first.
+4. Integrate the IAM, cloud, container, SSH, process, network, file, and
+   system-security tools into one unified ToolRegistry.
+5. Build the telemetry → detection → correlation → investigation → response
+   pipeline.
+6. Build the SOC interface around that pipeline.
+7. Keep AI actions permission-controlled.
+8. Ground AI conclusions in collected evidence.
+9. Test every major subsystem.
+10. Never claim a feature works if it is only mocked or simulated.
+
+The final result should be a cohesive AI-powered EDR/SOC platform rather than
+a collection of unrelated cybersecurity scripts.

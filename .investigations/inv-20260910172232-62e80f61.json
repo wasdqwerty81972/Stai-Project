@@ -1,0 +1,36 @@
+{
+  "investigation_id": "inv-20260910172232-62e80f61",
+  "session_id": "default",
+  "objective": "Something feels wrong with my PC.",
+  "status": "completed",
+  "created_at": "2026-09-10T17:22:32.407128+00:00",
+  "updated_at": "2026-09-10T17:22:32.542193+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Sample finding",
+      "description": "Sample finding",
+      "source": "workspace_scanner",
+      "file": "",
+      "line": null,
+      "mitre_id": "",
+      "evidence": "{\n  \"severity\": \"high\",\n  \"message\": \"Sample finding\"\n}",
+      "recommendation": "Review the flagged item in the workspace."
+    },
+    {
+      "severity": "critical",
+      "title": "Exposed Secret",
+      "description": "A secret was detected in scanned content.",
+      "source": "secret_scanner",
+      "file": "",
+      "line": null,
+      "mitre_id": "T1552",
+      "evidence": "{\n  \"severity\": \"high\",\n  \"message\": \"Sample finding\"\n}",
+      "recommendation": "Remove the secret from source code and rotate the credential immediately."
+    }
+  ],
+  "mitre": [],
+  "decisions": []
+}

@@ -1,0 +1,13 @@
+.env.local
+.env
+.sessions/
+__pycache__/
+*.pyc
+node_modules/
+.next/
+.vscode/
+.pnpm/
+dist/
+build/
+*.log
+

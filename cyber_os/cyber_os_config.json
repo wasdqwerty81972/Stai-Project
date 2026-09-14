@@ -1,0 +1,21 @@
+{
+  "watch_dirs": ["C:\\AEGIS_Test"],
+  "quarantine_dir": "C:\\AEGIS_Quarantine",
+  "thresholds": {
+    "failed_logons": 5,
+    "failed_logon_window": 60,
+    "port_scan_ports": 10,
+    "port_scan_window": 30,
+    "ransomware_files": 5,
+    "ransomware_window": 2
+  },
+  "auto_response": {
+    "high_threat": true,
+    "critical_threat": true,
+    "require_approval": false
+  },
+  "ai": {
+    "use_mock": true,
+    "confidence_threshold": 0.7
+  }
+}

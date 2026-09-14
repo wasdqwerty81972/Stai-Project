@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260827113002-dccaab27",
+  "session_id": "session-20260827153002",
+  "objective": "scan the workspace for suspicious files",
+  "status": "running",
+  "created_at": "2026-08-27T11:30:02.053284+00:00",
+  "updated_at": "2026-08-27T11:30:02.053284+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

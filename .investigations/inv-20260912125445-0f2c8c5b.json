@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260912125445-0f2c8c5b",
+  "session_id": "default",
+  "objective": "Which drives are available?",
+  "status": "running",
+  "created_at": "2026-09-12T12:54:45.307451+00:00",
+  "updated_at": "2026-09-12T12:54:45.307451+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

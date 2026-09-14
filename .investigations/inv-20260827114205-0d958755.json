@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260827114205-0d958755",
+  "session_id": "session-20260827154205",
+  "objective": "enumerate python files then analyze suspicious code",
+  "status": "completed",
+  "created_at": "2026-08-27T11:42:05.080352+00:00",
+  "updated_at": "2026-08-27T11:42:05.398477+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

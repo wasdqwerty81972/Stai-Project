@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260824200943-292fcbbb",
+  "session_id": "session-20260825000943",
+  "objective": "scan my H:/",
+  "status": "completed",
+  "created_at": "2026-08-24T20:09:43.591095+00:00",
+  "updated_at": "2026-08-24T20:13:20.030442+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

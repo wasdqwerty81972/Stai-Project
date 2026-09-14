@@ -1,0 +1,7 @@
+Virtual Hardware Interrupt Controller (PIC/APIC): Handles timer ticks and asynchronous device events.
+
+Preemptive Round-Robin Multi-Threading: Background kernel worker threads run concurrently alongside your interactive CLI shell via simulated context-switching.
+
+Advanced Paging & Fault Handler: Simulates page faults, frame swapping, and virtual memory protection violations.
+
+Enhanced File System API: Supports directory traversal, file writing, node deletion, and permission masks.

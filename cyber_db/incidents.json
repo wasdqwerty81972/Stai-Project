@@ -1,0 +1,187 @@
+{
+  "incidents": {
+    "INCIDENT-63254-d04d60ce": {
+      "incident_id": "INCIDENT-63254-d04d60ce",
+      "title": "Test Incident",
+      "severity": "HIGH",
+      "status": "NEW",
+      "created_at": "2026-08-24T10:56:03.254921",
+      "updated_at": "2026-08-24T10:56:03.254921",
+      "findings": [],
+      "events": [],
+      "entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "attack_chain": [],
+      "mitre_techniques": [
+        "T1059.001"
+      ],
+      "recommended_actions": [],
+      "actions_taken": [],
+      "audit_entries": [],
+      "risk_score": 75,
+      "confidence": 0.85,
+      "evidence_count": 5,
+      "detection_count": 3,
+      "forensic_timeline": []
+    },
+    "INCIDENT-38809-ab0fc2ce": {
+      "incident_id": "INCIDENT-38809-ab0fc2ce",
+      "title": "Test Incident",
+      "severity": "HIGH",
+      "status": "NEW",
+      "created_at": "2026-08-24T10:57:18.809718",
+      "updated_at": "2026-08-24T10:57:18.809718",
+      "findings": [],
+      "events": [],
+      "entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "attack_chain": [],
+      "mitre_techniques": [
+        "T1059.001",
+        "T1071.001"
+      ],
+      "recommended_actions": [],
+      "actions_taken": [],
+      "audit_entries": [],
+      "risk_score": 85,
+      "confidence": 0.9,
+      "evidence_count": 7,
+      "detection_count": 4,
+      "forensic_timeline": []
+    },
+    "INCIDENT-29757-ce9dbc79": {
+      "incident_id": "INCIDENT-29757-ce9dbc79",
+      "title": "Final Validation",
+      "severity": "HIGH",
+      "status": "NEW",
+      "created_at": "2026-08-24T11:00:29.757214",
+      "updated_at": "2026-08-24T11:00:29.757214",
+      "findings": [],
+      "events": [],
+      "entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "attack_chain": [],
+      "mitre_techniques": [
+        "T1059.001"
+      ],
+      "recommended_actions": [],
+      "actions_taken": [],
+      "audit_entries": [],
+      "risk_score": 85,
+      "confidence": 0.9,
+      "evidence_count": 7,
+      "detection_count": 4,
+      "forensic_timeline": []
+    },
+    "INCIDENT-08728-3c4d0d11": {
+      "incident_id": "INCIDENT-08728-3c4d0d11",
+      "title": "System Investigation - 2026-08-24 11:01:48",
+      "severity": "MEDIUM",
+      "status": "NEW",
+      "created_at": "2026-08-24T11:01:48.728559",
+      "updated_at": "2026-08-24T11:01:48.728559",
+      "findings": [],
+      "events": [],
+      "entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "attack_chain": [],
+      "mitre_techniques": [
+        "T1059.001",
+        "T1071.001"
+      ],
+      "recommended_actions": [],
+      "actions_taken": [],
+      "audit_entries": [],
+      "risk_score": 35,
+      "confidence": 0.75,
+      "evidence_count": 5,
+      "detection_count": 3,
+      "forensic_timeline": []
+    }
+  },
+  "findings": {
+    "FINDING-63438-fe9c87c4": {
+      "finding_id": "FINDING-63438-fe9c87c4",
+      "severity": "HIGH",
+      "confidence": 0.9,
+      "event_ids": [],
+      "evidence": [
+        "Test evidence"
+      ],
+      "detection_reason": "Test detection",
+      "related_events": [],
+      "related_entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "mitre_technique": "T1059.001",
+      "recommended_action": "",
+      "status": "OPEN"
+    },
+    "FINDING-38833-baa531f8": {
+      "finding_id": "FINDING-38833-baa531f8",
+      "severity": "HIGH",
+      "confidence": 0.92,
+      "event_ids": [],
+      "evidence": [
+        "powershell spawned by winword"
+      ],
+      "detection_reason": "Suspicious chain",
+      "related_events": [],
+      "related_entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "mitre_technique": "T1059.001",
+      "recommended_action": "",
+      "status": "OPEN"
+    },
+    "FINDING-29995-4eb1b45b": {
+      "finding_id": "FINDING-29995-4eb1b45b",
+      "severity": "HIGH",
+      "confidence": 0.92,
+      "event_ids": [],
+      "evidence": [
+        "evidence"
+      ],
+      "detection_reason": "reason",
+      "related_events": [],
+      "related_entities": {
+        "processes": [],
+        "files": [],
+        "network_ips": [],
+        "users": [],
+        "pids": []
+      },
+      "mitre_technique": "T1059.001",
+      "recommended_action": "",
+      "status": "OPEN"
+    }
+  }
+}

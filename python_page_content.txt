@@ -1,0 +1,266 @@
+
+
+    
+    
+    
+        
+    
+
+
+  
+    
+      Navigation
+      
+        
+          index
+        
+          modules |
+
+          
+          Python »
+          
+            Greek | ΕλληνικάEnglishSpanish | españolFrench | françaisItalian | italianoJapanese | 日本語Korean | 한국어Polish | polskiBrazilian Portuguese | Português brasileiroRomanian | RomâneșteRussian | РусскийTurkish | TürkçeSimplified Chinese | 简体中文Traditional Chinese | 繁體中文
+            dev (3.16)pre (3.15)3.14.73.133.123.113.103.93.83.73.63.53.43.33.23.13.02.72.6
+          
+          
+              
+          
+    
+      3.14.7 Documentation »
+    
+
+        
+                
+                    
+
+    
+        
+          
+          
+        
+    
+                     |
+                
+            
+
+    Theme
+    
+        Auto
+        Light
+        Dark
+    
+ |
+            
+      
+        
+
+    
+      
+        
+          
+            
+  Python 3.14.7 documentation
+  
+  Welcome! This is the official documentation for Python 3.14.7.
+  
+  Documentation sections:
+  
+    
+      What's new in Python 3.14?
+          Or all "What's new" documents since Python 2.0
+      Tutorial
+         Start here: a tour of Python's syntax and features
+      Library reference
+         Standard library and builtins
+      Language reference
+         Syntax and language elements
+      Python setup and usage
+         How to install, configure, and use Python
+      Python HOWTOs
+         In-depth topic manuals
+    
+    
+      Installing Python modules
+         Third-party modules and PyPI.org
+      Extending and embedding
+         For C/C++ programmers
+      Python's C API
+         C API reference
+      FAQs
+         Frequently asked questions (with answers!)
+      Deprecations
+         Deprecated functionality
+    
+  
+
+  Other resources:
+  
+    
+      Python developer's guide
+         Information on contributing to Python
+      Python Packaging User Guide
+         Resources relating to Python packaging
+      Audio/visual talks
+         Podcasts, talks, and video presentations from the community
+    
+    
+      Python Enhancement Proposals
+         Index of proposed improvements to Python
+      Static Typing with Python
+         Information and guides about Python type safety
+    
+  
+
+  Indices, glossary, and search:
+  
+    
+      Global module index
+         All modules and libraries
+      General index
+         All functions, classes, and terms
+      Glossary
+         Terms explained
+    
+    
+      Search page
+         Search this documentation
+      Complete table of contents
+         All sections and subsections
+    
+  
+
+  Project information:
+  
+    
+      Reporting issues
+      Contributing to docs
+      Download the documentation
+    
+    
+      History and license of Python
+      Copyright
+      About the documentation
+    
+  
+
+            
+          
+        
+      
+      
+        Download
+Download these documents
+Docs by version
+
+  
+  Python 3.16 (in development)
+Python 3.15 (pre-release)
+Python 3.14 (stable)
+Python 3.13 (stable)
+Python 3.12 (security-fixes)
+Python 3.11 (security-fixes)
+Python 3.10 (security-fixes)
+Python 3.9 (EOL)
+Python 3.8 (EOL)
+Python 3.7 (EOL)
+Python 3.6 (EOL)
+Python 3.5 (EOL)
+Python 3.4 (EOL)
+Python 3.3 (EOL)
+Python 3.2 (EOL)
+Python 3.1 (EOL)
+Python 3.0 (EOL)
+Python 2.7 (EOL)
+Python 2.6 (EOL)
+  All versions
+
+Other resources
+
+  
+  PEP Index
+  Beginner's Guide
+  Book List
+  Audio/Visual Talks
+  Python Developer’s Guide
+
+        
+
+«
+
+
+      
+      
+      
+    
+      Navigation
+      
+        
+          index
+        
+          modules |
+
+          
+          Python »
+          
+            Greek | ΕλληνικάEnglishSpanish | españolFrench | françaisItalian | italianoJapanese | 日本語Korean | 한국어Polish | polskiBrazilian Portuguese | Português brasileiroRomanian | RomâneșteRussian | РусскийTurkish | TürkçeSimplified Chinese | 简体中文Traditional Chinese | 繁體中文
+            dev (3.16)pre (3.15)3.14.73.133.123.113.103.93.83.73.63.53.43.33.23.13.02.72.6
+          
+          
+              
+          
+    
+      3.14.7 Documentation »
+    
+
+        
+                
+                    
+
+    
+        
+          
+          
+        
+    
+                     |
+                
+            
+
+    Theme
+    
+        Auto
+        Light
+        Dark
+    
+ |
+            
+      
+      
+    
+    © Copyright 2001 Python Software Foundation.
+    
+    This page is licensed under the Python Software Foundation License Version 2.
+    
+    Examples, recipes, and other code in the documentation are additionally licensed under the Zero Clause BSD License.
+    
+    
+      See History and License for more information.
+    
+    
+    
+
+    The Python Software Foundation is a non-profit corporation.
+Please donate.
+
+    
+      Last updated on Sep 12, 2026 (09:28 UTC).
+    
+      Found a bug?
+    
+    
+
+    Created using Sphinx 8.2.3.
+    
+
+    
+  

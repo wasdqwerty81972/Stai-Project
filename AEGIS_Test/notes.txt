@@ -1,0 +1,6 @@
+notes.txt
+CyberOS Demo Notes:
+- This directory contains test files for ransomware simulation
+- Files will be renamed with .locked extension during demo
+- Backup is stored in AEGIS_Test_Backup
+- System automatically detects and recovers from encryption

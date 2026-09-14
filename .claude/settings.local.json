@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(sort -k2)",
+      "Bash(cd \"I:/STAI 2\" && echo \"=== sorel20m: SVS CYBER AI ===\"; ls -la \"SVS CYBER AI/model/checkpoints/sorel20m/\"; echo \"\"; echo \"=== sorel20m: Drive ===\"; ls -la \"SVS-Cyber-Drive/model/checkpoints/sorel20m/\"; echo \"\"; echo \"=== inode check \\(hardlink?\\) ===\"; stat -c '%i %n' \"SVS CYBER AI/training/pretrain.py\" \"SVS-Cyber-Drive/training/pretrain.py\")",
+      "Bash(cd /c)",
+      "Bash(python -c \"import torch, transformers, tokenizers, sys; print\\(sys.version\\); print\\('torch',torch.__version__\\); print\\('tf',transformers.__version__\\); print\\('tok',tokenizers.__version__\\); print\\('numpy?'\\); import numpy; print\\('numpy',numpy.__version__\\)\")",
+      "Bash(python -c \"import torch,os;print\\(os.path.dirname\\(torch.__file__\\)\\)\")",
+      "Bash(grep -n \"sm80\\\\|sm75\\\\|SMVersion\\\\|check_sm_version\" \"C:/Users/user/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCache/local-packages/Python311/site-packages/torch/include/ATen/native/transformers/sdp_utils_cpp.h\" 2>/dev/null | head -40; echo \"---search headers---\"; ls \"C:/Users/user/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0/LocalCache/local-packages/Python311/site-packages/torch/include/ATen/native/transformers/\" 2>/dev/null)",
+      "Bash(grep -a -o \"Flash attention only supports gpu architectures[^\\\\\"]\\\\{0,90\\\\}\" torch_cuda.dll)",
+      "Bash(grep -a -o \"Mem Efficient attention only supports[^\\\\\"]\\\\{0,90\\\\}\" torch_cuda.dll)",
+      "Bash(grep -a -o \"Flash attention only supports[ -~]\\\\{0,120\\\\}\" torch_cpu.dll)",
+      "Bash(grep -a -o \"Mem Efficient Attention only supports[ -~]\\\\{0,120\\\\}\" torch_cpu.dll)",
+      "Bash(grep -a -o \"Flash attention[ -~]\\\\{0,140\\\\}\" torch_cuda.dll)",
+      "Bash(grep -a -o \"gpu architectures in the range[ -~]\\\\{0,80\\\\}\" torch_cuda.dll)",
+      "Bash(grep -a -o \"sm[0-9][0-9] to sm[0-9][0-9][ -~]\\\\{0,60\\\\}\" torch_cuda.dll)",
+      "Bash(rm -rf __pycache__)",
+      "Bash(python -)"
+    ]
+  }
+}

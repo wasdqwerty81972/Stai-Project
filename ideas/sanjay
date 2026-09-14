@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""
+ProductionKernel Enterprise OS Engine (Python Simulation)
+Features: Preemptive multi-threading, virtual interrupts, dynamic VFS, 
+page-fault handling, and a full system call shell.
+"""
+
+import sys
+import time
+import threading
+import random
+
+# --- 1. Memory Management & Paging Subsystem ---
+class VirtualMemoryManager:
+    def __init__(self, total_mb=128):
+        self.total_frames = (total_mb * 1024 * 1024) // 4096
+        self.allocated_frames = 256 # Kernel reserve
+        self.page_tables = {} # Simulated PML4 maps
+
+    def alloc_page_frame(self):
+        if self.allocated_frames < self.total_frames:
+            self.allocated_frames += 1
+            return self.allocated_frames * 4096
+        return 0 # Out of memory
+
+    def handle_page_fault(self, virt_addr):
+        print(f"\n[VMM EXCEPTION] Page fault triggered at virtual address 0x{virt_addr:016X}")
+        frame = self.alloc_page_frame()
+        if frame:
+            print(f"[VMM] Auto-allocated physical frame 0x{frame:X} to resolve fault.")
+            return True
+        return False
+
+# --- 2. Virtual File System (VFS) ---
+class VFSNode:
+    def __init__(self, name, is_dir=False, permissions="rwxr-xr-x"):
+        self.name = name
+        self.is_dir = is_dir
+        self.content = bytearray()
+        self.children = {}
+        self.permissions = permissions
+
+class VirtualFileSystem:
+    def __init__(self):
+        self.root = VFSNode("/", is_dir=True)
+        self.cwd = self.root
+        self.pwd_path = "/"
+        self._init_defaults()
+
+    def _init_defaults(self):
+        self.mkdir_recursive("/bin")
+        self.mkdir_recursive("/etc")
+        self.mkdir_recursive("/home/user")
+        self.write_file("/etc/version", b"ProductionKernel v2.4.0-release\n")
+        self.write_file("/home/user/notes.txt", b"TODO: Implement virtio drivers and network stack.\n")
+
+    def resolve(self, path):
+        if path == "/":
+            return self.root
+        parts = [p for p in path.split("/") if p]
+        curr = self.root if path.startswith("/") else self.cwd
+        for part in parts:
+            if part == "..":
+                curr = self.root # Simplified root anchor
+            elif part in curr.children:
+                curr = curr.children[part]
+            else:
+                return None
+        return curr
+
+    def mkdir_recursive(self, path):
+        parts = [p for p in path.split("/") if p]
+        curr = self.root
+        for part in parts:
+            if part not in curr.children:
+                curr.children[part] = VFSNode(part, is_dir=True)
+            curr = curr.children[part]
+
+    def write_file(self, path, data):
+        parts = path.split("/")
+        name = parts[-1]
+        dir_path = "/".join(parts[:-1]) if len(parts) > 1 else "/"
+        parent = self.resolve(dir_path)
+        if parent and parent.is_dir:
+            if name not in parent.children:
+                parent.children[name] = VFSNode(name, is_dir=False)
+            parent.children[name].content = bytearray(data)
+            return True
+        return False
+
+# --- 3. Preemptive Task Scheduler & Threads ---
+class ProcessControlBlock:
+    _pid_seq = 0
+    def __init__(self, name, priority=1):
+        ProcessControlBlock._pid_seq += 1
+        self.pid = ProcessControlBlock._pid_seq
+        self.name = name
+        self.state = "READY"
+        self.priority = priority
+        self.cpu_ticks = 0
+
+class KernelScheduler:
+    def __init__(self):
+        self.processes = []
+        self.current_idx = 0
+        self.lock = threading.Lock()
+
+    def spawn(self, name, priority=1):
+        with self.lock:
+            pcb = ProcessControlBlock(name, priority)
+            self.processes.append(pcb)
+            return pcb
+
+    def tick(self):
+        with self.lock:
+            if not self.processes:
+                return
+            self.current_idx = (self.current_idx + 1) % len(self.processes)
+            active = self.processes[self.current_idx]
+            active.cpu_ticks += 1
+
+# --- 4. Core Microkernel Controller ---
+class Microkernel:
+    def __init__(self):
+        self.vmm = VirtualMemoryManager()
+        self.vfs = VirtualFileSystem()
+        self.scheduler = KernelScheduler()
+        
+        # Spawn background system daemons
+        self.scheduler.spawn("kworker/0:1", priority=0)
+        self.scheduler.spawn("sys-logger", priority=1)
+        self.scheduler.spawn("net-poll", priority=2)
+
+        # Start timer interrupt thread (simulates hardware IRQ0)
+        self.is_running = True
+        self.timer_thread = threading.Thread(target=self._timer_irq_loop, daemon=True)
+        self.timer_thread.start()
+
+    def _timer_irq_loop(self):
+        while self.is_running:
+            time.sleep(1.0) # 1Hz timer tick simulation
+            self.scheduler.tick()
+
+    def system_call(self, call_num, *args):
+        if call_num == 1:   # sys_write
+            sys.stdout.write(args[0])
+            return len(args[0])
+        elif call_num == 2: # sys_uptime
+            return time.time()
+        elif call_num == 3: # sys_sbrk (memory request)
+            return self.vmm.alloc_page_frame()
+        return -1
+# --- 5. Production CLI Shell ---
+def run_enterprise_shell():
+    kernel = Microkernel()
+    print("\u001b[32m" + "="*65)
+    print("   PRODUCTION KERNEL v2.4 [Architecture: x86_64-multitask]")
+    print("   Subsystems Online: PMM, VMM, Preemptive Sched, VFS, APIC-Timer")
+    print("   Type 'help' to review command hooks.")
+    print("="*65 + "\u001b[0m\n")
+    while True:
+        try:
+            cmd_str = input("root@production-os:/# ").strip()
+            if not cmd_str:
+                continue
+            tokens = cmd_str.split(" ")
+            cmd = tokens[0]
+            args = tokens[1:]
+            if cmd == "exit":
+                print("[KERNEL] Halting CPU core structures. Goodbye.")
+                kernel.is_running = False
+                break
+            elif cmd == "help":
+                print("Supported Kernel Commands:")
+                print("  ls [-l]       - List files in current working directory")
+                print("  cat <file>    - Read and display file contents")
+                print("  touch <file>  - Create a new empty file")
+                print("  ps            - Display active thread process table")
+                print("  vmstat        - Show virtual memory frame statistics")
+                print("  fault <addr>  - Trigger test page-fault exception handler")
+                print("  clear         - Clear terminal display")
+                print("  exit          - Power down system")
+            elif cmd == "ls":
+                for name, node in kernel.vfs.cwd.children.items():
+                    m_type = "DIR " : "FILE"
+                    tag = "d" if node.is_dir else "-"
+                    print(f"  {tag}rwxr-xr-x  1 root  root  {len(node.content):5d}  {name}")
+            elif cmd == "cat":
+                if not args:
+                    print("Error: missing filename operand.")
+                    continue
+                node = kernel.vfs.resolve(args[0])
+                if node and not node.is_dir:
+                    print(node.content.decode("utf-8", errors="ignore"), end="")
+                else:
+                    print(f"cat: {args[0]}: No such file or directory")
+            elif cmd == "touch":
+                if not args:
+                    print("Error: missing file target.")
+                    continue
+                kernel.vfs.write_file(args[0], b"")
+                print(f"Created file: {args[0]}")
+            elif cmd == "ps":
+                print("PID | PRI | STATE  | TICKS | COMMAND")
+                print("-" * 38)
+                print("  1 |   0 | RUNNING|  --   | /bin/init (shell)")
+                with kernel.scheduler.lock:
+                    for p in kernel.scheduler.processes:
+                        print(f"{p.pid:3d} | {p.priority:3d} | {p.state:6s} | {p.cpu_ticks:5d} | {p.name}")
+            elif cmd == "vmstat":
+                total_mb = (kernel.vmm.total_frames * 4096) // (1024 * 1024)
+                used_mb = (kernel.vmm.allocated_frames * 4096) // (1024 * 1024)
+                print(f"Memory Matrix: Total RAM: {total_mb} MB | Allocated: {used_mb} MB | Free: {total_mb - used_mb} MB")
+            elif cmd == "fault":
+                addr = int(args[0], 16) if args else 0xDEADBEEF000
+                kernel.vmm.handle_page_fault(addr)
+            elif cmd == "clear":
+                print("\033[H\033[J", end="")
+            else:
+                print(f"bash: command not found: {cmd}")
+        except KeyboardInterrupt:
+            print("\n[KERNEL] Send 'exit' to shut down safely.")
+if __name__ == "__main__":
+    run_enterprise_shell()

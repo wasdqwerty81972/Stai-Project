@@ -1,0 +1,5 @@
+2026/09/12-22:43:03.577 683c Creating DB D:\STAI 2\.stai\venkat\Default\Local Storage\leveldb since it was missing.
+2026/09/12-22:43:03.962 683c Reusing MANIFEST D:\STAI 2\.stai\venkat\Default\Local Storage\leveldb/MANIFEST-000001
+2026/09/12-22:44:03.982 7a38 Level-0 table #5: started
+2026/09/12-22:44:04.079 7a38 Level-0 table #5: 522161 bytes OK
+2026/09/12-22:44:04.167 7a38 Delete type=0 #3

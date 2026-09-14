@@ -1,0 +1,197 @@
+{
+  "searches": {
+    "search1": {
+      "success": true,
+      "results": [
+        {
+          "title": "GitHub Copilot features",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.github.com%2Fen%2Fcopilot%2Fget%2Dstarted%2Ffeatures&rut=90c614e7d5a348be9dfd78f5fac93ceb9594229349c07da9b7a2e22d1f8e29de",
+          "snippet": "Copilot can deduce and store useful information about a repository, which Copilot cloud agent and Copilot code review can use to improve the quality of their output when working in that repository."
+        },
+        {
+          "title": "GitHub Copilot \u00b7 Your AI coding agent",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Ffeatures%2Fcopilot&rut=a7646c6844431919a0736f675f693aa97aed908284dd57f64f8d4d2e0a080eb3",
+          "snippet": "GitHub Copilot works every step of the way, from an open issue to reviewing and merging a pull request. Use it in your editor, the terminal, on your desktop, and on GitHub."
+        },
+        {
+          "title": "Copilot coding agent now has its own web browser - GitHub Changelog",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.blog%2Fchangelog%2F2025%2D07%2D02%2Dcopilot%2Dcoding%2Dagent%2Dnow%2Dhas%2Dits%2Down%2Dweb%2Dbrowser%2F&rut=b7467cd01247f97af48082fd89ca406a83ae5453f3060960d04b928915256150",
+          "snippet": "GitHub Copilot coding agent, available in public preview, now has access to a web browser out of the box, powered by the Playwright MCP server. This feature is in public preview. When you delegate a task to Copilot, the agent starts work in the background in its own development environment. Model ..."
+        },
+        {
+          "title": "Browser tools for GitHub Copilot in VS Code are generally available",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.blog%2Fchangelog%2F2026%2D07%2D01%2Dbrowser%2Dtools%2Dfor%2Dgithub%2Dcopilot%2Din%2Dvs%2Dcode%2Dare%2Dgenerally%2Davailable%2F&rut=7b15cb689c63380242a72c2970739887d56f86270d8b018a43c9e9568e2db3c7",
+          "snippet": "Workspace trust and approval prompts still apply Get started Browser tools are available in both the editor window and the Agents window. Update VS Code and ask the agent to open or test a page. For details, see the browser tools for agents docs and the browser agent testing guide, and share feedback in the microsoft/vscode repository."
+        },
+        {
+          "title": "GitHub Copilot \u00b7 Agents on GitHub",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Ffeatures%2Fcopilot%2Fagents&rut=4a91d44cf7b64644d96c8bcba09e8308c6e6a8f93368347cf5c84f7fb2aa909e",
+          "snippet": "Copilot analyzes the code that it creates with GitHub secret protection, code security, and supply chain security tools to find and fix potential issues before finalizing its pull request for your review."
+        },
+        {
+          "title": "GitHub Copilot documentation - GitHub Docs",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.github.com%2Fen%2Fcopilot&rut=0c76462075a72ee80418e59aa9a5e9c70b0e605df08e5fbefebb87f174856ada",
+          "snippet": "About agent apps Agent apps let you use partner-built agents directly in your workflows on GitHub, powered by your Copilot subscription."
+        },
+        {
+          "title": "Agents powered by the GitHub Copilot Harness overview",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Flearn.microsoft.com%2Fen%2Dus%2Fmicrosoft%2Dcopilot%2Dstudio%2Fagents%2Dexperience%2Foverview&rut=2c3cba64352025d60c165a972863fbffc84772f20b3a5795622008fc6defc5ed",
+          "snippet": "The GitHub Copilot harness in Microsoft Copilot Studio is a redesigned authoring and runtime environment for building AI agents. It introduces a natural-language-first approach to agent creation, a unified single-surface design, and an enhanced orchestration model that improves response quality and reasoning capability."
+        },
+        {
+          "title": "GitHub Copilot Workspace Review 2026: Agent-Mode Coding in the Browser",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fbaeseokjae.github.io%2Fposts%2Fgithub%2Dcopilot%2Dworkspace%2Dreview%2D2026%2F&rut=3939eaa963484307c732e3ca112b549f0e7a0851c2b43645161544726490e202",
+          "snippet": "A hands-on GitHub Copilot Workspace review 2026 covering the Coding Agent, Agent Mode, pricing, performance stats, and how it compares to Cursor."
+        },
+        {
+          "title": "GitHub Copilot's Coding Agent Gets a Web Browser: A New AI-Driven ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fundercodenews.com%2Fgithub%2Dcopilots%2Dcoding%2Dagent%2Dgets%2Da%2Dweb%2Dbrowser%2Da%2Dnew%2Dai%2Ddriven%2Ddevelopment%2F&rut=a57244d443b88d7b99419eeb24f62251d3f26e394402072461e9db1264d823da",
+          "snippet": "By integrating browser capabilities directly into the Copilot coding agent, GitHub is bridging the gap between code generation and validation. This gives developers an AI teammate that not only writes and suggests code but also tests and debugs it\u2014instantly and autonomously."
+        },
+        {
+          "title": "GitHub Copilot Agent Capabilities: Complete Guide 2026",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fanycap.ai%2Fpage%2Fen%2DUS%2Fai%2Fgithub%2Dcopilot%2Dagent%2Dcapabilities%2Dguide&rut=fa8934b5c2086451a3b0fec03303dcb3e6a3d04d77a289f54246b68f97fc35a6",
+          "snippet": "A complete guide to GitHub Copilot Agent capabilities in 2026 \u2014 what it can do natively, where it falls short, and how to add image, video, music, and web search with AnyCap."
+        }
+      ]
+    },
+    "search2": {
+      "success": true,
+      "results": [
+        {
+          "title": "GitHub - dayour/copilotbrowser: A browser for copilot, an agent-first ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fdayour%2Fcopilotbrowser&rut=4203c348934740608f5186f508a402e2f4a73d1ede1d4ee9d3561eea3a01b154",
+          "snippet": "copilotbrowser is a high-level browser automation framework for Node.js supporting Chromium, Firefox, and WebKit with a single API. It includes a built-in MCP server that lets GitHub Copilot, Claude, and any MCP-compatible AI agent control a real browser directly. Unique to copilotbrowser is \"follow me\" mode: an AI agent watches you navigate a site step-by-step, then replays those exact ..."
+        },
+        {
+          "title": "GitHub - jaypal1046/copilot-browser: Copilot Browser Agent is an open ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fjaypal1046%2Fcopilot%2Dbrowser&rut=d1f8d34f5e44f39de6d376e0f004c3db2a9871f0d8453bd18b87a2d407bd4f56",
+          "snippet": "A powerful system that enables GitHub Copilot to control your browser automatically, similar to Google's Antigravity browser agent. This creates a bidirectional communication channel between VS Code, GitHub Copilot, and your browser for automated testing, debugging, and web automation."
+        },
+        {
+          "title": "Use GitHub Copilot agents",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.github.com%2Fen%2Fcopilot%2Fhow%2Dtos%2Fuse%2Dcopilot%2Dagents&rut=ecf7e157c93a93df9d167c685b6d4caa347246624372b77092c6396f13ededc0",
+          "snippet": "GitHub Copilot cloud agent Find out how Copilot can research a repository, plan and make code changes, and create pull requests for you to review."
+        },
+        {
+          "title": "Get started with Copilot agents on GitHub",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.github.com%2Fen%2Fcopilot%2Fhow%2Dtos%2Fcopilot%2Don%2Dgithub%2Fuse%2Dcopilot%2Dagents%2Foverview&rut=8fa7e0b915da3d0009e2775df87bf17ac9671eef2224c2237f4fd115f8474fb0",
+          "snippet": "Copilot cloud agent is available for all paid Copilot plans. The agent is available in all repositories stored on GitHub, except repositories owned by managed user accounts and where it has been explicitly disabled."
+        },
+        {
+          "title": "A Developer's Guide to GitHub Copilot Agent Mode: From IDE Collaborator ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgist.github.com%2Fisaacweathers%2Fddd460468403128015711099c7a6b7b5&rut=a44a8b547c54a3602cf1ddfc334bcb9d6d271d414696609043039fb080082e02",
+          "snippet": "It is an advanced mode of Copilot Chat that can create plans, make code edits, run local terminal commands, and iterate on errors until a task is complete.1 GitHub \"Copilot Coding Agent\": This is a distinct, asynchronous entity. It is an autonomous agent that is assigned GitHub issues."
+        },
+        {
+          "title": "Exercise 2 - Adding new functionality with Copilot Agent Mode",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fawesome%2Dcopilot.github.com%2Flearning%2Dhub%2Fcopilot%2Dworkshops%2Fvscode%2F2%2Dagent%2Dmode%2F&rut=48eac2db00783f83ca3c62e6f3712d4b57fcfa0208fa71a7b9e22801b2a4deae",
+          "snippet": "In this exercise, you will learn how: Copilot Agent Mode can explore your project, identify relevant files, and make coordinated changes. GitHub Copilot Agent Mode can implement new features across the UI and data layer. to review changes and tests generated by Copilot Agent Mode before merging into your codebase."
+        },
+        {
+          "title": "Building applications with GitHub Copilot agent mode",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Flearn.github.com%2Flearning%2FbuildingapplicationswithGitHubCopilotagentmode&rut=6ba259e384d47c4495c2f8971a02f63c3511563880591c0568cb3ef15723f1bf",
+          "snippet": "About Building applications with GitHub Copilot agent mode is an intermediate module that teaches you how to build applications using GitHub Copilot Agent Mode by prompting autonomous development tasks and using documentation for guidance."
+        },
+        {
+          "title": "Getting Started with the GitHub Copilot app",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fawesome%2Dcopilot.github.com%2Flearning%2Dhub%2Fgithub%2Dcopilot%2Dapp%2F&rut=c85bd7a4730efee5ad8c56017fcd5b2d7bfd20130a0007e42ae42e7fc6763170",
+          "snippet": "The GitHub Copilot app is a desktop experience built from the ground up for agent-native development. As agents become a central part of your development workflow, you need a place where you can see multiple agents working in parallel, inspect their progress, and take control when needed, all without context-switching between windows or losing track of what's running. This guide covers what ..."
+        },
+        {
+          "title": "GitHub Help: GitHub Documentation, AI Search & Support",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fhelp.github.com%2F&rut=1444ff2eec97fe9970010fb3ecf4f38610824e4724420813d7b30e9617d532a7",
+          "snippet": "Welcome to the GitHub Help. Search documentation, ask AI-powered questions, troubleshoot issues, explore learning resources, or contact GitHub Support when you need additional assistance."
+        },
+        {
+          "title": "Coding Agent Harnesses \u2014 Comparative Overview (2026) \u00b7 GitHub",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgist.github.com%2Fasermax%2F4fb2be4f6f1fc0d6be1e3966b6e2bb91&rut=ddb01ec728c0dbd8a979c1b6485974938fc4aa6a37be296dd336479b410062a1",
+          "snippet": "Best for research & benchmarking: SWE-agent \u2014 purpose-built for SWE-bench evaluation. Best GitHub integration: Copilot \u2014 native PR creation, code review, actions, and enterprise management. Most model-flexible: Pi (15+ providers), Aider, OpenHands, and OpenCode \u2014 work with almost any LLM including local models."
+        }
+      ]
+    },
+    "search3": {
+      "success": true,
+      "results": [
+        {
+          "title": "GitHub Copilot Introduces Agent Mode and Next Edit Suggestions to Boost ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fnewsroom%2Fpress%2Dreleases%2Fagent%2Dmode&rut=08926dbece042176246586f675e72fc68547e77edc6d50eb5618595dc4471082",
+          "snippet": "February 6, 2025 - San Francisco, CA - GitHub announced today a wave of new features and enhancements to GitHub Copilot to streamline coding tasks based on an organization's specific ways of working. This includes agentic capabilities for implementing changes across multiple files, next edit suggestions to automatically predict and execute the next logical edit, and the ability to store and ..."
+        },
+        {
+          "title": "GitHub Copilot: The agent awakens - The GitHub Blog",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.blog%2Fnews%2Dinsights%2Fproduct%2Dnews%2Fgithub%2Dcopilot%2Dthe%2Dagent%2Dawakens%2F&rut=2870734fdfa78712f0adb0ffa5ad221ba3cfcf785ab2f068c34d69a741e7896b",
+          "snippet": "Introducing agent mode for GitHub Copilot in VS Code, announcing the general availability of Copilot Edits, and providing a first look at our SWE agent."
+        },
+        {
+          "title": "Introducing GitHub Copilot agent mode (preview) - Visual Studio Code",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fcode.visualstudio.com%2Fblogs%2F2025%2F02%2F24%2Fintroducing%2Dcopilot%2Dagent%2Dmode&rut=c9908967c07d44b85313515774a193cf4e3180506d13a316642376b7fe52ba89",
+          "snippet": "Copilot agent mode can create apps from scratch, perform refactorings across multiple files, write and run tests, and migrate legacy code to modern frameworks. It can automatically generate documentation, integrate new libraries, or help answer questions about a complex codebase."
+        },
+        {
+          "title": "GitHub Copilot Launches Agent Mode and New AI Tools - Geekflare",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgeekflare.com%2Fnews%2Fgithub%2Dcopilot%2Dlaunches%2Dagent%2Dmode%2Dand%2Dnew%2Dai%2Dtools%2F&rut=3ec379bd3fc0b392a04d01f80dbf1013249ff2ca285afd02c252bf8d0f8f406d",
+          "snippet": "The AI wave is not slowing down; now, Github has joined the bandwagon and announced a series of AI updates for its Github Copilot. The company has introduced a new Agent Mode, which allows Copilot to iterate on its output, recognize and fix errors automatically, suggest terminal commands, and analyze run-time errors with self-healing capabilities. So, let's take a closer look at Github's ..."
+        },
+        {
+          "title": "Agent mode 101: All about GitHub Copilot's powerful mode",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.blog%2Fai%2Dand%2Dml%2Fgithub%2Dcopilot%2Fagent%2Dmode%2D101%2Dall%2Dabout%2Dgithub%2Dcopilots%2Dpowerful%2Dmode%2F&rut=993cafb02a5fdfc94f09cedd8dac516b97b4992313b6b16a84e10d78e88f891b",
+          "snippet": "A full look at agent mode in GitHub Copilot, including what it can do, when to use it, and best practices."
+        },
+        {
+          "title": "vscode-docs/blogs/2025/02/24/introducing-copilot-agent-mode.md ... - GitHub",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Fmicrosoft%2Fvscode%2Ddocs%2Fblob%2Fmain%2Fblogs%2F2025%2F02%2F24%2Fintroducing%2Dcopilot%2Dagent%2Dmode.md&rut=ebbfa018a51f330c772833a9a11d7b036533ecd793ba0c52b15f835f2d711309",
+          "snippet": "Copilot agent mode can create apps from scratch, perform refactorings across multiple files, write and run tests, and migrate legacy code to modern frameworks. It can automatically generate documentation, integrate new libraries, or help answer questions about a complex codebase."
+        },
+        {
+          "title": "Best of 2025: GitHub Copilot Evolves: Agent Mode and Multi-Model ...",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fdevops.com%2Fgithub%2Dcopilot%2Devolves%2Dagent%2Dmode%2Dand%2Dmulti%2Dmodel%2Dsupport%2Dtransform%2Ddevops%2Dworkflows%2D2%2F&rut=9069f9258359f286dfc3c1b469a391460409833caa3a3e056351664460eabee2",
+          "snippet": "GitHub has announced a transformative expansion of Copilot's capabilities, marking a significant evolution in AI-assisted development that promises to reshape DevOps practices. As part of Microsoft's 50th-anniversary celebration, GitHub is rolling out Agent Mode with Model Context Protocol (MCP) support to all Visual Studio Code users, transitioning Copilot from a code completion tool to a ..."
+        },
+        {
+          "title": "GitHub Copilot - Wikipedia",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FGitHub_Copilot&rut=f2e1ac8b515ac41b0b516adc54f3b9000a23de5a691fcdf1b46e1929a7b0a8b1",
+          "snippet": "On 17 May 2025, GitHub announced \"coding agent\", which is a more autonomous mode of operation for the Copilot. The user would assign a task or issue to Copilot, which would then initialize a development environment in the cloud (powered by GitHub Actions) and perform the request."
+        },
+        {
+          "title": "GitHub Copilot Agent Mode is Now Generally Available with MCP Support",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fbuildwithabdallah.com%2Ftutorials%2Fgithub%2Dcopilot%2Dagent%2Dmode%2Dis%2Dnow%2Dgenerally%2Davailable%2Dwith%2Dmcp%2Dsupport&rut=672131fc23f7d99943fc81b0223930792dc98c65db0c2dd5695fd609d78bf303",
+          "snippet": "On June 17, 2025, Microsoft announced that GitHub Copilot Agent Mode is now generally available in Visual Studio \u2014 complete with full Model Context Protocol (MCP) support, tool calling, and autonomous multi-step task execution."
+        },
+        {
+          "title": "Introducing GitHub Copilot agent mode (preview) - VSCode",
+          "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fvscode.club%2Fblogs%2F2025%2F02%2F24%2Fintroducing%2Dcopilot%2Dagent%2Dmode&rut=59ce8e6eda14b4cfabdae4b3d15528444a58c95b8740404f4355da4dda52134d",
+          "snippet": "Copilot agent mode can create apps from scratch, perform refactorings across multiple files, write and run tests, and migrate legacy code to modern frameworks. It can automatically generate documentation, integrate new libraries, or help answer questions about a complex codebase."
+        }
+      ]
+    }
+  },
+  "sources_visited": {
+    "source_1": {
+      "url": "https://github.blog/changelog/2025-07-02-copilot-coding-agent-now-has-its-own-we",
+      "title": "Page not found - The GitHub Blog",
+      "content": "\n\t\t\n\t\t\n\t\t\t\t\t\t\n\t\t\t\tSkip to content\t\t\t\n\t\t\t\t\t\t\n\t\t\t\t\n\t\t\t\t\t\n\n\t\n\n/\n\n\tBlog\n\t\t\t\t\t\n\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\t\t\n\t\t\t\n\t\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\n\t\t\n\t\t\n\t\t\tTry GitHub Copilot app\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\n\t\t\tAttend GitHub Universe\t\t\n\t\t\n\n\t\t\t\n\t\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\n\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\t\t\n\t\t\t\n\t\t\t\t\t\t\t\n\t\t\t\t\t\n\n\t\t\t\t\n\t\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\tSearch\t\t\n\t\t\n\n\t\t\t\n\t\t\n\n\t\t\t\n\n\t\t\n\t\n\t\n\n\t\n\t\n\t\t\n\t\n\t\n\t\tWhoops, we haven't written that blog post yet!\n\t\tTry again using the search box, or check out some popular topics:\n\t\t\n\t\t\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\tExplore the Blog\t\t\n\t\t\n\n\t\t\t\t\n\t\t\t\n\t\t\n\t\t\t\n\t\t\n\t\n\n\n\n\t\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    "source_2": {
+      "url": "https://github.blog/changelog/2026-07-01-browser-tools-for-github-copilot-in-vs-",
+      "title": "Page not found - The GitHub Blog",
+      "content": "\n\t\t\n\t\t\n\t\t\t\t\t\t\n\t\t\t\tSkip to content\t\t\t\n\t\t\t\t\t\t\n\t\t\t\t\n\t\t\t\t\t\n\n\t\n\n/\n\n\tBlog\n\t\t\t\t\t\n\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\t\t\n\t\t\t\n\t\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\n\t\t\n\t\t\n\t\t\tTry GitHub Copilot app\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\n\t\t\tAttend GitHub Universe\t\t\n\t\t\n\n\t\t\t\n\t\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\n\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\t\t\n\t\t\t\n\t\t\t\t\t\t\t\n\t\t\t\t\t\n\n\t\t\t\t\n\t\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\tSearch\t\t\n\t\t\n\n\t\t\t\n\t\t\n\n\t\t\t\n\n\t\t\n\t\n\t\n\n\t\n\t\n\t\t\n\t\n\t\n\t\tWhoops, we haven't written that blog post yet!\n\t\tTry again using the search box, or check out some popular topics:\n\t\t\n\t\t\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\tExplore the Blog\t\t\n\t\t\n\n\t\t\t\t\n\t\t\t\n\t\t\n\t\t\t\n\t\t\n\t\n\n\n\n\t\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+    },
+    "source_3": {
+      "url": "https://docs.github.com/en/copilot/how-tos/use-copilot-agents",
+      "title": "Use GitHub Copilot agents - GitHub Docs",
+      "content": "Skip to main contentGitHub DocsVersion: Free, Pro, & TeamSearch or ask CopilotSearch or askCopilotSelect language: current language is EnglishSearch or ask CopilotSearch or askCopilotOpen menuCollapse sidebarExpand sidebarScroll breadcrumbs leftScroll breadcrumbs rightUse GitHub Copilot agentsLearn how to use GitHub Copilot agents.GitHub Copilot cloud agentFind out how Copilot can research a repository, plan and make code changes, and create pull requests for you to review.Code reviewRequest and configure code reviews from Copilot.Managing Copilot MemoryManage and curate memories for Copilot agents."
+    },
+    "source_4": {
+      "url": "https://github.blog/news-insights/product-news/github-copilot-the-agent-awakens/",
+      "title": "GitHub Copilot: The agent awakens - The GitHub Blog",
+      "content": "\n\t\t\n\t\t\n\t\t\t\t\t\t\n\t\t\t\tSkip to content\t\t\t\n\t\t\t\t\t\t\t\n\t\t\t\t\tSkip to sidebar\t\t\t\t\n\t\t\t\t\t\t\n\t\t\t\t\n\t\t\t\t\t\n\n\t\n\n/\n\n\tBlog\n\t\t\t\t\t\n\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\t\t\n\t\t\t\n\t\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\n\t\t\n\t\t\n\t\t\tTry GitHub Copilot app\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\n\t\t\tAttend GitHub Universe\t\t\n\t\t\n\n\t\t\t\n\t\n\t\t\t\t\t\n\n\t\n\t\t\n\t\t\n\t\n\t\n\t\n\t\t\n\t\t\n\t\n\n\t\t\t\t\n\t\t\t\n\t\t\t\t\t\t\t\n\t\t\t\t\t\n\n\t\t\t\t\n\t\t\t\t\t\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\n\t\t\n\n\t\t\t\n\t\t\n\t\t\n\t\t\tSearch\t\t\n\t\t\n\n\t\t\t\n\t\t\n\n\t\t\t\n\n\t\t\n\t\n\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\tHome / News & insights / Product\t\t\t\tGitHub Copilot: The agent awakens\t\t\t\t\n\t\t\t\t\tIntroducing agent mode for GitHub Copilot in VS Code, announcing the general availability of Copilot Edits, and providing a first look at our SWE agent.\n\t\t\t\t\n\t\t\t\n\t\t\t\t\t\t\t\n\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\n\t\t\t\t\n\t\t\t\t\t\n\t\n\t\t\t\n\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\t\n\t\n\t\t\n\t\t\n\t\t\t\t\t\n\t\t\t\tThomas Dohmke\u00b7@ashtom\t\t\t\n\t\t\t\t\t\t\t\n\n\t\n\t\n\t\t\n\t\t\tFebruary 6, 2025\t\t\n\n\t\t\t\t\t\t\t\n\t\t\t\t|\n\t\t\t\t\n\t\t\t\t7 minutes\t\t\t\n\t\t\t\n\n\t\t\t\t\n\t\n\t\t\n\t\t\tShare:\t\t\n\t\n\t\n\t\t\n\t\t\t\n\t\t\n\t\n\t\n\t\t\n\t\t\t\n\t\t\n\t\n\t\n\t\t\n\t\t\t\n\t\t\n\t\n\n\t\t\t\n\t\t\t\n\t\t\n\t\n\n\t\n\t\t\n\t\t\t\n\t\nWhen we introduced GitHub Copilot back in 2021, we had a clear goal: to make developers\u2019 lives easier with an AI pair programmer that helps them write better code. The name reflects our belief that artificial intelligence (AI) isn\u2019t replacing the developer. Instead, it\u2019s always on their side. And like any good first officer, Copilot can also fly by itself: for example, when providing pull request feedback, autofixing security vulnerabilities, or brainstorming on how to implement an issue.\nToday, we are upgrading GitHub Copilot with the force of even more agentic AI \u2013 introducing agent mode and announcing the General Availability of Copilot Edits, both in VS Code. We are adding Gemini 2.0 Flash to the model picker for all Copilot users. And we unveil a first look at Copilot\u2019s new autonomous agent, codenamed Project Padawan. From code completions, chat, and multi-file edits to workspace and agents, Copilot puts the human at the center of the creative work that is software development. AI helps with the things you don\u2019t want to do, so you have more time for the things you do.\nAgent mode available in preview \nGitHub Copilot\u2019s new agent mode is capable of iterating on its own code, recognizing errors, and fixing them automatically. It can suggest terminal commands and ask you to execute them. It also analyzes run-time errors with self-healing capabilities.\nIn agent mode, Copilot will iterate on not just its own output, but the result of that output. And it will iterate until it has completed all the subtasks required to complete your prompt. Instead of performing just the task you requested, Copilot now has the ability to infer additional tasks that were not specified, but are also necessary for the primary request to work. Even better, it can catch its own errors, freeing you up from having to copy/paste from the terminal back into chat.\nHere\u2019s an example where GitHub Copilot builds a web app to track marathon training:\n\n\t\t\t\n\t\t\nTo get started, you\u2019ll need to download VS Code Insiders and then enable the agent mode setting for GitHub Copilot Chat:\n\nThen, when in the Copilot Edits panel, switch from Edit to Agent right next to the model picker:\nhttps://github.blog/wp-content/uploads/2025/02/Editor_PickerDemo.mp4#t=0.001\nAgent mode will change the way developers work in their editor; and as such, we will bring it to all IDEs that Copilot supports. We also know that today\u2019s Insiders build isn\u2019t perfect, and welcome your feedback as we improve both VS Code and the underlying agentic technology in the coming months.\nCopilot Edits, now GA in VS Code \nAnnounced at GitHub Universe in October last year, Copilot Edits combines the best of Chat and Inline Chat with a conversational flow and the ability to make inline changes across a set of files that you manage. The feedback you provided in the past was instrumental in shipping this feature as GA in VS Code today. Thank you!\nIn Copilot Edits you specify a set of files to be edited, and then use natural language to ask GitHub Copilot for what you need. Copilot Edits makes inline changes in your workspace, across multiple files, using a UI designed for fast iteration. You stay in the flow of your code while reviewing the suggested changes, accepting what works, and iterating with follow-up asks.\n\nBehind the scenes, Copilot Edits leverages a dual-model architecture to enhance editing efficiency and accuracy. First, a foundation language model considers a full context of the Edits session to generate initial edit suggestions. You can choose the foundation language model that you prefer between: OpenAI\u2019s GPT-4o, o1, o3-mini, Anthropic\u2019s Claude 3.5 Sonnet, and now, Google\u2019s Gemini 2.0 Flash. For the optimal experience, we developed a speculative decoding endpoint, optimized for fast application of changes in files. The proposed edits from the foundation model are sent to the speculative decoding endpoint that will then propose those changes inline in the editor.\nCopilot Edits works because it puts you in control, from setting the right context to accepting changes. The "
+    },
+    "source_5": {
+      "url": "https://code.visualstudio.com/blogs/2025/02/24/introducing-copilot-agent-mode",
+      "title": "Introducing GitHub Copilot agent mode (preview)",
+      "content": "\n\t\n\t\n\n\t\n\t\t\n\t\t\t\n\t\t\t\t\t\t\n\t\t\t\n\t\t\t\t\n\t\t\t\n\t\t\t\t\ud83c\udfac Watch The Story of VS Code!\n\t\t\t\tBlog: Enable persistent, portable agent sessions with the Agent Host.\n\t\t\t\tJoin GitHub Copilot Day live on September 10!\n\t\t\t\n\t\t\tDismiss this update\n\t\t\n\t\t\n\t\t\n\t\t\n\t\t\n\t\t\t\n    \n        \n        \n            \n                    \n        \n        \n        \n            \n            \n                Introducing GitHub Copilot agent mode (preview)\nFebruary 24, 2025 by Isidor Nikolic\n\n      \n        \n        Tip\n      Agent mode is now available in VS Code Stable and has support for MCP servers. Read more about the updates to agent mode in our blog post.\nCopilot agent mode is the next evolution in AI-assisted coding. Acting as an autonomous peer programmer, it performs multi-step coding tasks at your command \u2014 analyzing your codebase, reading relevant files, proposing file edits, and running terminal commands and tests. It responds to compile and lint errors, monitors terminal and test output, and auto-corrects in a loop until the task is completed. Available to all VS Code Insiders users today, and soon in VS Code Stable.\n\nHow to use Copilot agent mode\nIn VS Code Insiders, open the Copilot Edits view (workbench.action.chat.openEditSession), select Agent from the mode dropdown, and enter your prompt.\nCopilot agent mode can create apps from scratch, perform refactorings across multiple files, write and run tests, and migrate legacy code to modern frameworks. It can automatically generate documentation, integrate new libraries, or help answer questions about a complex codebase. Copilot agent mode helps you be super-productive by having an AI collaborator that understands the workspace. It can orchestrate your inner development flow while keeping you in control.\nCopilot agent mode operates in a more autonomous and dynamic manner to achieve the desired outcome. To process a request, Copilot loops over the following steps and iterates multiple times as needed:\n\nDetermines the relevant context and files to edit autonomously.\nOffers both code changes and terminal commands to complete the task. For example, Copilot might compile code, install packages, run tests, and more.\nMonitors the correctness of code edits and terminal command output and iterates to remediate issues.\n\nCopilot agent mode uses a set of tools to accomplish these tasks.\n\nIn an ideal world, you would just care about the final output of Copilot agent mode, but it can sometimes make mistakes and go off track. To easily intervene and undo in those situations, every tool invocation is transparently displayed in the UI, terminal tool requires approval, and we support rich undo capabilities - you can use the Undo Last Edit control in the view title bar to revert to the state before the last edit was applied. Instead of relying on one long, detailed prompt to yield a perfect solution, you should iterate with Copilot \u2013 the UI is built for iterations, giving you full control over the process ensuring the final result is better.\nCopilot agent mode automatically finds the precise context and sets the working set of files by calling the right workspace tools. To more precisely guide Copilot, you can always explicitly reference context with #file, using drag and drop or by clicking on the Add Files button. For example, you can create a specifications.md file and add it as context to better control Copilot, or you can set custom instructions - so Copilot respects your coding guidelines or other preferences.\nKeep in mind that because Copilot agent mode may send multiple requests per prompt, it won\u2019t be as fast as regular edits mode and can quickly use up your free Copilot quota. For tasks that are well-defined and scoped, stick to edits mode. When you need multiple edits or more open-ended tasks, switch to agent mode.\nHow it works\n\nWhen you send a request to Copilot in agent mode, we make a prompt to the LLM you picked from the model dropdown. This prompt includes:\n\nYour query\nA summarized structure of the workspace (instead of the full codebase to preserve tokens)\nMachine context (e.g. what OS you are using)\nTool description (optionally tool call result)\n\nWe define a set of tools for the LLM to call, each tool has its own capabilities that help Copilot get the job done. Using these tools Copilot can search the workspace, read the contents of files, run commands in the terminal, get compile or lint errors from the editor and apply proposed changes via a speculative decoder endpoint (performance improvements underway). The list of tools is ever-expanding, as we are experimenting what other tools could improve Copilot\u2019s capabilities in agent mode.\n\nEach tool has detailed instructions for the LLM on how and when to use it. Here\u2019s the read_file tool description as an example:\nJSON{\n  \"name\": \"read_file\",\n  \"description\": \"Read the contents of a file. You must specify the line range you're interested in, and if the file is larger, you will be given an outline of the rest of the file. If the file contents re"
+    }
+  },
+  "report": "## GITHUB COPILOT AGENT/BROWSER CAPABILITIES REPORT\n\n### Overview\nGitHub Copilot's agent mode acts as an autonomous peer programmer capable of performing multi-step coding tasks, analyzing codebases, reading relevant files, proposing file edits, and running terminal commands and tests. Operating within VS Code via the Copilot Edits panel, it can auto-correct in a loop until a task is completed.\n\n### How It Works\nCopilot agent mode operates dynamically by looping over specific steps: determining relevant context/files autonomously, offering code changes and terminal commands, monitoring execution correctness, and iterating to remediate issues. Its architecture integrates workspace tools, model pickers supporting foundation models (such as GPT-4o, o1, o3-mini, Claude 3.5 Sonnet, and Gemini 2.0 Flash), and a speculative decoding endpoint for fast inline file changes.\n\n### Browser/Automation Capabilities\nBased on the provided documentation, the sources **do not mention any dedicated web browser or web automation tools** for GitHub Copilot agent mode. Its current automation capabilities are centered around workspace tools, reading/editing files, searching the workspace, compiling code, installing packages, and running terminal commands and tests.\n\n### Availability & Requirements\nAgent mode is available in preview/Stable in VS Code and VS Code Insiders via the Copilot Edits panel by switching the mode dropdown from \"Edit\" to \"Agent\". It is also supported by Model Context Protocol (MCP) servers and utilizes various configurable foundation language models.\n\n### Limitations\nAgent mode can send multiple requests per prompt, meaning it is slower than regular edits mode and can quickly consume Copilot usage quotas. It may occasionally make mistakes or go off-track, requiring human intervention, transparency checks on tool invocations, and manual terminal approval.\n\n### SOURCES USED\n1. https://docs.github.com/en/copilot/how-tos/use-copilot-agents - Provided an overview of GitHub Copilot cloud agents, code reviews, and memory management.\n2. https://github.blog/news-insights/product-news/github-copilot-the-agent-awakens/ - Introduced agent mode in VS Code, Copilot Edits GA, multi-model architecture, and terminal/self-healing capabilities.\n3. https://code.visualstudio.com/blogs/2025/02/24/introducing-copilot-agent-mode - Detailed agent mode's workflow, underlying tool definitions (e.g., `read_file`, workspace search, terminal commands), and usage guidelines."
+}
