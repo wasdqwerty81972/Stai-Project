@@ -52,7 +52,10 @@ const ReasoningBody = memo(function ReasoningBody({
   const showBounded = isLong && (isStreaming || !showFull);
 
   if (!showBounded) {
-    return <MemoizedMarkdown content={content} />;
+    // `isAnimating` keeps the streamdown token animation running while the
+    // agent is still producing reasoning, so the text fades in word by word
+    // instead of appearing all at once.
+    return <MemoizedMarkdown content={content} isAnimating={isStreaming} />;
   }
 
   return (

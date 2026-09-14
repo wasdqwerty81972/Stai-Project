@@ -31,6 +31,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
+  BrainIcon,
   Globe,
   PanelLeft,
   PanelLeftClose,
@@ -71,6 +72,11 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  WorkedFor,
+  WorkedForContent,
+  WorkedForTrigger,
+} from "@/components/ai-elements/worked-for";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -112,6 +118,11 @@ interface ChatEntry {
   parts: MessagePart[];
   /** ISO timestamp for chronological sorting */
   timestamp: string;
+  /**
+   * ISO timestamp stamped when the run finished. Feeds HackerAI's
+   * "Worked for 12s" trigger (see WorkedForTrigger durationMs).
+   */
+  finishedAt?: string;
   animate?: boolean;
 }
 
@@ -137,12 +148,26 @@ const HIDDEN_EVENT_TYPES = new Set([
   "agent_started",
   "model_info",
   "agent_completed",
+  "agent_failed",
+  "workflow_agent_completed",
   "investigation_completed",
   "context_usage",
   "state",
   "conversation_title",
   "finding_created",
   // agent_reasoning is handled separately as a ReasoningPart
+]);
+
+/**
+ * Events that end a run. They do not produce their own entry; they stamp the
+ * assistant entry's `finishedAt` so the work trigger can show a real duration
+ * (HackerAI's `generationTimeMs`).
+ */
+const TERMINAL_RUN_EVENT_TYPES = new Set([
+  "agent_completed",
+  "agent_failed",
+  "workflow_agent_completed",
+  "investigation_completed",
 ]);
 
 // ─── Helper functions ─────────────────────────────────────────────────────────
@@ -395,6 +420,23 @@ function applyEvent(
 
   // Deduplicate: if we already have this event_id, skip
   if (entries.some((e) => e.id === event.event_id)) return entries;
+
+  // Terminal run events close out the assistant turn instead of adding a row:
+  // stamp the completion time so "Working for …" can settle into
+  // "Worked for …" (HackerAI's WorkedForTrigger durationMs).
+  if (TERMINAL_RUN_EVENT_TYPES.has(event.type)) {
+    const lastAssistantIndex = entries.reduceRight(
+      (found, entry, index) =>
+        found === -1 && entry.role === "assistant" ? index : found,
+      -1,
+    );
+    if (lastAssistantIndex === -1) return entries;
+    return entries.map((entry, index) =>
+      index === lastAssistantIndex
+        ? { ...entry, finishedAt: event.timestamp }
+        : entry,
+    );
+  }
 
   if (HIDDEN_EVENT_TYPES.has(event.type)) return entries;
 
@@ -1041,78 +1083,45 @@ function StaiChatWorkspaceContent({
                         : "prose max-w-none min-w-0 space-y-3 overflow-hidden dark:prose-invert"
                     }
                   >
-                    {(entry.parts ?? []).map((part, partIndex) => {
-                      if (part.type === "text") {
-                        return entry.role === "user" ? (
-                          <div
-                            className="whitespace-pre-wrap break-words"
-                            key={`${entry.id}-${partIndex}`}
-                          >
-                            {part.text}
-                          </div>
-                        ) : (
-                          <MemoizedMarkdown
-                            content={part.text}
-                            isAnimating={false}
-                          />
-                        );
-                      }
-
-                      if (part.type === "reasoning") {
-                        const latestReasoningEntryIndex = displayed.reduceRight(
-                          (latestIndex, candidate, candidateIndex) =>
-                            latestIndex === -1 &&
-                            candidate.parts.some(
-                              (candidatePart) =>
-                                candidatePart.type === "reasoning",
-                            )
-                              ? candidateIndex
-                              : latestIndex,
-                          -1,
-                        );
-                        const latestReasoningPartIndex = entry.parts.reduceRight(
-                          (latestIndex, candidatePart, candidatePartIndex) =>
-                            latestIndex === -1 &&
-                            candidatePart.type === "reasoning"
-                              ? candidatePartIndex
-                              : latestIndex,
-                          -1,
-                        );
-                        const isLatestReasoning =
-                          entryIndex === latestReasoningEntryIndex &&
-                          partIndex === latestReasoningPartIndex;
-                        return (
-                          <SvsCyberReasoningPart
-                            key={`${entry.id}-reasoning-${partIndex}`}
-                            activity={part.activity}
-                            isStreaming={isStreaming}
-                            isLatest={isLatestReasoning}
-                          />
-                        );
-                      }
-
-                      if (part.type === "tool") {
-                        return (
-                          <ToolExecutionPart
-                            key={part.toolCallId}
-                            part={part}
+                    {entry.role === "user"
+                      ? (entry.parts ?? []).map((part, partIndex) =>
+                          part.type === "text" ? (
+                            <div
+                              className="whitespace-pre-wrap break-words"
+                              key={`${entry.id}-${partIndex}`}
+                            >
+                              {part.text}
+                            </div>
+                          ) : null,
+                        )
+                      : (
+                          <AssistantEntryBody
+                            entry={entry}
                             sessionId={sessionId}
+                            isLastEntry={entryIndex === displayed.length - 1}
+                            isStreaming={isStreaming}
+                            nextEntryTimestamp={displayed[entryIndex + 1]?.timestamp}
                           />
-                        );
-                      }
-
-                      return null;
-                    })}
+                        )}
                   </div>
                 </div>
               </article>
             ))}
 
-            {/* Streaming indicator — HackerAI-style dots */}
+            {/* Pending agent reasoning — HackerAI's PendingAgentReasoning row */}
             {isStreaming && displayed.at(-1)?.role !== "assistant" && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Shimmer as="span" className="text-sm">
-                  Agent is working…
+              <div
+                aria-label="Thinking"
+                className="flex w-full max-w-full items-center gap-2 text-sm text-muted-foreground"
+                data-testid="pending-agent-reasoning"
+                role="status"
+              >
+                <BrainIcon className="size-4 shrink-0" />
+                <Shimmer
+                  as="span"
+                  className="min-w-0 truncate text-left text-sm leading-5"
+                >
+                  Thinking...
                 </Shimmer>
               </div>
             )}
@@ -1148,6 +1157,144 @@ function StaiChatWorkspaceContent({
       {/* Right-side tool workspace */}
       <ToolWorkspaceContainer />
     </div>
+  );
+}
+
+// ─── AssistantEntryBody — HackerAI MessageItem / WorkedFor parity ────────────
+
+type WorkItem =
+  | { kind: "reasoning"; key: string; activity: string }
+  | { kind: "tool"; key: string; part: ToolPart };
+
+/**
+ * buildWorkItems — mirrors HackerAI's `splitWorkedForParts` projection.
+ *
+ * Consecutive `agent_reasoning` events are merged into one reasoning block, the
+ * way HackerAI's ReasoningHandler collects every consecutive reasoning part from
+ * the first one onward. That yields a single live "Thinking..." row that grows
+ * token by token instead of a stack of one-line rows per event.
+ */
+function buildWorkItems(entry: ChatEntry): WorkItem[] {
+  const parts = entry.parts ?? [];
+  const items: WorkItem[] = [];
+
+  parts.forEach((part, index) => {
+    if (part.type === "reasoning") {
+      // Only the first part of a consecutive reasoning run renders.
+      if (parts[index - 1]?.type === "reasoning") return;
+      const lines: string[] = [part.activity];
+      for (let next = index + 1; next < parts.length; next++) {
+        const candidate = parts[next];
+        if (candidate?.type !== "reasoning") break;
+        lines.push(candidate.activity);
+      }
+      items.push({
+        kind: "reasoning",
+        key: `${entry.id}-reasoning-${index}`,
+        activity: lines
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .join("\n\n"),
+      });
+      return;
+    }
+    if (part.type === "tool") {
+      items.push({ kind: "tool", key: part.toolCallId, part });
+    }
+  });
+
+  return items;
+}
+
+interface AssistantEntryBodyProps {
+  entry: ChatEntry;
+  sessionId: string;
+  isLastEntry: boolean;
+  isStreaming: boolean;
+  /** Timestamp of the next entry — used as the end time for restored history. */
+  nextEntryTimestamp?: string;
+}
+
+/**
+ * Renders one assistant turn the way HackerAI's MessageItem does: every work
+ * part (reasoning + tools) folded into a single collapsible
+ * "Working for 12s" / "Worked for 12s" trigger, with the final answer text
+ * streamed underneath it.
+ */
+function AssistantEntryBody({
+  entry,
+  sessionId,
+  isLastEntry,
+  isStreaming,
+  nextEntryTimestamp,
+}: AssistantEntryBodyProps) {
+  const workItems = buildWorkItems(entry);
+  const textParts = (entry.parts ?? []).filter(
+    (part): part is TextPart => part.type === "text",
+  );
+
+  // HackerAI only makes the trigger clickable when there is expandable work.
+  const hasExpandableWork = workItems.some((item) => item.kind === "tool");
+  const startedAt = Date.parse(entry.timestamp);
+  const finishedSource = entry.finishedAt ?? nextEntryTimestamp;
+  const finishedAt = finishedSource ? Date.parse(finishedSource) : NaN;
+  const durationMs =
+    Number.isFinite(startedAt) && Number.isFinite(finishedAt)
+      ? Math.max(0, finishedAt - startedAt)
+      : undefined;
+  const isTiming = isStreaming && isLastEntry;
+  const lastReasoningItemIndex = workItems.reduceRight(
+    (found, item, index) =>
+      found === -1 && item.kind === "reasoning" ? index : found,
+    -1,
+  );
+
+  const renderWorkItems = () =>
+    workItems.map((item, index) =>
+      item.kind === "reasoning" ? (
+        <SvsCyberReasoningPart
+          key={item.key}
+          activity={item.activity}
+          isStreaming={isStreaming}
+          isLatest={isTiming && index === lastReasoningItemIndex}
+        />
+      ) : (
+        <ToolExecutionPart
+          key={item.key}
+          part={item.part}
+          sessionId={sessionId}
+        />
+      ),
+    );
+
+  return (
+    <>
+      {workItems.length > 0 && (
+        <WorkedFor
+          hasWork={hasExpandableWork}
+          defaultOpen={isTiming}
+          isTiming={isTiming}
+        >
+          <WorkedForTrigger
+            isTiming={isTiming}
+            startedAt={Number.isFinite(startedAt) ? startedAt : undefined}
+            durationMs={durationMs}
+          />
+          <WorkedForContent>{renderWorkItems()}</WorkedForContent>
+        </WorkedFor>
+      )}
+
+      {textParts.map((part, index) => (
+        <MemoizedMarkdown
+          key={`${entry.id}-text-${index}`}
+          content={part.text}
+          // HackerAI parity (MessagePartHandler): only the message currently
+          // streaming animates, which is what produces the token-by-token
+          // fade-in that looks like the model typing.
+          isAnimating={isStreaming && isLastEntry}
+        />
+      ))}
+    </>
   );
 }
 
