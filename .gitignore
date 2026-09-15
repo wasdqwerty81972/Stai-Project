@@ -12,4 +12,6 @@ build/
 *.log
 *.tsbuildinfo
 tsconfig.tsbuildinfo
+dataxyz/
+.cyber_soc_engine.git-backup/
 
