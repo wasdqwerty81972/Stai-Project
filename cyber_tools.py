@@ -16,10 +16,23 @@ import ast
 import re
 import string
 import threading
+import contextlib
 import importlib.util
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Callable, Type
+from typing import Dict, Any, Iterator, List, Optional, Callable, Type
 from enum import Enum
+
+# Cross-process file locking for the audit log. Only one of these exists on any
+# given platform; if neither imports, auditing still works but concurrent
+# processes can interleave (see _exclusive_file_lock).
+try:
+    import msvcrt
+except ImportError:  # not Windows
+    msvcrt = None
+try:
+    import fcntl
+except ImportError:  # not POSIX
+    fcntl = None
 
 # --- Optional KeyManager Integration ---
 try:
@@ -89,39 +102,160 @@ class CyberToolPlugin(ABC):
         raise NotImplementedError
 
 
+@contextlib.contextmanager
+def _exclusive_file_lock(handle) -> Iterator[None]:
+    """Hold an OS-level exclusive lock on ``handle`` for the duration of the block.
+
+    Investigations run concurrently and the GUI runs in a separate process, so
+    two writers reach the audit file at once. On Windows that raced into
+    "[Errno 13] Permission denied" and the event was simply lost. The lock
+    covers a single byte at offset 0 rather than the whole file because the
+    handle is opened for append: writes always land at EOF regardless of where
+    the lock sits, and a zero-length file can still be locked at offset 0.
+
+    If neither locking module is available the block still runs -- an
+    unsynchronised append is a far better outcome than no audit record at all.
+    """
+    if msvcrt is not None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    elif fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    else:
+        yield
+
+
 class AuditLogger:
-    """Logs all agent actions and tool calls for accountability and forensic auditing."""
-    def __init__(self, log_path: str = "audit_log.json"):
+    """Append-only forensic log of every agent action and tool call.
+
+    One JSON object per line. The previous implementation parsed the entire
+    log, appended to the list, and rewrote the file on every single event,
+    which made each write O(n) and the session O(n^2). Worse, it held no lock,
+    so two concurrent investigations interleaved read-modify-write and dropped
+    each other's records; and it treated a ``JSONDecodeError`` as "start from
+    an empty list", so one corrupt byte silently discarded the entire history
+    that this class exists to preserve.
+
+    Failures here are counted and surfaced through :meth:`health` rather than
+    printed and forgotten. ``log_event`` never raises: an audit problem must
+    not abort the investigation it is recording, but it must not pass for a
+    successful write either.
+    """
+
+    def __init__(
+        self,
+        log_path: str = "audit_log.jsonl",
+        on_error: Optional[Callable[[str], None]] = None,
+    ):
         self.log_path = os.path.abspath(log_path)
         self._suppress = False
-        if not os.path.exists(self.log_path):
-            with open(self.log_path, "w", encoding="utf-8") as f:
-                json.dump([], f)
+        self._lock = threading.Lock()
+        self._on_error = on_error
+        self.dropped_events = 0
+        self.last_error: Optional[str] = None
+        parent = os.path.dirname(self.log_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        # The file is deliberately not pre-created: append mode creates it on
+        # the first event, so constructing a logger cannot fail on a read-only
+        # working directory.
 
     def suppress(self, flag: bool = True):
         self._suppress = flag
 
-    def log_event(self, action: str, details: Dict[str, Any], status: str = "SUCCESS"):
+    def log_event(self, action: str, details: Dict[str, Any], status: str = "SUCCESS") -> bool:
+        """Append one event. Returns True only if it reached disk."""
         if self._suppress:
-            return
+            return False
         entry = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "action": action,
             "details": details,
-            "status": status
+            "status": status,
         }
         try:
-            with open(self.log_path, "r+", encoding="utf-8") as f:
+            # default=str keeps an exotic value in ``details`` from costing us
+            # the whole record; ensure_ascii=False keeps the line human-readable.
+            line = json.dumps(entry, default=str, ensure_ascii=False)
+            with self._lock:
+                with open(self.log_path, "a", encoding="utf-8") as f:
+                    with _exclusive_file_lock(f):
+                        f.write(line + "\n")
+            return True
+        except Exception as exc:
+            self.dropped_events += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            print(f"[!] Audit log write DROPPED an event ({self.last_error})")
+            if self._on_error is not None:
                 try:
-                    logs = json.load(f)
+                    self._on_error(self.last_error)
+                except Exception:
+                    # The error sink itself failing must not recurse into the
+                    # handler that is reporting the failure.
+                    pass
+            return False
+
+    def read_events(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return logged events oldest-first, skipping any damaged line.
+
+        A truncated or corrupt line costs exactly that one event. This is the
+        record an incident report is built from, so discarding the whole
+        history over one bad byte is the worst available outcome.
+
+        Also reads a legacy ``audit_log.json`` written as a single JSON array,
+        so forensic history from before the format change is not orphaned.
+        """
+        events: List[Dict[str, Any]] = []
+        try:
+            with open(self.log_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            return []
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return []
+
+        if text.lstrip().startswith("["):
+            try:
+                legacy = json.loads(text)
+                if isinstance(legacy, list):
+                    events = [e for e in legacy if isinstance(e, dict)]
+            except json.JSONDecodeError:
+                events = []
+        else:
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
                 except json.JSONDecodeError:
-                    logs = []
-                logs.append(entry)
-                f.seek(0)
-                json.dump(logs, f, indent=2)
-                f.truncate()
-        except Exception as e:
-            print(f"[!] Audit log write error: {e}")
+                    continue
+                if isinstance(entry, dict):
+                    events.append(entry)
+
+        return events[-limit:] if limit else events
+
+    def health(self) -> Dict[str, Any]:
+        """Report whether the audit trail is complete. Consulted by anything
+        that presents the log as evidence, so a degraded log is never read as
+        a quiet one."""
+        return {
+            "log_path": self.log_path,
+            "suppressed": self._suppress,
+            "dropped_events": self.dropped_events,
+            "last_error": self.last_error,
+            "complete": self.dropped_events == 0,
+        }
 
 class GuardrailManager:
     """Manages safety checks and human-in-the-loop approvals for sensitive operations."""
@@ -247,7 +381,10 @@ class ToolDefinition:
         requires_admin: bool = False,
         risk_level: RiskLevel = RiskLevel.READ_ONLY,
         fallback_tool: Optional[str] = None,
-        python_func: Optional[Callable] = None
+        python_func: Optional[Callable] = None,
+        description: str = "",
+        risk_classifier: Optional[Callable[..., RiskLevel]] = None,
+        stream_output: bool = False,
     ):
         self.name = name
         self.environments = environments
@@ -256,11 +393,31 @@ class ToolDefinition:
         self.risk_level = risk_level
         self.fallback_tool = fallback_tool
         self.python_func = python_func
+        # Human-readable one-liner surfaced in the tool manifest and the system
+        # prompt. Previously an ad-hoc attribute set after construction and read
+        # via getattr; promoting it to a real field lets registrations declare
+        # it inline. Empty by default — to_manifest() falls back to a
+        # prettified name so the manifest is never blank.
+        self.description = description
+        # Optional callable that decides risk from the *resolved* invocation
+        # (concrete command string / resolved args) instead of the static
+        # risk_level above. When set, the executor must consult it and honour
+        # its verdict; a raised exception or a None return must fail closed to
+        # DESTRUCTIVE. Wired into execute_tool in Step 4. A static risk_level
+        # and a classifier are mutually exclusive authorities: whichever is
+        # present is the sole source of truth for that tool.
+        self.risk_classifier = risk_classifier
+        # When True the executor streams child-process output incrementally
+        # rather than buffering to completion — needed for long-running scans
+        # that would otherwise look hung. Generalises the hardcoded
+        # Defender-only streaming branch in cyber_agent.execute_tool, removed
+        # in Step 4.
+        self.stream_output = stream_output
 
     def to_manifest(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": getattr(self, "description", self.name.replace("_", " ")),
+            "description": self.description or self.name.replace("_", " "),
             "environments": list(self.environments),
             "requires_admin": self.requires_admin,
             "risk_level": self.risk_level.value,
@@ -471,190 +628,6 @@ def _list_available_drives() -> Dict[str, Any]:
         if os.path.exists(f"{letter}:\\")
     ]
     return {"drives": drives, "count": len(drives)}
-
-
-def register_all_default_tools(registry: ToolRegistry):
-    """Registers the complete tool catalog into the specified ToolRegistry."""
-    global _SKIP_SUMMARY_REPORTED
-    registry.audit_logger.suppress(True)
-    registry.register_tool(ToolDefinition(
-        "workspace_list_files", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY,
-        python_func=lambda root=".", pattern="*", max_results=200: _list_workspace_files(root, pattern, max_results),
-    ))
-    registry.register_tool(ToolDefinition(
-        "workspace_read_file", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY,
-        python_func=lambda filepath="", max_bytes=200000: _read_workspace_file(filepath, max_bytes),
-    ))
-    registry.register_tool(ToolDefinition(
-        "list_available_drives", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY,
-        python_func=_list_available_drives,
-    ))
-    # Python & Diagnostics
-    registry.register_tool(ToolDefinition(
-    name="static_analysis",
-    environments=["cross_platform"],
-    command_template="",
-    risk_level=RiskLevel.READ_ONLY,
-    python_func=StaticCodeAnalyzer.analyze_python_code
-        ))
-    registry.register_tool(ToolDefinition(
-        name="network_inspect",
-        environments=["cross_platform"],
-        command_template="",
-        risk_level=RiskLevel.READ_ONLY,
-        python_func=SystemMonitor.inspect_active_connections
-    ))
-
-    # Fallback Pairs
-    has_native_nmap = shutil.which("nmap") is not None
-    if has_native_nmap:
-        registry.register_tool(ToolDefinition("nmap_scan", ["native_windows"], "nmap {target}", risk_level=RiskLevel.READ_ONLY))
-    else:
-        registry.register_tool(ToolDefinition("nmap_scan", ["wsl_linux"], "nmap {target}", risk_level=RiskLevel.READ_ONLY))
-
-    registry.register_tool(ToolDefinition("clamav_scan", ["wsl_linux"], "clamscan -r {target}", risk_level=RiskLevel.READ_ONLY, fallback_tool="windows_defender_scan"))
-    defender_path = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windows Defender", "MpCmdRun.exe")
-    registry.register_tool(ToolDefinition("windows_defender_scan", ["native_windows"], f'& "{defender_path}" -Scan -ScanType 3 -File "{{target}}"', risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("rkhunter_scan", ["wsl_linux"], "rkhunter --check --sk", risk_level=RiskLevel.READ_ONLY, fallback_tool="autoruns_scan"))
-    registry.register_tool(ToolDefinition("autoruns_scan", ["native_windows"], "autorunsc64.exe -a * -ct", risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("aide_check", ["wsl_linux"], "aide --check", risk_level=RiskLevel.READ_ONLY, fallback_tool="powershell_file_hash"))
-    registry.register_tool(ToolDefinition("powershell_file_hash", ["native_windows"], "powershell -NoProfile -Command \"Get-ChildItem -Path '{target}' -Recurse | Get-FileHash\"", risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("auditd_monitor", ["wsl_linux"], "ausearch -m execve", risk_level=RiskLevel.READ_ONLY, fallback_tool="windows_process_monitor"))
-    registry.register_tool(ToolDefinition("windows_process_monitor", ["native_windows"], "powershell -NoProfile -Command \"Get-Process | Select-Object Id, ProcessName, Path\"", risk_level=RiskLevel.READ_ONLY))
-
-    # Reconnaissance & Network Analysis
-    registry.register_tool(ToolDefinition("tshark_capture", ["wsl_linux", "native_windows"], "tshark -i {interface} -c {count}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netcat_test", ["wsl_linux", "native_windows"], "nc -zv {host} {port}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("masscan_scan", ["wsl_linux"], "masscan {target} -p{ports}", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("arp_scan", ["wsl_linux"], "arp-scan --localnet", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netdiscover", ["wsl_linux"], "netdiscover -r {range}", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("traceroute", ["wsl_linux", "native_windows"], "tracert {target}" if sys.platform == "win32" else "traceroute {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("ping", ["cross_platform"], "ping -c 4 {target}" if sys.platform != "win32" else "ping -n 4 {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("nslookup", ["cross_platform"], "nslookup {domain}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("dig", ["wsl_linux"], "dig {domain}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("nikto", ["wsl_linux"], "nikto -h {target}", risk_level=RiskLevel.READ_ONLY))
-
-    # Vulnerability & Malware Scanning
-    registry.register_tool(ToolDefinition("yara_scan", ["wsl_linux", "native_windows"], "yara {rules} {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("osv_scanner", ["cross_platform"], "osv-scanner -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("grype_scan", ["cross_platform"], "grype {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("trivy_scan", ["cross_platform"], "trivy fs {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("openvas_scan", ["wsl_linux"], "gvm-cli socket --xml '<get_tasks/>'", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("virustotal_scan", ["cross_platform"], "vt file {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("chkrootkit_scan", ["wsl_linux"], "chkrootkit", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-
-    # Static & Dynamic Code Analysis
-    registry.register_tool(ToolDefinition("bandit_scan", ["cross_platform"], "bandit -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("semgrep_scan", ["cross_platform"], "semgrep --config p/security-audit {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("codeql_analyze", ["cross_platform"], "codeql database analyze {db} --format=sarif-latest --output={output}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("eslint_security", ["cross_platform"], "npx eslint {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("pylint_check", ["cross_platform"], "pylint {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("flake8_check", ["cross_platform"], "flake8 {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("cppcheck_scan", ["cross_platform"], "cppcheck --enable=all {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("gosec_scan", ["cross_platform"], "gosec ./...", risk_level=RiskLevel.READ_ONLY))
-
-    # File & System Integrity
-    registry.register_tool(ToolDefinition("tripwire_check", ["wsl_linux"], "tripwire --check", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sha256sum", ["cross_platform"], "sha256sum {target}" if sys.platform != "win32" else "powershell -Command \"Get-FileHash '{target}'\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("hashdeep", ["wsl_linux"], "hashdeep -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sysmon_query", ["native_windows"], "powershell -Command \"Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 50\"", risk_level=RiskLevel.READ_ONLY))
-
-    # Forensics & Incident Response
-    registry.register_tool(ToolDefinition("volatility_memory", ["cross_platform"], "vol -f {image} {plugin}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sleuthkit_fls", ["cross_platform"], "fls {image}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("plaso_log2timeline", ["wsl_linux"], "log2timeline.py {output} {image}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("strings_inspect", ["cross_platform"], "strings {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("exiftool_inspect", ["cross_platform"], "exiftool {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("binwalk_inspect", ["wsl_linux"], "binwalk {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("capa_detect", ["cross_platform"], "capa {target}", risk_level=RiskLevel.READ_ONLY))
-
-    # Pentesting / Authorized Testing Tools
-    registry.register_tool(ToolDefinition("metasploit_console", ["wsl_linux"], "msfconsole -q -x '{command}'", risk_level=RiskLevel.DESTRUCTIVE))
-    registry.register_tool(ToolDefinition("zap_cli_scan", ["cross_platform"], "zap-cli quick-scan --self-contained {target}", risk_level=RiskLevel.MODIFIES_SYSTEM))
-    registry.register_tool(ToolDefinition("sqlmap_scan", ["cross_platform"], "sqlmap -u '{url}' --batch", risk_level=RiskLevel.MODIFIES_SYSTEM))
-    registry.register_tool(ToolDefinition("hydra_test", ["wsl_linux"], "hydra -l {user} -P {passlist} {target} {service}", risk_level=RiskLevel.MODIFIES_SYSTEM))
-
-    # Windows Native Cmdlets & Utilities
-    registry.register_tool(ToolDefinition("get_winevent", ["native_windows"], "powershell -Command \"Get-WinEvent -LogName '{log_name}' -MaxEvents 20\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("get_service", ["native_windows"], "powershell -Command \"Get-Service\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("psscriptanalyzer", ["native_windows"], "powershell -Command \"Invoke-ScriptAnalyzer -Path '{target}'\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("wmic_query", ["native_windows"], "wmic {alias} get {properties}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netsh_query", ["native_windows"], "netsh interface show interface", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sc_query", ["native_windows"], "sc query {service}", risk_level=RiskLevel.READ_ONLY))
-
-    # Additional Defensive Tools from Untitled-1.py
-    registry.register_tool(ToolDefinition("secret_scan", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=SecretScanner.scan_text_for_secrets))
-    registry.register_tool(ToolDefinition("dependency_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=DependencyAnalyzer.check_python_requirements))
-    registry.register_tool(ToolDefinition("terminate_process", ["cross_platform"], "", risk_level=RiskLevel.DESTRUCTIVE, python_func=ProcessManager.terminate_process_by_pid))
-    registry.register_tool(ToolDefinition("block_ip", ["cross_platform"], "", risk_level=RiskLevel.MODIFIES_SYSTEM, python_func=FirewallManager.block_ip_address))
-
-    # KeyManager AI Integrated Tools (selective use)
-    registry.register_tool(ToolDefinition("ai_secure_fix", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AiSecurityAssistant.generate_ai_fix))
-    registry.register_tool(ToolDefinition("ai_incident_summary", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AiSecurityAssistant.generate_incident_summary))
-    registry.register_tool(ToolDefinition("ai_yara_generator", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AiSecurityAssistant.generate_yara_rule))
-    registry.register_tool(ToolDefinition("ai_triage_correlate", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AITriageEngine.correlate_findings))
-    registry.register_tool(ToolDefinition("ai_explain_risk", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AICodeRiskExplainer.explain_code_risk))
-    registry.register_tool(ToolDefinition("ai_anomaly_baseline", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=AIAnomalyBaseline.check_baseline_anomaly))
-
-    # Threat Intelligence / Reputation
-    registry.register_tool(ToolDefinition("virustotal_hash_lookup", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ThreatIntel.vt_hash_lookup))
-    registry.register_tool(ToolDefinition("urlscan_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ThreatIntel.urlscan_lookup))
-    registry.register_tool(ToolDefinition("abuseipdb_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ThreatIntel.check_ip_reputation))
-    registry.register_tool(ToolDefinition("shodan_lookup", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ThreatIntel.shodan_host_lookup))
-
-    # Behavioral Detection
-    registry.register_tool(ToolDefinition("sigma_rule_match", ["native_windows"], "", risk_level=RiskLevel.READ_ONLY, python_func=BehaviorDetector.match_sigma_rules))
-    registry.register_tool(ToolDefinition("process_tree_analysis", ["native_windows"], "powershell -Command \"Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,Name,CommandLine\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("suspicious_parent_child", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=BehaviorDetector.flag_suspicious_process_chains))
-
-    # PE / Binary Analysis
-    registry.register_tool(ToolDefinition("pe_header_analysis", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=BinaryAnalyzer.analyze_pe_headers))
-    registry.register_tool(ToolDefinition("entropy_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=BinaryAnalyzer.calculate_entropy))
-    registry.register_tool(ToolDefinition("import_table_scan", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=BinaryAnalyzer.flag_suspicious_imports))
-
-    # Network Deep Inspection
-    registry.register_tool(ToolDefinition("dns_exfil_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=NetworkAnalyzer.detect_dns_tunneling))
-    registry.register_tool(ToolDefinition("beaconing_detect", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=NetworkAnalyzer.detect_periodic_callbacks))
-    registry.register_tool(ToolDefinition("tls_cert_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=NetworkAnalyzer.inspect_tls_certificate))
-
-    # Phishing & Social Engineering Detection
-    registry.register_tool(ToolDefinition("email_header_analysis", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=PhishDetector.analyze_email_headers))
-    registry.register_tool(ToolDefinition("url_similarity_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=PhishDetector.detect_typosquat))
-    registry.register_tool(ToolDefinition("attachment_macro_scan", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=PhishDetector.scan_office_macros))
-
-    # Compliance & Config Auditing
-    registry.register_tool(ToolDefinition("cis_benchmark_check", ["native_windows"], "", risk_level=RiskLevel.READ_ONLY, python_func=ComplianceAuditor.run_cis_checks))
-    registry.register_tool(ToolDefinition("firewall_rule_audit", ["native_windows"], "powershell -Command \"Get-NetFirewallRule | Where Enabled -eq True\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("open_port_audit", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ComplianceAuditor.audit_listening_ports))
-    registry.register_tool(ToolDefinition("password_policy_check", ["native_windows"], "powershell -Command \"net accounts\"", risk_level=RiskLevel.READ_ONLY))
-
-    # Remediation (Gated under MODIFIES_SYSTEM / DESTRUCTIVE)
-    registry.register_tool(ToolDefinition("quarantine_file", ["cross_platform"], "", risk_level=RiskLevel.MODIFIES_SYSTEM, python_func=RemediationManager.quarantine_file))
-    registry.register_tool(ToolDefinition("disable_startup_entry", ["native_windows"], "", risk_level=RiskLevel.DESTRUCTIVE, python_func=RemediationManager.disable_autorun_entry))
-    registry.register_tool(ToolDefinition("revert_registry_key", ["native_windows"], "", risk_level=RiskLevel.DESTRUCTIVE, python_func=RemediationManager.rollback_registry_key))
-    registry.register_tool(ToolDefinition("kill_and_block", ["cross_platform"], "", risk_level=RiskLevel.DESTRUCTIVE, python_func=RemediationManager.terminate_and_isolate))
-
-    # Report Generation
-    registry.register_tool(ToolDefinition("generate_incident_report", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ReportGenerator.build_incident_summary))
-
-    # Generic Shell Execution (PowerShell / WSL / CMD)
-    try:
-        from Tools_cyber.shell_exec import ShellExecTool
-        _shell_exec = ShellExecTool()
-        registry.register_tool(ToolDefinition(
-            name=_shell_exec.name,
-            environments=list(_shell_exec.environments),
-            command_template="",
-            requires_admin=_shell_exec.requires_admin,
-            risk_level=_shell_exec.risk_level,
-            fallback_tool=_shell_exec.fallback_tool,
-            python_func=lambda **kwargs: _shell_exec.run(kwargs),
-        ))
-    except Exception as exc:
-        _skip_optional_tool_group('shell_exec (Tools_cyber.shell_exec)', exc)
 
 
 # --- Additional Defensive Security Tools (from Untitled-1.py) ---
@@ -1272,6 +1245,72 @@ class ReportGenerator:
 
 # --- Built-in Helper Tools & Analysis ---
 
+# Each shell announces a missing binary in its own wording, on its own channel,
+# with its own exit code -- and to a caller that only checks "did I get output"
+# all three look identical to a completed run that found nothing. A missing
+# ``nmap`` came back as ``{"stdout": "", "stderr": "...", "returncode": 9009}``,
+# which the caller rendered as an ordinary failed command with an empty result,
+# and an agent reading that concludes "the scan found no open ports" rather than
+# "the scan never ran". That was a bug in all 59 per-CLI wrappers and it would
+# have survived their collapse into shell_exec untouched. Naming the absence is
+# what lets the <evidence_and_inference> rule ("if a tool fails, report the
+# limitation clearly") actually bind on something the model can see.
+_TOOL_ABSENT_PATTERNS = (
+    # bash / WSL, exit 127:  "bash: line 1: nmap: command not found"
+    re.compile(r"(?:^|[\s:])([^\s:]+): command not found", re.MULTILINE),
+    # cmd.exe, exit 9009:    "'nmap' is not recognized as an internal or external command,"
+    re.compile(r"'([^']+)'\s+is\s+not\s+recognized\s+as\s+an\s+internal", re.MULTILINE),
+    # PowerShell, exit 1:    "The term 'nmap' is not recognized as the name of a cmdlet, ..."
+    # PowerShell hard-wraps this prose at the console width, and because the
+    # wrap point shifts with the length of the binary name it can land anywhere
+    # in the sentence -- so every gap has to tolerate a newline. Matching only
+    # up to "recognized" keeps the span short enough to survive a typical wrap.
+    re.compile(r"The\s+term\s+'([^']+)'\s+is\s+not\s+recognized", re.MULTILINE),
+    # PowerShell, structural fallback. The prose above is translated on a
+    # non-English host and can be wrapped anywhere; the exception type in the
+    # CategoryInfo line is neither, so this still fires when the prose does not.
+    re.compile(
+        r"ObjectNotFound:\s*\(([^:()]+):String\)[^\n]*CommandNotFoundException",
+        re.MULTILINE,
+    ),
+)
+
+
+def _detect_absent_binary(stdout: str, stderr: str, returncode: Optional[int]) -> Optional[str]:
+    """Return the binary a shell reported missing, or ``None``.
+
+    Only consulted on a non-zero exit. A command that *succeeded* while printing
+    one of these phrases -- ``grep 'command not found' auth.log`` -- reported a
+    finding, not its own absence, and must not be mistaken for a missing tool.
+    """
+    if not returncode:  # 0 or None: the command ran
+        return None
+    haystack = f"{stdout}\n{stderr}"
+    for pattern in _TOOL_ABSENT_PATTERNS:
+        match = pattern.search(haystack)
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
+
+def _annotate_absence(result: Dict[str, Any], environment: str) -> Dict[str, Any]:
+    """Tag a result whose shell reported a missing binary, in place."""
+    binary = _detect_absent_binary(
+        result.get("stdout", ""), result.get("stderr", ""), result.get("returncode")
+    )
+    if binary is not None:
+        result["status"] = "tool_absent"
+        result["binary"] = binary
+        result["env"] = environment
+        result["hint"] = (
+            f"'{binary}' is not installed or not on PATH in the {environment} "
+            "environment, so the check never ran. This is not a negative finding "
+            "-- do not report it as 'nothing found'. Install the tool, substitute "
+            "an equivalent that is present, or state the limitation."
+        )
+    return result
+
+
 def execute_system_command(command: str, environment: str = "cmd", timeout: Optional[int] = 15, output_callback: Optional[Callable[[str], None]] = None, cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """Executes commands safely in CMD, PowerShell, or WSL environments."""
     # Defense-in-depth: enforce read-only protection for protected drives (F:\, H:\)
@@ -1309,18 +1348,18 @@ def execute_system_command(command: str, environment: str = "cmd", timeout: Opti
                 if output_callback is not None:
                     output_callback(line.rstrip())
             proc.wait(timeout=timeout)
-            return {
+            return _annotate_absence({
                 "stdout": "".join(output_lines),
                 "stderr": "",
                 "returncode": proc.returncode,
-            }
+            }, env_lower)
 
         proc = subprocess.run(cmd_args, capture_output=True, text=True, timeout=timeout)
-        return {
+        return _annotate_absence({
             "stdout": proc.stdout,
             "stderr": proc.stderr,
             "returncode": proc.returncode
-        }
+        }, env_lower)
     except subprocess.TimeoutExpired:
         return {"error": "Execution timed out"}
     except Exception as e:
@@ -2303,85 +2342,11 @@ def register_all_default_tools(registry: ToolRegistry):
         python_func=SystemMonitor.inspect_active_connections
     ))
 
-    # Fallback Pairs
-    has_native_nmap = shutil.which("nmap") is not None
-    if has_native_nmap:
-        registry.register_tool(ToolDefinition("nmap_scan", ["native_windows"], "nmap {target}", risk_level=RiskLevel.READ_ONLY))
-    else:
-        registry.register_tool(ToolDefinition("nmap_scan", ["wsl_linux"], "nmap {target}", risk_level=RiskLevel.READ_ONLY))
-
-    registry.register_tool(ToolDefinition("clamav_scan", ["wsl_linux"], "clamscan -r {target}", risk_level=RiskLevel.READ_ONLY, fallback_tool="windows_defender_scan"))
-    defender_path = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windows Defender", "MpCmdRun.exe")
-    registry.register_tool(ToolDefinition("windows_defender_scan", ["native_windows"], f'& "{defender_path}" -Scan -ScanType 3 -File "{{target}}"', risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("rkhunter_scan", ["wsl_linux"], "rkhunter --check --sk", risk_level=RiskLevel.READ_ONLY, fallback_tool="autoruns_scan"))
-    registry.register_tool(ToolDefinition("autoruns_scan", ["native_windows"], "autorunsc64.exe -a * -ct", risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("aide_check", ["wsl_linux"], "aide --check", risk_level=RiskLevel.READ_ONLY, fallback_tool="powershell_file_hash"))
-    registry.register_tool(ToolDefinition("powershell_file_hash", ["native_windows"], "powershell -NoProfile -Command \"Get-ChildItem -Path '{target}' -Recurse | Get-FileHash\"", risk_level=RiskLevel.READ_ONLY))
-    
-    registry.register_tool(ToolDefinition("auditd_monitor", ["wsl_linux"], "ausearch -m execve", risk_level=RiskLevel.READ_ONLY, fallback_tool="windows_process_monitor"))
-    registry.register_tool(ToolDefinition("windows_process_monitor", ["native_windows"], "powershell -NoProfile -Command \"Get-Process | Select-Object Id, ProcessName, Path\"", risk_level=RiskLevel.READ_ONLY))
-
-    # Reconnaissance & Network Analysis
-    registry.register_tool(ToolDefinition("tshark_capture", ["wsl_linux", "native_windows"], "tshark -i {interface} -c {count}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netcat_test", ["wsl_linux", "native_windows"], "nc -zv {host} {port}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("masscan_scan", ["wsl_linux"], "masscan {target} -p{ports}", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("arp_scan", ["wsl_linux"], "arp-scan --localnet", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netdiscover", ["wsl_linux"], "netdiscover -r {range}", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("traceroute", ["wsl_linux", "native_windows"], "tracert {target}" if sys.platform == "win32" else "traceroute {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("ping", ["cross_platform"], "ping -c 4 {target}" if sys.platform != "win32" else "ping -n 4 {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("nslookup", ["cross_platform"], "nslookup {domain}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("dig", ["wsl_linux"], "dig {domain}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("nikto", ["wsl_linux"], "nikto -h {target}", risk_level=RiskLevel.READ_ONLY))
-
-    # Vulnerability & Malware Scanning
-    registry.register_tool(ToolDefinition("yara_scan", ["wsl_linux", "native_windows"], "yara {rules} {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("osv_scanner", ["cross_platform"], "osv-scanner -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("grype_scan", ["cross_platform"], "grype {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("trivy_scan", ["cross_platform"], "trivy fs {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("openvas_scan", ["wsl_linux"], "gvm-cli socket --xml '<get_tasks/>'", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("virustotal_scan", ["cross_platform"], "vt file {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("chkrootkit_scan", ["wsl_linux"], "chkrootkit", requires_admin=True, risk_level=RiskLevel.READ_ONLY))
-
-    # Static & Dynamic Code Analysis
-    registry.register_tool(ToolDefinition("bandit_scan", ["cross_platform"], "bandit -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("semgrep_scan", ["cross_platform"], "semgrep --config p/security-audit {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("codeql_analyze", ["cross_platform"], "codeql database analyze {db} --format=sarif-latest --output={output}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("eslint_security", ["cross_platform"], "npx eslint {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("pylint_check", ["cross_platform"], "pylint {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("flake8_check", ["cross_platform"], "flake8 {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("cppcheck_scan", ["cross_platform"], "cppcheck --enable=all {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("gosec_scan", ["cross_platform"], "gosec ./...", risk_level=RiskLevel.READ_ONLY))
-
-    # File & System Integrity
-    registry.register_tool(ToolDefinition("tripwire_check", ["wsl_linux"], "tripwire --check", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sha256sum", ["cross_platform"], "sha256sum {target}" if sys.platform != "win32" else "powershell -Command \"Get-FileHash '{target}'\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("hashdeep", ["wsl_linux"], "hashdeep -r {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sysmon_query", ["native_windows"], "powershell -Command \"Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 50\"", risk_level=RiskLevel.READ_ONLY))
-
-    # Forensics & Incident Response
-    registry.register_tool(ToolDefinition("volatility_memory", ["cross_platform"], "vol -f {image} {plugin}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sleuthkit_fls", ["cross_platform"], "fls {image}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("plaso_log2timeline", ["wsl_linux"], "log2timeline.py {output} {image}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("strings_inspect", ["cross_platform"], "strings {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("exiftool_inspect", ["cross_platform"], "exiftool {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("binwalk_inspect", ["wsl_linux"], "binwalk {target}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("capa_detect", ["cross_platform"], "capa {target}", risk_level=RiskLevel.READ_ONLY))
-
-    # Pentesting / Authorized Testing Tools
-    registry.register_tool(ToolDefinition("metasploit_console", ["wsl_linux"], "msfconsole -q -x '{command}'", risk_level=RiskLevel.DESTRUCTIVE))
-    registry.register_tool(ToolDefinition("zap_cli_scan", ["cross_platform"], "zap-cli quick-scan --self-contained {target}", risk_level=RiskLevel.MODIFIES_SYSTEM))
-    registry.register_tool(ToolDefinition("sqlmap_scan", ["cross_platform"], "sqlmap -u '{url}' --batch", risk_level=RiskLevel.MODIFIES_SYSTEM))
-    registry.register_tool(ToolDefinition("hydra_test", ["wsl_linux"], "hydra -l {user} -P {passlist} {target} {service}", risk_level=RiskLevel.MODIFIES_SYSTEM))
-
-    # Windows Native Cmdlets & Utilities
-    registry.register_tool(ToolDefinition("get_winevent", ["native_windows"], "powershell -Command \"Get-WinEvent -LogName '{log_name}' -MaxEvents 20\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("get_service", ["native_windows"], "powershell -Command \"Get-Service\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("psscriptanalyzer", ["native_windows"], "powershell -Command \"Invoke-ScriptAnalyzer -Path '{target}'\"", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("wmic_query", ["native_windows"], "wmic {alias} get {properties}", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("netsh_query", ["native_windows"], "netsh interface show interface", risk_level=RiskLevel.READ_ONLY))
-    registry.register_tool(ToolDefinition("sc_query", ["native_windows"], "sc query {service}", risk_level=RiskLevel.READ_ONLY))
+    # NOTE: 55 CLI-wrapper tools (nmap_scan, clamav_scan, windows_defender_scan,
+    # tshark_capture, yara_scan, metasploit_console, get_winevent, ... sc_query)
+    # were removed here. They are now vetted presets in
+    # cyber_os.command_presets.COMMAND_PRESETS, invoked via the unified shell_exec
+    # tool (preset=<id> + params). See Tools_cyber/shell_exec.py.
 
     # Additional Defensive Tools from ideas
     registry.register_tool(ToolDefinition("secret_scan", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=SecretScanner.scan_text_for_secrets))
@@ -2437,7 +2402,6 @@ def register_all_default_tools(registry: ToolRegistry):
 
     # Behavioral Detection
     registry.register_tool(ToolDefinition("sigma_rule_match", ["native_windows"], "", risk_level=RiskLevel.READ_ONLY, python_func=BehaviorDetector.match_sigma_rules))
-    registry.register_tool(ToolDefinition("process_tree_analysis", ["native_windows"], "powershell -Command \"Get-CimInstance Win32_Process | Select ProcessId,ParentProcessId,Name,CommandLine\"", risk_level=RiskLevel.READ_ONLY))
     registry.register_tool(ToolDefinition("suspicious_parent_child", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=BehaviorDetector.flag_suspicious_process_chains))
 
     # PE / Binary Analysis
@@ -2457,9 +2421,7 @@ def register_all_default_tools(registry: ToolRegistry):
 
     # Compliance & Config Auditing
     registry.register_tool(ToolDefinition("cis_benchmark_check", ["native_windows"], "", risk_level=RiskLevel.READ_ONLY, python_func=ComplianceAuditor.run_cis_checks))
-    registry.register_tool(ToolDefinition("firewall_rule_audit", ["native_windows"], "powershell -Command \"Get-NetFirewallRule | Where Enabled -eq True\"", risk_level=RiskLevel.READ_ONLY))
     registry.register_tool(ToolDefinition("open_port_audit", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ComplianceAuditor.audit_listening_ports))
-    registry.register_tool(ToolDefinition("password_policy_check", ["native_windows"], "powershell -Command \"net accounts\"", risk_level=RiskLevel.READ_ONLY))
 
     # Remediation (Gated under MODIFIES_SYSTEM / DESTRUCTIVE)
     registry.register_tool(ToolDefinition("quarantine_file", ["cross_platform"], "", risk_level=RiskLevel.MODIFIES_SYSTEM, python_func=RemediationManager.quarantine_file))
@@ -2471,7 +2433,6 @@ def register_all_default_tools(registry: ToolRegistry):
     registry.register_tool(ToolDefinition("generate_incident_report", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ReportGenerator.build_incident_summary))
 
     # IAM & Cloud Security (from ideas)
-    registry.register_tool(ToolDefinition("active_directory_privilege_audit", ["native_windows"], "powershell -Command \"Get-ADUser -Filter * | Select-Object Name, SamAccountName, Enabled\"", risk_level=RiskLevel.READ_ONLY))
     registry.register_tool(ToolDefinition("ssh_key_auditor", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda: {"status": "simulated", "ssh_keys_scanned": 0}))
     registry.register_tool(ToolDefinition("s3_bucket_leak_checker", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda: {"status": "simulated", "buckets_checked": 0}))
     registry.register_tool(ToolDefinition("container_security_audit", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda: {"status": "simulated", "containers_scanned": 0}))
@@ -2658,7 +2619,7 @@ def register_all_default_tools(registry: ToolRegistry):
     # above via register_dynamic_cyber_tools; this direct registration
     # guarantees availability even if dynamic loading is skipped.
     try:
-        from Tools_cyber.shell_exec import ShellExecTool
+        from Tools_cyber.shell_exec import ShellExecTool, resolve_risk
         _shell_exec = ShellExecTool()
         registry.register_tool(ToolDefinition(
             name=_shell_exec.name,
@@ -2666,6 +2627,7 @@ def register_all_default_tools(registry: ToolRegistry):
             command_template="",
             requires_admin=_shell_exec.requires_admin,
             risk_level=_shell_exec.risk_level,
+            risk_classifier=resolve_risk,
             fallback_tool=_shell_exec.fallback_tool,
             python_func=lambda **kwargs: _shell_exec.run(kwargs),
         ))
@@ -2684,7 +2646,7 @@ def register_all_default_tools(registry: ToolRegistry):
     # Registration is deliberately noisy-free: suppress(True) above stops ~140
     # "tool_registered" events. It MUST be undone here -- leaving it set discarded
     # every later audit event (tool executions, denials, guardrail rejections) for
-    # the rest of the session, so audit_log.json stayed permanently empty and
+    # the rest of the session, so the audit log stayed permanently empty and
     # generate_incident_report had nothing to read.
     registry.audit_logger.suppress(False)
 

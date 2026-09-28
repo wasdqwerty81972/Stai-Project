@@ -116,6 +116,14 @@ SVS-Cyber Defensive Specialists:
 Delegate when an investigation warrants deep, focused analysis. Provide a scoped objective and relevant evidence context. The subagent will return a structured verdict to integrate into your findings.
 </subagent_delegation>"""
 
+SKILLS_GUIDANCE = """<skills>
+You have access to ~300 specialized skill bundles covering cybersecurity, engineering, and operational domains.
+- skill_search: Search skill descriptions by keyword to find relevant expertise (e.g., "incident response", "reverse engineering", "kubernetes security").
+- skill_read: Read the full instructions and resources for a specific skill once identified.
+
+Skills provide step-by-step methodologies, checklists, and reference materials. When facing an unfamiliar domain or needing a structured approach, search for a relevant skill first, then read its full guidance before proceeding.
+</skills>"""
+
 TOOL_EXECUTION_GUIDANCE = """<tool_execution>
 When a request requires a local operation, use the smallest appropriate SVS-Cyber tool instead of guessing or asking the model to simulate the result.
 Before execution, state the user-visible objective and the tool being selected. After execution, report the actual result, failure, cancellation, or unavailable target.
@@ -165,6 +173,7 @@ class SystemPromptComposer:
 
         if include_subagents:
             sections.append(SUBAGENT_GUIDANCE)
+            sections.append(SKILLS_GUIDANCE)
 
         if active_tasks:
             task_lines = [f"- [{t.get('status', 'pending').upper()}] {t.get('title', 'Task')}" for t in active_tasks]

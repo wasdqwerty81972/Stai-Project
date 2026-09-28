@@ -30,6 +30,7 @@ from cyber_os.notes_manager import NotesManager
 from cyber_os.subagents.manager import SubagentManager
 from cyber_os.subagents.profiles import list_available_profiles
 from cyber_os.agent_runtime import AgentRuntime
+from cyber_os.assets import get_command_registry, get_skill_registry, get_agent_definition_registry
 
 # Cybersecurity AI roles for the orchestrator
 CYBER_ROLES = {
@@ -172,7 +173,7 @@ BUILTIN_WORKFLOWS: Dict[str, Workflow] = {
                           tools=["static_analysis", "secret_scan", "entropy_check"],
                           instructions="Score severity, filter false positives, decide escalation."),
             WorkflowPhase(id="investigate", name="Investigate Root Cause", agent="investigator",
-                          tools=["network_inspect", "process_tree_analysis"],
+                          tools=["network_inspect", "shell_exec"],
                           instructions="Collect evidence, reconstruct timeline, correlate sources."),
             WorkflowPhase(id="contain", name="Contain the Threat", agent="responder",
                           tools=["quarantine_file", "block_ip", "disable_startup_entry"],
@@ -191,7 +192,7 @@ BUILTIN_WORKFLOWS: Dict[str, Workflow] = {
                           tools=["network_inspect", "beaconing_detect"],
                           instructions="Run hypothesis-driven anomaly detection."),
             WorkflowPhase(id="analyze", name="Analyze Findings", agent="malware_analyst",
-                          tools=["pe_header_analysis", "yara_scan"],
+                          tools=["pe_header_analysis", "shell_exec"],
                           instructions="Classify malware, extract IOCs."),
             WorkflowPhase(id="enrich", name="Enrich with Threat Intel", agent="threat_intel",
                           tools=["virustotal_hash_lookup", "virustotal_ip_lookup", "otx_ip_lookup", "enrich_artifact"],
@@ -206,13 +207,13 @@ BUILTIN_WORKFLOWS: Dict[str, Workflow] = {
         description="Post-incident forensics with evidence preservation.",
         phases=[
             WorkflowPhase(id="collect", name="Collect Evidence", agent="forensics",
-                          tools=["strings_inspect", "exiftool_inspect"],
+                          tools=["shell_exec"],
                           instructions="Preserve artifacts, establish chain of custody."),
             WorkflowPhase(id="analyze", name="Analyze Artifacts", agent="malware_analyst",
-                          tools=["pe_header_analysis", "capa_detect"],
+                          tools=["pe_header_analysis", "shell_exec"],
                           instructions="Identify malware behavior and capabilities."),
             WorkflowPhase(id="timeline", name="Reconstruct Timeline", agent="investigator",
-                          tools=["process_tree_analysis", "auditd_monitor"],
+                          tools=["shell_exec"],
                           instructions="Build attack timeline from artifacts."),
             WorkflowPhase(id="report", name="Forensic Report", agent="reporter",
                           tools=["generate_incident_report"],
@@ -252,7 +253,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="Deep-dive security investigations",
         specialization="Deep Security Investigations",
         system_prompt="You are a senior security investigator. Perform thorough root cause analysis, collect evidence, correlate sources, and recommend containment.",
-        recommended_tools=["network_inspect", "process_tree_analysis", "windows_process_monitor"],
+        recommended_tools=["network_inspect", "shell_exec"],
         task_keywords=["investigate", "deep dive", "analyze", "root cause"],
     ),
     "threat_hunter": SOCAgent(
@@ -292,7 +293,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="ATT&CK mapping and coverage analysis",
         specialization="MITRE ATT&CK Mapping",
         system_prompt="You are a MITRE ATT&CK analyst. Map techniques, analyze coverage, identify gaps, and recommend detection templates.",
-        recommended_tools=["sigma_rule_match", "static_analysis", "yara_scan"],
+        recommended_tools=["sigma_rule_match", "static_analysis", "shell_exec"],
         task_keywords=["mitre", "attack", "technique", "tactic", "coverage"],
     ),
     "forensics": SOCAgent(
@@ -300,7 +301,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="Digital forensics and evidence preservation",
         specialization="Digital Forensics",
         system_prompt="You are a digital forensic investigator. Examine artifacts, preserve evidence, reconstruct timelines, and maintain chain of custody.",
-        recommended_tools=["strings_inspect", "exiftool_inspect", "binwalk_inspect", "volatility_memory"],
+        recommended_tools=["shell_exec"],
         task_keywords=["forensic", "artifact", "evidence", "preserve"],
     ),
     "threat_intel": SOCAgent(
@@ -320,7 +321,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="Regulatory and standards compliance checks",
         specialization="Compliance & Governance",
         system_prompt="You are a compliance officer. Assess NIST, ISO, PCI-DSS, HIPAA, GDPR, SOC 2 controls.",
-        recommended_tools=["cis_benchmark_check", "firewall_rule_audit", "open_port_audit"],
+        recommended_tools=["cis_benchmark_check", "shell_exec", "open_port_audit"],
         task_keywords=["compliance", "nist", "iso", "pci", "hipaa", "gdpr", "audit"],
     ),
     "malware_analyst": SOCAgent(
@@ -328,7 +329,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="Static/dynamic malware analysis and family classification",
         specialization="Malware Analysis",
         system_prompt="You are a malware reverse engineer. Analyze binaries, classify families, extract IOCs, and identify C2 infrastructure.",
-        recommended_tools=["pe_header_analysis", "import_table_scan", "yara_scan", "capa_detect", "entropy_check"],
+        recommended_tools=["pe_header_analysis", "import_table_scan", "shell_exec", "entropy_check"],
         task_keywords=["malware", "ransomware", "trojan", "sample", "virus", "binary"],
     ),
     "network_analyst": SOCAgent(
@@ -336,7 +337,7 @@ BUILTIN_AGENTS: Dict[str, SOCAgent] = {
         description="Network traffic analysis and lateral movement detection",
         specialization="Network Security Analysis",
         system_prompt="You are a network security analyst. Analyze traffic, detect anomalies, identify lateral movement, and recommend firewall rules.",
-        recommended_tools=["network_inspect", "dns_exfil_check", "beaconing_detect", "tshark_capture"],
+        recommended_tools=["network_inspect", "dns_exfil_check", "beaconing_detect", "shell_exec"],
         task_keywords=["network", "traffic", "flow", "lateral", "firewall"],
     ),
     "auto_responder": SOCAgent(
@@ -703,6 +704,91 @@ class CyberAgent:
             output = sess.execute(command, timeout=timeout)
             return {"status": "success", "session": session_name, "output": output}
 
+        # --- Canonical asset registries (commands/, skills/, subagents/definitions/) ---
+        #
+        # Discovery is search-first. There are ~100 commands, ~300 skills, and
+        # ~68 subagent definitions; listing every body, or even every
+        # description, would dominate the context window. The agent searches,
+        # then reads the one asset it needs.
+
+        def _command_list(query: str = "", limit: int = 25, **kwargs: Any) -> Dict[str, Any]:
+            registry = get_command_registry()
+            manifests = registry.index()
+            if query:
+                terms = [t for t in query.lower().split() if t]
+                manifests = [
+                    m
+                    for m in manifests
+                    if any(
+                        t in m["name"].lower() or t in m["description"].lower()
+                        for t in terms
+                    )
+                ]
+            return {
+                "status": "success",
+                "total_available": len(registry.names()),
+                "count": len(manifests[:limit]),
+                "commands": manifests[:limit],
+            }
+
+        def _command_get(name: str = "", arguments: str = "", **kwargs: Any) -> Dict[str, Any]:
+            definition = get_command_registry().get(name)
+            if definition is None:
+                return {"status": "not_found", "name": name}
+            return {
+                "status": "success",
+                **definition.to_manifest(),
+                "prompt": definition.render(arguments),
+            }
+
+        def _skill_search(query: str = "", limit: int = 10, **kwargs: Any) -> Dict[str, Any]:
+            registry = get_skill_registry()
+            matches = registry.search(query, limit=limit)
+            return {
+                "status": "success",
+                "total_available": len(registry.names()),
+                "count": len(matches),
+                "skills": [s.to_manifest() for s in matches],
+            }
+
+        def _skill_read(name: str = "", **kwargs: Any) -> Dict[str, Any]:
+            definition = get_skill_registry().get(name)
+            if definition is None:
+                return {"status": "not_found", "name": name}
+            return {
+                "status": "success",
+                "name": definition.name,
+                "description": definition.description,
+                "instructions": definition.body(),
+                "resources": definition.resources(),
+                "directory": str(definition.directory),
+            }
+
+        def _agent_definition_search(query: str = "", limit: int = 10, **kwargs: Any) -> Dict[str, Any]:
+            registry = get_agent_definition_registry()
+            registry.load(registered_tools=list(self.registry.tools), force=True)
+            matches = registry.search(query, limit=limit)
+            return {
+                "status": "success",
+                "total_available": len(registry.names()),
+                "count": len(matches),
+                "definitions": [d.to_manifest() for d in matches],
+                "delegate_with": "subagent_delegate(profile=<name>, objective=...)",
+            }
+
+        def _agent_definition_get(name: str = "", **kwargs: Any) -> Dict[str, Any]:
+            registry = get_agent_definition_registry()
+            registry.load(registered_tools=list(self.registry.tools), force=True)
+            definition = registry.get(name)
+            if definition is None:
+                return {"status": "not_found", "name": name}
+            return {
+                "status": "success",
+                **definition.to_manifest(),
+                "system_prompt": definition.system_prompt(),
+                "capability_notes": definition.capability_notes(),
+            }
+
         self.registry.register_tool(ToolDefinition(
             name="todo_write",
             environments=["cross_platform"],
@@ -751,6 +837,48 @@ class CyberAgent:
             command_template="",
             risk_level=RiskLevel.READ_ONLY,
             python_func=_pty_run,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="command_list",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_command_list,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="command_get",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_command_get,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="skill_search",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_skill_search,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="skill_read",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_skill_read,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="agent_definition_search",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_agent_definition_search,
+        ))
+        self.registry.register_tool(ToolDefinition(
+            name="agent_definition_get",
+            environments=["cross_platform"],
+            command_template="",
+            risk_level=RiskLevel.READ_ONLY,
+            python_func=_agent_definition_get,
         ))
 
     def get_system_prompt(self, custom_instructions: str = "") -> str:
@@ -898,8 +1026,32 @@ class CyberAgent:
         # Guardrail check. Uses the async approval path (web UI card or
         # PySide6 QMessageBox) when available, falls back to auto-policy.
         guardrail_details = {**args, "threat_score": threat_score}
+
+        # Per-invocation risk. A tool may attach a risk_classifier that decides
+        # risk from the *resolved* arguments (e.g. shell_exec, whose blast radius
+        # depends on the actual command, not a static label). When present it is
+        # the sole authority; any failure fails closed to DESTRUCTIVE so an
+        # undecidable call can never slip through as auto-approved.
+        effective_risk = tool_def.risk_level
+        risk_classifier = getattr(tool_def, "risk_classifier", None)
+        if risk_classifier is not None:
+            try:
+                verdict = risk_classifier(**args)
+                effective_risk = verdict if isinstance(verdict, RiskLevel) else RiskLevel.DESTRUCTIVE
+            except Exception as exc:
+                effective_risk = RiskLevel.DESTRUCTIVE
+                self.audit_logger.log_event(
+                    "risk_classification",
+                    {"tool": tool_name, "error": f"{type(exc).__name__}: {exc}", "fallback": "DESTRUCTIVE"},
+                    status="ERROR",
+                )
+            else:
+                self.audit_logger.log_event(
+                    "risk_classification",
+                    {"tool": tool_name, "risk_level": effective_risk.value, "source": "risk_classifier"},
+                )
         try:
-            approved = self._wait_for_approval(tool_name, tool_def.risk_level, guardrail_details, tool_call_id)
+            approved = self._wait_for_approval(tool_name, effective_risk, guardrail_details, tool_call_id)
         except (AttributeError, TypeError, ValueError, KeyError) as exc:
             self.audit_logger.log_event(
                 "tool_invocation",
@@ -1091,14 +1243,43 @@ class CyberAgent:
         )
 
     def generate_incident_report(self) -> Dict[str, Any]:
-        """Correlates recent audit logs and calls AI assistant to generate an executive report."""
-        try:
-            with open("audit_log.json", "r", encoding="utf-8") as f:
-                logs = json.load(f)[-5:]
-        except Exception:
-            logs = [{"action": "system_audit", "status": "COMPLETED"}]
-        
-        return self.execute_tool("ai_incident_summary", {"events_json": json.dumps(logs)})
+        """Correlate recent audit events into an executive report.
+
+        Reads through ``self.audit_logger`` rather than reopening a relative
+        "audit_log.json", which resolved against the current working directory
+        and so quietly missed the real log whenever the agent was started from
+        anywhere but the project root.
+
+        An absent or incomplete audit trail is reported as such. The previous
+        version substituted a fabricated ``{"action": "system_audit", "status":
+        "COMPLETED"}`` event whenever the read failed and passed it to the
+        model, which then wrote an executive incident report describing an
+        audit that had never run.
+        """
+        health = self.audit_logger.health()
+        logs = self.audit_logger.read_events(limit=5)
+
+        if not logs:
+            return {
+                "success": False,
+                "error": (
+                    f"No audit events are recorded at {health['log_path']}, so there "
+                    "is no evidence to build an incident report from."
+                ),
+                "audit_health": health,
+            }
+
+        report = self.execute_tool("ai_incident_summary", {"events_json": json.dumps(logs)})
+
+        if isinstance(report, dict) and not health["complete"]:
+            # The findings are real but the trail behind them has holes. That
+            # belongs on the report itself, not in a log nobody reads.
+            report["audit_health"] = health
+            report["warning"] = (
+                f"{health['dropped_events']} audit event(s) failed to write; this "
+                "report is based on an incomplete trail."
+            )
+        return report
 
     def triage_and_correlate_scans(self, scan_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Orchestrates multi-tool findings and calls the AITriageEngine via tool execution."""
@@ -1287,6 +1468,33 @@ class CyberAgent:
         return downloads_path if os.path.isdir(downloads_path) else os.path.expanduser("~")
 
     @staticmethod
+    def _extract_file_target(user_input: str) -> str:
+        """Pull the file the user named out of their message, or return "".
+
+        Callers must handle "" by asking for a path. Falling back to a fixed
+        sample file instead would analyse something the user never mentioned
+        and present the result as if it answered their question.
+        """
+        text = user_input.strip()
+        match = re.search(
+            # Optional single-letter drive prefix keeps Windows paths whole
+            # without swallowing "https://host/payload.py", which is a URL and
+            # not something a file tool can open.
+            r"(?:[A-Za-z]:[\\/])?[\w.$~/\\-]+\."
+            r"(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|cpp|cc|c|h|md|json|ya?ml|"
+            r"txt|log|ini|cfg|toml|sh|ps1|bat|cmd|vbs|exe|dll|sys|bin|scr|msi|jar|zip|7z|rar|"
+            r"docx?|xlsx?|pdf|dat)\b",
+            text,
+            re.I,
+        )
+        if match:
+            return match.group(0)
+        quoted = re.search(r"[\"']([^\"'\n]{2,260})[\"']", text)
+        if quoted:
+            return quoted.group(1).strip()
+        return ""
+
+    @staticmethod
     def _is_admin() -> bool:
         try:
             return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -1320,6 +1528,11 @@ class CyberAgent:
         
         Uses intent routing to determine whether tools are required.
         """
+        # Expand slash commands before any other processing
+        expanded = get_command_registry().expand(user_input)
+        if expanded is not None:
+            user_input = expanded.prompt
+
         lower = user_input.lower().strip()
         if not lower:
             return "Please enter a command. Try: 'scan code 1', 'list findings', 'run incident response', 'mitre map ransomware', 'stats'"
@@ -1408,7 +1621,7 @@ class CyberAgent:
                 "running",
                 target=scan_target,
             )
-            res = self.execute_tool("windows_defender_scan", {"target": scan_target}, timeout=None)
+            res = self.execute_tool("shell_exec", {"preset": "windows_defender_scan", "params": {"target": scan_target}, "timeout": 300}, timeout=None)
             scan_output = res.get("output") or res.get("error")
             if not scan_output:
                 raise RuntimeError("windows_defender_scan returned no result")
@@ -1465,7 +1678,13 @@ class CyberAgent:
 
         # Tool executions
         if "scan" in lower and "code" in lower:
-            target = "ideas/code 1"
+            target = self._extract_file_target(user_input)
+            if not target:
+                return (
+                    "### SAST Scan\n\n"
+                    "No file was named in the request. Tell me which file to scan, "
+                    "for example: `scan code in src/auth/login.py`."
+                )
             res = self.analyze_source_file(target)
             return (
                 "### SAST Scan Complete\n\n"
@@ -1489,8 +1708,14 @@ class CyberAgent:
             )
 
         if "entropy" in lower:
-            res = self.execute_tool("entropy_check", {"filepath": "ideas/code 1"})
-            return f"Entropy check:\n{res.get('output', 'done')}"
+            target = self._extract_file_target(user_input)
+            if not target:
+                return (
+                    "Entropy check needs a file. Name one in the request, "
+                    "for example: `entropy check on samples/dropper.exe`."
+                )
+            res = self.execute_tool("entropy_check", {"filepath": target})
+            return f"Entropy check on `{target}`:\n{res.get('output') or res.get('error') or 'done'}"
 
         if any(word in lower for word in ("port", "ports", "listening", "connections")):
             res = self.execute_tool("network_inspect", {})
@@ -1778,10 +2003,10 @@ def run_demo():
 
     print("\n[+] Testing Tool Executions & Routing:")
     
-    proc_res = agent.execute_tool("windows_process_monitor")
+    proc_res = agent.execute_tool("shell_exec", {"preset": "windows_process_monitor"})
     print(f" - Tool: {proc_res['tool']} | Env: {proc_res['environment_used']} | Success: {proc_res['success']}")
 
-    av_res = agent.execute_tool("clamav_scan", {"target": "code 1"})
+    av_res = agent.execute_tool("shell_exec", {"preset": "clamav_scan", "params": {"target": "code 1"}})
     print(f" - Tool: {av_res['tool']} | Env: {av_res['environment_used']} | Success: {av_res['success']}")
 
 if __name__ == "__main__":

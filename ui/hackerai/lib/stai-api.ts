@@ -23,8 +23,10 @@ export interface StaiChatResponse {
 }
 
 export interface StaiCancelResponse {
-  status: "cancelled" | "not_found" | "error";
-  message?: string;
+  ok: boolean;
+  cancelled: boolean;
+  reason?: string;
+  error?: string;
 }
 
 export interface StaiConversationSummary {
@@ -84,9 +86,14 @@ export function clearStaiConversations() {
 export function respondToStaiApproval(
   requestId: string,
   approved: boolean,
+  sessionId = "default",
 ) {
+  const query = new URLSearchParams({
+    approved: String(approved),
+    session_id: sessionId,
+  });
   return request<{ request_id: string; approved: boolean }>(
-    `/api/approval/${encodeURIComponent(requestId)}/respond?approved=${approved}`,
+    `/api/approval/${encodeURIComponent(requestId)}/respond?${query}`,
     { method: "POST" },
   );
 }
@@ -94,7 +101,7 @@ export function respondToStaiApproval(
 /**
  * Cancel the running agent for a given session.
  * Calls /api/agent/cancel on the SVS-Cyber backend.
- * Returns a result object — never throws on "not found".
+ * Returns a result object — never throws (network errors become error response).
  */
 export async function cancelStaiRun(
   sessionId: string,
@@ -106,28 +113,80 @@ export async function cancelStaiRun(
     });
   } catch (err) {
     return {
-      status: "error",
-      message: err instanceof Error ? err.message : "Cancel request failed",
+      ok: false,
+      cancelled: false,
+      error: err instanceof Error ? err.message : "Cancel request failed",
     };
   }
 }
 
+export interface StaiEventStreamHandle {
+  close(): void;
+}
+
 export function openStaiEvents(
   onEvent: (event: StaiAgentEvent) => void,
-  onError?: () => void,
-): WebSocket {
+  onError?: (error?: Event) => void,
+  onOpen?: () => void,
+  onClose?: () => void,
+): StaiEventStreamHandle {
   const backendUrl = backendOrigin
     ? new URL(backendOrigin)
     : new URL(window.location.origin);
   const protocol = backendUrl.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${backendUrl.host}/ws`);
-  socket.addEventListener("message", (event) => {
-    try {
-      onEvent(JSON.parse(event.data) as StaiAgentEvent);
-    } catch {
-      onError?.();
-    }
-  });
-  socket.addEventListener("error", () => onError?.());
-  return socket;
+  const wsUrl = `${protocol}//${backendUrl.host}/ws`;
+
+  let socket: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let attempt = 0;
+  let explicitlyClosed = false;
+
+  function connect() {
+    socket = new WebSocket(wsUrl);
+
+    socket.addEventListener("message", (event) => {
+      try {
+        onEvent(JSON.parse(event.data) as StaiAgentEvent);
+      } catch {
+        onError?.();
+      }
+    });
+
+    socket.addEventListener("open", () => {
+      attempt = 0;
+      onOpen?.();
+    });
+
+    socket.addEventListener("error", (ev) => {
+      onError?.(ev);
+    });
+
+    socket.addEventListener("close", () => {
+      onClose?.();
+      if (explicitlyClosed) return;
+      const delay = Math.min(1000 * Math.pow(2, attempt), 16000);
+      attempt += 1;
+      reconnectTimer = setTimeout(connect, delay);
+    });
+  }
+
+  connect();
+
+  return {
+    close() {
+      explicitlyClosed = true;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (socket !== null) {
+        try {
+          socket.close();
+        } catch {
+          // ignore close errors
+        }
+        socket = null;
+      }
+    },
+  };
 }

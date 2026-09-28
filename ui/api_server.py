@@ -19,8 +19,9 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ui.event_bus import AgentEvent, event_bus
 
@@ -33,6 +34,7 @@ _agent: Any | None = None
 _agent_lock = threading.Lock()
 _active_runs: dict[str, threading.Event] = {}
 _active_runs_lock = threading.Lock()
+_agent_run_lock = threading.Lock()
 
 
 def _get_agent() -> Any:
@@ -147,6 +149,8 @@ async def chat(payload: dict[str, Any]) -> dict[str, Any]:
 
     session_id = payload.get("session_id") or payload.get("chatId") or "default"
     model = payload.get("model")
+    if model and model != "auto":
+        raise HTTPException(status_code=400, detail="This SVS-Cyber backend only supports automatic model routing")
     had_user_message = any(
         entry.get("session_id") == session_id and entry.get("type") == "user_message"
         for entry in chat_history
@@ -421,10 +425,11 @@ def toggle_step(step_id: str, enabled: bool) -> dict[str, Any]:
 
 
 @app.post("/api/approval/{request_id}/respond")
-def respond_to_approval(request_id: str, approved: bool) -> dict[str, Any]:
+def respond_to_approval(request_id: str, approved: bool, session_id: str = "default") -> dict[str, Any]:
     event_bus.publish(
         AgentEvent(
             type="approval_response",
+            session_id=session_id,
             message=f"Approval {request_id}: {'approved' if approved else 'denied'}",
             data={"request_id": request_id, "approved": approved},
         )
@@ -441,6 +446,7 @@ def respond_to_approval(request_id: str, approved: bool) -> dict[str, Any]:
 @app.post("/api/agent/approve")
 def agent_approve(payload: dict[str, Any]) -> dict[str, Any]:
     req_id = payload.get("request_id") or payload.get("requestId", "")
+    session_id = str(payload.get("session_id") or payload.get("sessionId") or "default")
     decision = payload.get("decision") or ("approve" if payload.get("approved") else "reject")
     approved = decision in ("approve", "approved", True)
     prefix_grant = payload.get("prefix_grant") or payload.get("grantRule", "")
@@ -450,6 +456,7 @@ def agent_approve(payload: dict[str, Any]) -> dict[str, Any]:
     event_bus.publish(
         AgentEvent(
             type="approval_response",
+            session_id=session_id,
             message=f"Approval {req_id}: {'approved' if approved else 'denied'}",
             data={"request_id": req_id, "approved": approved, "decision": decision, "grant": prefix_grant},
         )
@@ -459,22 +466,58 @@ def agent_approve(payload: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/agent/cancel")
 def agent_cancel(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = payload or {}
-    session_id = str(payload.get("session_id") or payload.get("sessionId") or "default")
-    with _active_runs_lock:
-        if session_id not in _active_runs:
-            return {"status": "not_found", "message": "No active run for this session"}
-    agent = _get_agent()
-    agent.cancel_event.set()
-    event_bus.publish(
-        AgentEvent(
-            type="agent_cancelled",
-            session_id=session_id,
-            message="User requested run cancellation",
-            source="api_server",
+    """Cancel an active agent run for the given session.
+
+    Returns:
+        { ok: true, cancelled: true } — run was found and cancellation was signalled
+        { ok: true, cancelled: false, reason: "no_active_run" } — nothing was running
+    HTTP 500 with a generic error on unexpected exceptions.
+    """
+    try:
+        payload = payload or {}
+        session_id = str(payload.get("session_id") or payload.get("sessionId") or "default")
+
+        with _active_runs_lock:
+            if session_id not in _active_runs:
+                return {"ok": True, "cancelled": False, "reason": "no_active_run"}
+            if len(_active_runs) > 1:
+                return {"ok": True, "cancelled": False, "reason": "concurrent_runs"}
+
+            # Hold the registry lock until signalling finishes. The worker's
+            # finally block owns removal; it cannot exit and hand off to a
+            # different session while this request targets its agent state.
+            cancelled = False
+            agent = _get_agent()
+            if hasattr(agent, "agent_runtime") and hasattr(agent.agent_runtime, "cancel_run"):
+                for inv_id in list(agent.agent_runtime.active_run_ids()):
+                    try:
+                        if agent.agent_runtime.cancel_run(inv_id):
+                            cancelled = True
+                    except Exception:
+                        pass
+            if hasattr(agent, "cancel_event"):
+                try:
+                    agent.cancel_event.set()
+                    cancelled = True
+                except Exception:
+                    pass
+
+        if cancelled:
+            event_bus.publish(
+                AgentEvent(
+                    type="agent_cancelled",
+                    session_id=session_id,
+                    message="User requested run cancellation",
+                    source="api_server",
+                )
+            )
+            return {"ok": True, "cancelled": True}
+        return {"ok": True, "cancelled": False, "reason": "cancel_unavailable"}
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "Unable to cancel run"},
         )
-    )
-    return {"status": "cancelled", "session_id": session_id}
 
 
 @app.post("/api/agent/resume")
@@ -645,19 +688,22 @@ def _run_agent_prompt(prompt: str) -> None:
 
 def _run_agent_prompt_sync(prompt: str, session_id: str, model: str | None = None) -> str:
     """Execute one prompt and attach the session to newly emitted events."""
-    agent = _get_agent()
     # The orchestrator owns provider routing.  Avoid mutating undeclared
     # attributes and never pretend that the UI chose a provider.
     if model and model != "auto":
         raise ValueError("This SVS-Cyber backend only supports automatic model routing")
-    with _active_runs_lock:
-        _active_runs[session_id] = agent.cancel_event
-    try:
-        with event_bus.session_scope(session_id):
-            return str(agent.process_chat_command(prompt, session_id=session_id))
-    finally:
+    # CyberAgent keeps cancellation and investigation state on one singleton.
+    # Serialize runs so one session cannot clear or signal another run's state.
+    with _agent_run_lock:
+        agent = _get_agent()
         with _active_runs_lock:
-            _active_runs.pop(session_id, None)
+            _active_runs[session_id] = agent.cancel_event
+        try:
+            with event_bus.session_scope(session_id):
+                return str(agent.process_chat_command(prompt, session_id=session_id))
+        finally:
+            with _active_runs_lock:
+                _active_runs.pop(session_id, None)
 
 
 def _get_loop() -> Any:

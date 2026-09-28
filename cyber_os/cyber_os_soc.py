@@ -28,6 +28,7 @@ from cyber_os.correlation_engine import CorrelationEngine
 from cyber_os.mitre_engine import MitreEngine, AttackTechnique, AttackChain
 from cyber_os.policy_engine import PolicyEngine
 from cyber_os.response_engine import ResponseEngine, ResponseResult
+from cyber_os.assets import get_command_registry
 
 # Set theme
 if CUSTOMTKINTER_AVAILABLE:
@@ -390,6 +391,11 @@ class SOCDashboard:
 
     def _process_chat_command(self, text: str) -> str:
         """Process chat commands."""
+        # Expand slash commands before any other processing
+        expanded = get_command_registry().expand(text)
+        if expanded is not None:
+            text = expanded.prompt
+
         text_lower = text.lower()
 
         if "investigate" in text_lower:

@@ -22,18 +22,10 @@ EXPECTED_CORE_TOOLS = {
     "list_available_drives",
     "static_analysis",
     "network_inspect",
-    "nmap_scan",
-    "windows_defender_scan",
+    "shell_exec",
     "secret_scan",
     "file_analyze",
     "workspace_scan",
-    "volatility_memory",
-    "strings_inspect",
-    "bandit_scan",
-    "semgrep_scan",
-    "trivy_scan",
-    "virustotal_scan",
-    "yara_scan",
     "osint_subdomain_enum",
     "dns_lookup",
     "whois_lookup",
@@ -133,11 +125,33 @@ class ToolCallingTests(unittest.TestCase):
         self.assertEqual(result["tool"], "nonexistent_tool_xyz")
         self.assertIn("not found", result.get("error", "").lower())
 
-    def test_destructive_tool_still_in_registry(self):
-        """Destructive tools should exist in the manifest but be gated by risk_level, not absent."""
-        tool = self.registry.tools.get("metasploit_console")
-        if tool is not None:
-            self.assertEqual(tool.risk_level, RiskLevel.DESTRUCTIVE)
+    def test_destructive_tools_are_gated_not_absent(self):
+        """Destructive capability must be present in the registry and carry a
+        gating risk_level — never dropped so it reads as safe by being absent.
+
+        This used to check a single hardcoded name (``metasploit_console``)
+        behind ``if tool is not None:``. That made it doubly weak: the guard
+        turned a missing tool into a silent pass, and the name is a CLI wrapper
+        slated for removal, so the one per-tool risk assertion would have gone
+        vacuously green the moment it was deleted. Scanning the whole
+        DESTRUCTIVE set instead asserts the real property — dangerous
+        capability exists and is classified so the guardrail can stop it — and
+        stays honest as individual tools come and go.
+        """
+        destructive = {
+            name: tool
+            for name, tool in self.registry.tools.items()
+            if tool.risk_level == RiskLevel.DESTRUCTIVE
+        }
+        self.assertTrue(
+            destructive,
+            "no DESTRUCTIVE-classified tool is registered; either every "
+            "dangerous tool was dropped or the risk metadata regressed to a "
+            "weaker level, so the approval gate now waves them through",
+        )
+        for name, tool in destructive.items():
+            with self.subTest(tool=name):
+                self.assertEqual(tool.risk_level, RiskLevel.DESTRUCTIVE)
 
 
 class AIOrchestratorToolSelectionTests(unittest.TestCase):

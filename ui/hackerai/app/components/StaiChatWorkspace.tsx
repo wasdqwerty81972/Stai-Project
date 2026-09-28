@@ -11,11 +11,7 @@
  *              ├─ Main chat column
  *              │    ├─ Header (title + connection status)
  *              │    ├─ Activity strip (agent work header)
- *              │    ├─ Message list
- *              │    │    ├─ User bubbles
- *              │    │    ├─ Assistant responses (MemoizedMarkdown)
- *              │    │    ├─ SvsCyberReasoningPart (HackerAI reasoning UI)
- *              │    │    └─ ToolExecutionPart (HackerAI tool group style)
+ *              │    ├─ SvsTranscript (messages and evidence)
  *              │    └─ SvsCyberComposer (HackerAI glass surface composer)
  *              └─ ToolWorkspaceContainer (right-side panel)
  *
@@ -29,22 +25,8 @@
  */
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import {
-  Activity,
-  BrainIcon,
-  Globe,
-  PanelLeft,
-  PanelLeftClose,
-  Radar,
-  Search,
-  Shield,
-  SquarePen,
-  Terminal,
-  Wrench,
-  FileText,
-} from "lucide-react";
-import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import ToolBlock from "@/components/ui/tool-block";
+import { Activity } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
   ToolWorkspaceProvider,
   useToolWorkspace,
@@ -65,18 +47,10 @@ import { StaiGlobalStateProvider } from "@/app/contexts/StaiGlobalState";
 import type { SelectedModel } from "@/app/contexts/StaiGlobalState";
 import { SvsCyberComposer } from "./SvsCyberComposer";
 import type { SvsStatus } from "./SvsCyberComposer";
-import { SvsCyberReasoningPart } from "./SvsCyberReasoningPart";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Shimmer } from "@/components/ai-elements/shimmer";
-import {
-  WorkedFor,
-  WorkedForContent,
-  WorkedForTrigger,
-} from "@/components/ai-elements/worked-for";
+import { SvsWorkspaceSidebar } from "./svs/SvsWorkspaceSidebar";
+import { SvsWorkspaceHeader } from "./svs/SvsWorkspaceHeader";
+import { SvsLandingState } from "./svs/SvsLandingState";
+import { SvsTranscript } from "./svs/SvsTranscript";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,7 +58,6 @@ interface TextPart {
   type: "text";
   text: string;
 }
-
 interface ReasoningPart {
   type: "reasoning";
   /** User-visible activity text only — never private chain-of-thought */
@@ -112,8 +85,10 @@ interface ToolPart {
 
 type MessagePart = TextPart | ReasoningPart | ToolPart;
 
-interface ChatEntry {
+export interface ChatEntry {
   id: string;
+  /** Every displayable event folded into this entry, for reconnect dedupe. */
+  eventIds?: string[];
   role: "user" | "assistant" | "event";
   parts: MessagePart[];
   /** ISO timestamp for chronological sorting */
@@ -180,14 +155,11 @@ function toolId(event: StaiAgentEvent) {
       event.event_id,
   );
 }
-
 function toolName(event: StaiAgentEvent) {
   return event.tool || String(event.data?.tool || "security tool");
 }
 
-function toolInput(
-  event: StaiAgentEvent,
-): Record<string, unknown> | undefined {
+function toolInput(event: StaiAgentEvent): Record<string, unknown> | undefined {
   const input = event.data?.arguments || event.data?.input;
   return input && typeof input === "object" && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -204,11 +176,7 @@ function toolWorkspaceType(name: string): ToolWorkspaceContent["type"] {
     n === "web"
   )
     return "browser";
-  if (
-    n.includes("terminal") ||
-    n.includes("shell") ||
-    n.includes("command")
-  )
+  if (n.includes("terminal") || n.includes("shell") || n.includes("command"))
     return "terminal";
   if (n.includes("http") || n.includes("request")) return "http";
   if (
@@ -244,10 +212,10 @@ function workspaceFromEvent(
         ): finding is NonNullable<ToolWorkspaceContent["findings"]>[number] =>
           Boolean(
             finding &&
-              typeof finding === "object" &&
-              "severity" in finding &&
-              "type" in finding &&
-              "message" in finding,
+            typeof finding === "object" &&
+            "severity" in finding &&
+            "type" in finding &&
+            "message" in finding,
           ),
       )
     : undefined;
@@ -335,7 +303,8 @@ function activityFromEvent(event: StaiAgentEvent): ActivityEvent | null {
     return {
       id: event.event_id,
       label: "Security finding",
-      detail: (event.data?.title as string) || event.message || "Finding recorded",
+      detail:
+        (event.data?.title as string) || event.message || "Finding recorded",
       status: "info",
     };
   if (event.type === "agent_completed")
@@ -390,12 +359,9 @@ function toolPartFromEvent(event: StaiAgentEvent): ToolPart {
         ? String(event.data?.error || event.message)
         : undefined,
     approval:
-      event.type === "approval_requested" ||
-      event.type === "approval_response"
+      event.type === "approval_requested" || event.type === "approval_response"
         ? {
-            requestId: String(
-              event.data?.request_id || event.event_id,
-            ),
+            requestId: String(event.data?.request_id || event.event_id),
             approved: event.data?.approved as boolean | undefined,
           }
         : undefined,
@@ -403,119 +369,137 @@ function toolPartFromEvent(event: StaiAgentEvent): ToolPart {
 }
 
 /**
- * applyEvent — pure function that merges an incoming event into the entry list.
- *
- * MESSAGE ORDERING FIX:
- * All entries carry a timestamp. We never re-sort after insertion — we insert
- * in the correct position by timestamp. This ensures:
- *   USER 1 → ASSISTANT 1 → USER 2 → ASSISTANT 2
- * even if WebSocket and fetch responses race.
+ * Fold events into one assistant entry per user turn. Event timestamps locate
+ * the turn even when history arrives after a live WebSocket event.
  */
-function applyEvent(
+export function applyEvent(
   entries: ChatEntry[],
   event: StaiAgentEvent,
   animateAssistant = false,
 ): ChatEntry[] {
   if (!event.message && !event.type) return entries;
+  if (
+    entries.some(
+      (entry) =>
+        entry.id === event.event_id || entry.eventIds?.includes(event.event_id),
+    )
+  )
+    return entries;
 
-  // Deduplicate: if we already have this event_id, skip
-  if (entries.some((e) => e.id === event.event_id)) return entries;
+  const eventTime = Date.parse(event.timestamp);
+  const timestampOf = (entry: ChatEntry) => Date.parse(entry.timestamp);
+  const insert = (entry: ChatEntry) => sortedEntries([...entries, entry]);
+  const userTimes = entries
+    .filter((entry) => entry.role === "user")
+    .map(timestampOf);
+  const turnStart = Math.max(
+    -Infinity,
+    ...userTimes.filter((time) => time <= eventTime),
+  );
+  const turnEnd = Math.min(
+    Infinity,
+    ...userTimes.filter((time) => time > eventTime),
+  );
+  const assistantIndex = entries.findIndex((entry) => {
+    const time = timestampOf(entry);
+    return entry.role === "assistant" && time >= turnStart && time < turnEnd;
+  });
+  const updateAssistant = (
+    update: (entry: ChatEntry) => ChatEntry,
+  ): ChatEntry[] =>
+    sortedEntries(
+      entries.map((entry, index) =>
+        index === assistantIndex
+          ? update({
+              ...entry,
+              timestamp:
+                timestampOf(entry) <= eventTime
+                  ? entry.timestamp
+                  : event.timestamp,
+              eventIds: [...(entry.eventIds ?? [entry.id]), event.event_id],
+            })
+          : entry,
+      ),
+    );
+  const createAssistant = (part: MessagePart): ChatEntry[] =>
+    insert({
+      id: event.event_id,
+      eventIds: [event.event_id],
+      role: "assistant",
+      parts: [part],
+      timestamp: event.timestamp,
+      animate: animateAssistant,
+    });
 
-  // Terminal run events close out the assistant turn instead of adding a row:
-  // stamp the completion time so "Working for …" can settle into
-  // "Worked for …" (HackerAI's WorkedForTrigger durationMs).
   if (TERMINAL_RUN_EVENT_TYPES.has(event.type)) {
-    const lastAssistantIndex = entries.reduceRight(
-      (found, entry, index) =>
-        found === -1 && entry.role === "assistant" ? index : found,
-      -1,
-    );
-    if (lastAssistantIndex === -1) return entries;
-    return entries.map((entry, index) =>
-      index === lastAssistantIndex
-        ? { ...entry, finishedAt: event.timestamp }
-        : entry,
-    );
+    if (assistantIndex === -1) return entries;
+    return updateAssistant((entry) => ({
+      ...entry,
+      finishedAt: event.timestamp,
+    }));
   }
-
   if (HIDDEN_EVENT_TYPES.has(event.type)) return entries;
 
-  // agent_reasoning → append as reasoning part to latest assistant entry
-  // (or create a new assistant entry if none exists)
+  if (event.type === "user_message") {
+    const optimisticIndex = entries.findIndex(
+      (entry) =>
+        entry.role === "user" &&
+        entry.id.startsWith("local-user-") &&
+        entry.parts[0]?.type === "text" &&
+        entry.parts[0].text === event.message,
+    );
+    if (optimisticIndex !== -1) {
+      return sortedEntries(
+        entries.map((entry, index) =>
+          index === optimisticIndex
+            ? {
+                ...entry,
+                id: event.event_id,
+                eventIds: [...(entry.eventIds ?? [entry.id]), event.event_id],
+                // Keep the instant the user sent the prompt so the echoed
+                // server event cannot move the turn after agent activity.
+                timestamp: entry.timestamp,
+              }
+            : entry,
+        ),
+      );
+    }
+    return insert({
+      id: event.event_id,
+      eventIds: [event.event_id],
+      role: "user",
+      parts: [{ type: "text", text: event.message }],
+      timestamp: event.timestamp,
+    });
+  }
+
   if (event.type === "agent_reasoning" && event.message) {
-    const reasoningPart: ReasoningPart = {
+    const part: ReasoningPart = {
       type: "reasoning",
       activity: event.message,
     };
-    // Try to append to the last assistant entry that has no tool parts yet
-    const lastAssistantIdx = entries.reduceRight(
-      (found, e, i) => (found === -1 && e.role === "assistant" ? i : found),
-      -1,
-    );
-    if (lastAssistantIdx !== -1) {
-      return entries.map((e, i) =>
-        i === lastAssistantIdx
-          ? {
-              ...e,
-              parts: [...e.parts, { ...reasoningPart, type: "reasoning" as const }],
-              id: e.id, // keep the original id
-            }
-          : e,
-      );
-    }
-    return [
-      ...entries,
-      {
-        id: event.event_id,
-        role: "assistant",
-        parts: [reasoningPart],
-        timestamp: event.timestamp,
-      },
-    ];
-  }
-
-  if (event.type === "user_message") {
-    // Deduplicate by content to avoid double-render of optimistic + server echo
-    const lastEntry = entries.at(-1);
-    if (
-      lastEntry?.role === "user" &&
-      lastEntry.parts[0]?.type === "text" &&
-      lastEntry.parts[0].text === event.message
-    ) {
-      return entries;
-    }
-    return [
-      ...entries,
-      {
-        id: event.event_id,
-        role: "user",
-        parts: [{ type: "text", text: event.message }],
-        timestamp: event.timestamp,
-      },
-    ];
+    return assistantIndex === -1
+      ? createAssistant(part)
+      : updateAssistant((entry) => ({
+          ...entry,
+          parts: [...entry.parts, part],
+        }));
   }
 
   if (event.type === "response") {
-    // Deduplicate by content
-    const lastEntry = entries.at(-1);
-    if (
-      lastEntry?.role === "assistant" &&
-      lastEntry.parts.length === 1 &&
-      lastEntry.parts[0]?.type === "text" &&
-      lastEntry.parts[0].text === event.message
-    ) {
-      return entries;
-    }
-    return [
-      ...entries,
-      {
-        id: event.event_id,
-        role: "assistant",
-        parts: [{ type: "text", text: event.message }],
-        timestamp: event.timestamp,
-        animate: animateAssistant,
-      },
-    ];
+    const part: TextPart = { type: "text", text: event.message };
+    return assistantIndex === -1
+      ? createAssistant(part)
+      : updateAssistant((entry) => ({
+          ...entry,
+          parts: entry.parts.some(
+            (existing) =>
+              existing.type === "text" && existing.text === event.message,
+          )
+            ? entry.parts
+            : [...entry.parts, part],
+          animate: entry.animate || animateAssistant,
+        }));
   }
 
   if (
@@ -528,70 +512,69 @@ function applyEvent(
     event.type === "approval_response"
   ) {
     const nextPart = toolPartFromEvent(event);
-    const messageIndex = entries.findIndex((e) =>
-      e.parts.some((part) => {
-        if (part.type !== "tool") return false;
-        if (part.toolCallId === nextPart.toolCallId) return true;
-        return (
-          event.type === "tool_started" &&
-          part.toolName === nextPart.toolName &&
-          (part.state === "input-streaming" ||
-            part.state === "input-available")
-        );
-      }),
-    );
-    if (messageIndex === -1) {
-      return [
-        ...entries,
-        {
-          id: `tool-message-${nextPart.toolCallId}`,
-          role: "assistant",
-          parts: [nextPart],
-          timestamp: event.timestamp,
-        },
-      ];
-    }
-    return entries.map((entry, index) => {
-      if (index !== messageIndex) return entry;
+    if (assistantIndex === -1) return createAssistant(nextPart);
+    return updateAssistant((entry) => {
+      const exactIndex = entry.parts.findIndex(
+        (part) =>
+          part.type === "tool" && part.toolCallId === nextPart.toolCallId,
+      );
+      const fallbackIndex =
+        exactIndex === -1 && event.type !== "tool_started"
+          ? entry.parts.findIndex(
+              (part) =>
+                part.type === "tool" &&
+                part.toolName === nextPart.toolName &&
+                part.state !== "output-available" &&
+                part.state !== "output-error",
+            )
+          : -1;
+      const partIndex = exactIndex === -1 ? fallbackIndex : exactIndex;
+      if (partIndex === -1) {
+        return { ...entry, parts: [...entry.parts, nextPart] };
+      }
       return {
         ...entry,
-        parts: entry.parts.map((part) =>
-          part.type === "tool" &&
-          (part.toolCallId === nextPart.toolCallId ||
-            (event.type === "tool_started" &&
-              part.toolName === nextPart.toolName &&
-              (part.state === "input-streaming" ||
-                part.state === "input-available")))
-            ? {
-                ...part,
-                ...nextPart,
-                input: nextPart.input ?? part.input,
-                output: nextPart.output ?? part.output,
-                errorText:
-                  event.type === "tool_output"
-                    ? part.errorText
-                    : nextPart.errorText,
-              }
-            : part,
-        ),
+        parts: entry.parts.map((part, index) => {
+          if (index !== partIndex || part.type !== "tool") return part;
+          const terminal =
+            part.state === "output-available" || part.state === "output-error";
+          const staleRunningUpdate =
+            terminal &&
+            (nextPart.state === "input-streaming" ||
+              nextPart.state === "input-available");
+          return {
+            ...part,
+            ...nextPart,
+            state: staleRunningUpdate ? part.state : nextPart.state,
+            input: nextPart.input ?? part.input,
+            output: nextPart.output ?? part.output,
+            errorText: staleRunningUpdate ? part.errorText : nextPart.errorText,
+          };
+        }),
       };
     });
   }
 
-  // Generic fallback for unknown displayable events
   if (event.message) {
-    return [
-      ...entries,
-      {
-        id: event.event_id,
-        role: "assistant",
-        parts: [{ type: "text", text: event.message || event.type }],
-        timestamp: event.timestamp,
-      },
-    ];
+    const part: TextPart = { type: "text", text: event.message };
+    return assistantIndex === -1
+      ? createAssistant(part)
+      : updateAssistant((entry) => ({
+          ...entry,
+          parts: [...entry.parts, part],
+        }));
   }
-
   return entries;
+}
+
+export function reconcileEvents(events: StaiAgentEvent[]): ChatEntry[] {
+  const unique = new Map<string, StaiAgentEvent>();
+  events.forEach((event) => {
+    if (!unique.has(event.event_id)) unique.set(event.event_id, event);
+  });
+  return [...unique.values()]
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+    .reduce((entries, event) => applyEvent(entries, event), [] as ChatEntry[]);
 }
 
 /**
@@ -640,32 +623,47 @@ function StaiChatWorkspaceContent({
 }) {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [draft, setDraft] = useState("");
-  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState<
+    "connecting" | "connected" | "disconnected"
+  >("connecting");
   const [status, setStatus] = useState<SvsStatus>("ready");
   const [error, setError] = useState<string | null>(null);
-  const [conversations, setConversations] = useState<ConversationSummary[]>(
-    [],
-  );
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarQuery, setSidebarQuery] = useState("");
   // The backend owns provider routing. "auto" is the only mode it exposes.
   const [selectedModel, setSelectedModel] = useState<SelectedModel>("auto");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const eventLogRef = useRef(new Map<string, StaiAgentEvent>());
+  const loggedSessionRef = useRef(sessionId);
   const landingSessionIdRef = useRef<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const router = useRouter();
   const { openWorkspace, updateWorkspaceContent } = useToolWorkspace();
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const closeOnMobile = (event: MediaQueryListEvent) => {
+      if (event.matches) setSidebarCollapsed(true);
+    };
+    if (media.matches) setSidebarCollapsed(true);
+    media.addEventListener("change", closeOnMobile);
+    return () => media.removeEventListener("change", closeOnMobile);
+  }, []);
 
   async function clearTasks() {
     await clearStaiConversations();
+    eventLogRef.current.clear();
     setConversations([]);
     setEntries([]);
-    if (!landing) window.location.assign("/");
+    if (!landing) router.push("/");
   }
 
   const appendEvent = useCallback(
     (event: StaiAgentEvent) => {
+      if (eventLogRef.current.has(event.event_id)) return;
+      eventLogRef.current.set(event.event_id, event);
       const activity = activityFromEvent(event);
       if (activity) {
         setActivities((current) =>
@@ -678,15 +676,15 @@ function StaiChatWorkspaceContent({
           ].slice(-8),
         );
       }
-      const workspace = workspaceFromEvent(event, event.session_id || sessionId);
+      const workspace = workspaceFromEvent(
+        event,
+        event.session_id || sessionId,
+      );
       if (workspace) {
         if (event.type === "tool_started") openWorkspace(workspace);
         else updateWorkspaceContent(workspace);
       }
-      setEntries((current) => {
-        if (current.some((e) => e.id === event.event_id)) return current;
-        return applyEvent(current, event, event.type === "response");
-      });
+      setEntries(reconcileEvents([...eventLogRef.current.values()]));
     },
     [openWorkspace, sessionId, updateWorkspaceContent],
   );
@@ -694,6 +692,12 @@ function StaiChatWorkspaceContent({
   // Load conversations list + connect WebSocket
   useEffect(() => {
     let cancelled = false;
+    if (loggedSessionRef.current !== sessionId) {
+      loggedSessionRef.current = sessionId;
+      eventLogRef.current.clear();
+      setEntries([]);
+      setActivities([]);
+    }
 
     getStaiConversations()
       .then((items) => {
@@ -713,23 +717,28 @@ function StaiChatWorkspaceContent({
         appendEvent(event);
       },
       () => {
-        if (!cancelled) setConnected(false);
+        if (!cancelled) setConnection("disconnected");
+      },
+      () => {
+        if (!cancelled) setConnection("connected");
+      },
+      () => {
+        if (!cancelled) setConnection("disconnected");
       },
     );
-    socket.addEventListener("open", () => setConnected(true));
-    socket.addEventListener("close", () => setConnected(false));
 
     getStaiMessages(sessionId)
       .then((events) => {
         if (!cancelled) {
-          setEntries(
-            events.reduce(
-              (currentEntries, event) => applyEvent(currentEntries, event),
-              [] as ChatEntry[],
-            ),
-          );
+          events.forEach((event) => {
+            if (!eventLogRef.current.has(event.event_id)) {
+              eventLogRef.current.set(event.event_id, event);
+            }
+          });
+          setEntries(reconcileEvents([...eventLogRef.current.values()]));
           setActivities(
-            events
+            [...eventLogRef.current.values()]
+              .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
               .map(activityFromEvent)
               .filter((item): item is ActivityEvent => item !== null)
               .slice(-8),
@@ -776,23 +785,22 @@ function StaiChatWorkspaceContent({
     // Optimistic user message — with current timestamp for correct ordering
     const now = new Date().toISOString();
     const optimisticId = `local-user-${targetSessionId}-${Date.now()}`;
-    setEntries((current) =>
-      applyEvent(current, {
-        type: "user_message",
-        timestamp: now,
-        session_id: targetSessionId,
-        event_id: optimisticId,
-        investigation_id: "",
-        source: "ui",
-        correlation_id: "",
-        entity_ids: [],
-        tool: null,
-        agent: null,
-        status: "",
-        message,
-        data: {},
-      }),
-    );
+    eventLogRef.current.set(optimisticId, {
+      type: "user_message",
+      timestamp: now,
+      session_id: targetSessionId,
+      event_id: optimisticId,
+      investigation_id: "",
+      source: "ui",
+      correlation_id: "",
+      entity_ids: [],
+      tool: null,
+      agent: null,
+      status: "",
+      message,
+      data: {},
+    });
+    setEntries(reconcileEvents([...eventLogRef.current.values()]));
 
     try {
       setStatus("streaming");
@@ -805,11 +813,9 @@ function StaiChatWorkspaceContent({
 
       // Replace optimistic entry with real user_event_id if returned
       if (response.user_event_id) {
-        setEntries((current) => {
-          const withoutOptimistic = current.filter(
-            (e) => e.id !== optimisticId,
-          );
-          return applyEvent(withoutOptimistic, {
+        eventLogRef.current.delete(optimisticId);
+        if (!eventLogRef.current.has(response.user_event_id)) {
+          eventLogRef.current.set(response.user_event_id, {
             type: "user_message",
             timestamp: now, // preserve original timestamp for stable ordering
             session_id: targetSessionId,
@@ -824,18 +830,20 @@ function StaiChatWorkspaceContent({
             message,
             data: {},
           });
-        });
+        }
+        setEntries(reconcileEvents([...eventLogRef.current.values()]));
       }
 
       // If a synchronous response is included (non-agent mode), apply it
       if (response.message) {
-        setEntries((current) =>
-          applyEvent(current, {
+        const responseEventId =
+          response.response_event_id || crypto.randomUUID();
+        if (!eventLogRef.current.has(responseEventId)) {
+          eventLogRef.current.set(responseEventId, {
             type: "response",
             timestamp: new Date().toISOString(),
             session_id: targetSessionId,
-            event_id:
-              response.response_event_id || crypto.randomUUID(),
+            event_id: responseEventId,
             investigation_id: "",
             source: "api_server",
             correlation_id: "",
@@ -845,12 +853,11 @@ function StaiChatWorkspaceContent({
             status: "",
             message: response.message,
             data: {},
-          }, true),
-        );
+          });
+        }
+        setEntries(reconcileEvents([...eventLogRef.current.values()]));
         if (landing) {
-          window.location.assign(
-            `/c/${encodeURIComponent(targetSessionId)}`,
-          );
+          router.push(`/c/${encodeURIComponent(targetSessionId)}`);
         } else {
           getStaiConversations()
             .then(setConversations)
@@ -858,7 +865,9 @@ function StaiChatWorkspaceContent({
         }
       }
     } catch (sendError) {
-      if (!(sendError instanceof DOMException && sendError.name === "AbortError")) {
+      if (!(
+        sendError instanceof DOMException && sendError.name === "AbortError"
+      )) {
         setError(
           sendError instanceof Error ? sendError.message : "Message failed",
         );
@@ -888,134 +897,27 @@ function StaiChatWorkspaceContent({
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden bg-background text-foreground">
-      {/* ── Sidebar ────────────────────────────────────────────────────── */}
-      <aside
-        className={`hidden h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar transition-[width] duration-200 md:flex ${
-          sidebarCollapsed ? "w-12" : "w-[280px]"
-        }`}
-      >
-        <div className="flex h-14 shrink-0 items-center justify-between px-3">
-          {!sidebarCollapsed && (
-            <a
-              href="/"
-              className="flex items-center gap-2 text-sm font-semibold tracking-tight"
-            >
-              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sidebar-accent text-xs">
-                <Shield className="size-4" />
-              </span>
-              SVS-Cyber
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={() => setSidebarCollapsed((v) => !v)}
-            className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {sidebarCollapsed ? (
-              <PanelLeft className="size-4" />
-            ) : (
-              <PanelLeftClose className="size-4" />
-            )}
-          </button>
-        </div>
-
-        {!sidebarCollapsed && (
-          <>
-            <div className="px-3 pb-3">
-              <a
-                href="/"
-                className="flex h-9 items-center gap-2 rounded-lg px-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
-              >
-                <SquarePen className="size-4" />
-                New investigation
-              </a>
-              <label className="mt-2 flex h-9 items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent/30 px-2 text-muted-foreground">
-                <Search className="size-4 shrink-0" />
-                <input
-                  value={sidebarQuery}
-                  onChange={(e) => setSidebarQuery(e.target.value)}
-                  placeholder="Search investigations"
-                  className="min-w-0 flex-1 bg-transparent text-xs text-sidebar-foreground outline-none placeholder:text-muted-foreground"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => void clearTasks()}
-                className="mt-2 w-full rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-              >
-                Clear all
-              </button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto sidebar-chat-scroll px-2">
-              <div className="px-2 pb-2 pt-1 text-xs font-medium text-muted-foreground">
-                Investigations
-              </div>
-              <div className="flex flex-col gap-0.5">
-                {conversations
-                  .filter((c) =>
-                    c.title
-                      .toLowerCase()
-                      .includes(sidebarQuery.trim().toLowerCase()),
-                  )
-                  .map((c) => (
-                    <a
-                      key={c.id}
-                      href={`/c/${encodeURIComponent(c.id)}`}
-                      className={`block truncate rounded-lg px-3 py-2 text-sm transition-colors hover:bg-sidebar-accent ${
-                        c.id === sessionId
-                          ? "bg-sidebar-accent text-sidebar-foreground"
-                          : "text-sidebar-foreground/75"
-                      }`}
-                    >
-                      {c.title || "Untitled investigation"}
-                    </a>
-                  ))}
-                {conversations.length === 0 && (
-                  <div className="px-3 py-2 text-xs text-muted-foreground">
-                    No investigations yet
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="shrink-0 border-t border-sidebar-border p-3 text-xs text-muted-foreground">
-              Defensive security assistant
-            </div>
-          </>
-        )}
-      </aside>
+      <SvsWorkspaceSidebar
+        conversations={conversations}
+        activeSessionId={landing ? undefined : sessionId}
+        onClearAll={clearTasks}
+        collapsed={sidebarCollapsed}
+        onCollapsedChange={setSidebarCollapsed}
+      />
 
       {/* ── Main column ──────────────────────────────────────────────────── */}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Header */}
-        <header className="flex shrink-0 items-center justify-between bg-background px-4 pt-3 pb-1">
-          <div className="flex min-w-0 items-center gap-2 text-lg font-medium">
-            <a
-              href="/"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent md:hidden"
-              aria-label="Open sidebar"
-            >
-              <PanelLeft className="size-4" />
-            </a>
-            <span className="truncate">
-              {conversations.find((c) => c.id === sessionId)?.title ||
-                "SVS-Cyber"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span
-              className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : isStreaming ? "bg-amber-400 animate-pulse" : "bg-muted-foreground"}`}
-            />
-            {connected
-              ? isStreaming
-                ? "Agent running"
-                : "Live"
-              : "Connecting..."}
-          </div>
-        </header>
+        <SvsWorkspaceHeader
+          title={
+            landing
+              ? "SVS-Cyber"
+              : conversations.find((c) => c.id === sessionId)?.title ||
+                "SVS-Cyber"
+          }
+          connection={landing ? "idle" : connection}
+          running={isStreaming}
+          onOpenNavigation={() => setSidebarCollapsed(false)}
+        />
 
         {/* Activity strip — HackerAI-style agent work header */}
         {activities.length > 0 && (
@@ -1023,10 +925,7 @@ function StaiChatWorkspaceContent({
             className="mx-auto flex w-full max-w-[768px] items-center gap-2 overflow-x-auto px-4 py-2 text-xs text-muted-foreground"
             aria-label="Agent activity"
           >
-            <Activity
-              className="size-3.5 shrink-0"
-              aria-hidden="true"
-            />
+            <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             {activities.slice(-4).map((item) => (
               <span
                 key={item.id}
@@ -1055,84 +954,20 @@ function StaiChatWorkspaceContent({
 
         {/* Message list */}
         <section className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-4">
-          <div className="mx-auto flex w-full max-w-[768px] flex-col gap-6">
-            {displayed.length === 0 && status === "ready" && (
-              <div className="flex min-h-[45vh] items-center justify-center text-center text-sm text-muted-foreground">
-                What investigation are we running?
-              </div>
-            )}
-
-            {displayed.map((entry, entryIndex) => (
-              <article
-                key={entry.id}
-                className={`message-row flex w-full flex-col overflow-hidden ${
-                  entry.role === "user" ? "items-end" : "items-start"
-                }`}
-              >
-                <div
-                  className={
-                    entry.role === "user"
-                      ? "flex w-full flex-col items-end gap-1"
-                      : "w-full min-w-0 text-foreground"
-                  }
-                >
-                  <div
-                    className={
-                      entry.role === "user"
-                        ? "max-w-[80%] rounded-[18px] rounded-se-lg border border-border bg-secondary px-4 py-1.5 text-primary-foreground"
-                        : "prose max-w-none min-w-0 space-y-3 overflow-hidden dark:prose-invert"
-                    }
-                  >
-                    {entry.role === "user"
-                      ? (entry.parts ?? []).map((part, partIndex) =>
-                          part.type === "text" ? (
-                            <div
-                              className="whitespace-pre-wrap break-words"
-                              key={`${entry.id}-${partIndex}`}
-                            >
-                              {part.text}
-                            </div>
-                          ) : null,
-                        )
-                      : (
-                          <AssistantEntryBody
-                            entry={entry}
-                            sessionId={sessionId}
-                            isLastEntry={entryIndex === displayed.length - 1}
-                            isStreaming={isStreaming}
-                            nextEntryTimestamp={displayed[entryIndex + 1]?.timestamp}
-                          />
-                        )}
-                  </div>
-                </div>
-              </article>
-            ))}
-
-            {/* Pending agent reasoning — HackerAI's PendingAgentReasoning row */}
-            {isStreaming && displayed.at(-1)?.role !== "assistant" && (
-              <div
-                aria-label="Thinking"
-                className="flex w-full max-w-full items-center gap-2 text-sm text-muted-foreground"
-                data-testid="pending-agent-reasoning"
-                role="status"
-              >
-                <BrainIcon className="size-4 shrink-0" />
-                <Shimmer
-                  as="span"
-                  className="min-w-0 truncate text-left text-sm leading-5"
-                >
-                  Thinking...
-                </Shimmer>
-              </div>
-            )}
-
-            {error && (
-              <div role="alert" className="text-sm text-destructive">
-                {error}
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
+          {landing && displayed.length === 0 && status === "ready" ? (
+            <SvsLandingState onSuggestion={setDraft} />
+          ) : (
+            <SvsTranscript
+              entries={displayed}
+              running={isStreaming}
+              error={error}
+              sessionId={sessionId}
+              onApproval={async (requestId, approved) => {
+                await respondToStaiApproval(requestId, approved, sessionId);
+              }}
+              bottomRef={bottomRef}
+            />
+          )}
         </section>
 
         {/* Composer */}
@@ -1157,336 +992,5 @@ function StaiChatWorkspaceContent({
       {/* Right-side tool workspace */}
       <ToolWorkspaceContainer />
     </div>
-  );
-}
-
-// ─── AssistantEntryBody — HackerAI MessageItem / WorkedFor parity ────────────
-
-type WorkItem =
-  | { kind: "reasoning"; key: string; activity: string }
-  | { kind: "tool"; key: string; part: ToolPart };
-
-/**
- * buildWorkItems — mirrors HackerAI's `splitWorkedForParts` projection.
- *
- * Consecutive `agent_reasoning` events are merged into one reasoning block, the
- * way HackerAI's ReasoningHandler collects every consecutive reasoning part from
- * the first one onward. That yields a single live "Thinking..." row that grows
- * token by token instead of a stack of one-line rows per event.
- */
-function buildWorkItems(entry: ChatEntry): WorkItem[] {
-  const parts = entry.parts ?? [];
-  const items: WorkItem[] = [];
-
-  parts.forEach((part, index) => {
-    if (part.type === "reasoning") {
-      // Only the first part of a consecutive reasoning run renders.
-      if (parts[index - 1]?.type === "reasoning") return;
-      const lines: string[] = [part.activity];
-      for (let next = index + 1; next < parts.length; next++) {
-        const candidate = parts[next];
-        if (candidate?.type !== "reasoning") break;
-        lines.push(candidate.activity);
-      }
-      items.push({
-        kind: "reasoning",
-        key: `${entry.id}-reasoning-${index}`,
-        activity: lines
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .join("\n\n"),
-      });
-      return;
-    }
-    if (part.type === "tool") {
-      items.push({ kind: "tool", key: part.toolCallId, part });
-    }
-  });
-
-  return items;
-}
-
-interface AssistantEntryBodyProps {
-  entry: ChatEntry;
-  sessionId: string;
-  isLastEntry: boolean;
-  isStreaming: boolean;
-  /** Timestamp of the next entry — used as the end time for restored history. */
-  nextEntryTimestamp?: string;
-}
-
-/**
- * Renders one assistant turn the way HackerAI's MessageItem does: every work
- * part (reasoning + tools) folded into a single collapsible
- * "Working for 12s" / "Worked for 12s" trigger, with the final answer text
- * streamed underneath it.
- */
-function AssistantEntryBody({
-  entry,
-  sessionId,
-  isLastEntry,
-  isStreaming,
-  nextEntryTimestamp,
-}: AssistantEntryBodyProps) {
-  const workItems = buildWorkItems(entry);
-  const textParts = (entry.parts ?? []).filter(
-    (part): part is TextPart => part.type === "text",
-  );
-
-  // HackerAI only makes the trigger clickable when there is expandable work.
-  const hasExpandableWork = workItems.some((item) => item.kind === "tool");
-  const startedAt = Date.parse(entry.timestamp);
-  const finishedSource = entry.finishedAt ?? nextEntryTimestamp;
-  const finishedAt = finishedSource ? Date.parse(finishedSource) : NaN;
-  const durationMs =
-    Number.isFinite(startedAt) && Number.isFinite(finishedAt)
-      ? Math.max(0, finishedAt - startedAt)
-      : undefined;
-  const isTiming = isStreaming && isLastEntry;
-  const lastReasoningItemIndex = workItems.reduceRight(
-    (found, item, index) =>
-      found === -1 && item.kind === "reasoning" ? index : found,
-    -1,
-  );
-
-  const renderWorkItems = () =>
-    workItems.map((item, index) =>
-      item.kind === "reasoning" ? (
-        <SvsCyberReasoningPart
-          key={item.key}
-          activity={item.activity}
-          isStreaming={isStreaming}
-          isLatest={isTiming && index === lastReasoningItemIndex}
-        />
-      ) : (
-        <ToolExecutionPart
-          key={item.key}
-          part={item.part}
-          sessionId={sessionId}
-        />
-      ),
-    );
-
-  return (
-    <>
-      {workItems.length > 0 && (
-        <WorkedFor
-          hasWork={hasExpandableWork}
-          defaultOpen={isTiming}
-          isTiming={isTiming}
-        >
-          <WorkedForTrigger
-            isTiming={isTiming}
-            startedAt={Number.isFinite(startedAt) ? startedAt : undefined}
-            durationMs={durationMs}
-          />
-          <WorkedForContent>{renderWorkItems()}</WorkedForContent>
-        </WorkedFor>
-      )}
-
-      {textParts.map((part, index) => (
-        <MemoizedMarkdown
-          key={`${entry.id}-text-${index}`}
-          content={part.text}
-          // HackerAI parity (MessagePartHandler): only the message currently
-          // streaming animates, which is what produces the token-by-token
-          // fade-in that looks like the model typing.
-          isAnimating={isStreaming && isLastEntry}
-        />
-      ))}
-    </>
-  );
-}
-
-// ─── ToolExecutionPart — HackerAI AgentToolGroupRow style ────────────────────
-
-const TOOL_AUTO_COLLAPSE_MS = 500;
-
-function ToolExecutionPart({
-  part,
-  sessionId,
-}: {
-  part: ToolPart;
-  sessionId: string;
-}) {
-  const { openWorkspace } = useToolWorkspace();
-  const [open, setOpen] = useState(true);
-  const [approvalDecision, setApprovalDecision] = useState<boolean | null>(
-    null,
-  );
-  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const isTerminal =
-    part.toolName.toLowerCase().includes("shell") ||
-    part.toolName.toLowerCase().includes("terminal") ||
-    part.toolName.toLowerCase().includes("command");
-  const isBrowser =
-    part.toolName.toLowerCase().includes("browser") ||
-    part.toolName.toLowerCase().includes("web") ||
-    part.toolName.toLowerCase().includes("computer");
-  const isHttp =
-    part.toolName.toLowerCase().includes("http") ||
-    part.toolName.toLowerCase().includes("request");
-  const isFindings =
-    part.toolName.toLowerCase().includes("scan") ||
-    part.toolName.toLowerCase().includes("secret") ||
-    part.toolName.toLowerCase().includes("finding");
-
-  const isRunning =
-    part.state === "input-streaming" ||
-    part.state === "input-available" ||
-    part.state === "approval-requested";
-  const isFailed = part.state === "output-error";
-  const isCompleted = part.state === "output-available";
-
-  // Auto-collapse after completion — same as HackerAI AgentToolGroupRow
-  useEffect(() => {
-    if (isCompleted && open) {
-      collapseTimerRef.current = setTimeout(() => {
-        setOpen(false);
-        collapseTimerRef.current = null;
-      }, TOOL_AUTO_COLLAPSE_MS);
-    }
-    return () => {
-      if (collapseTimerRef.current !== null) {
-        clearTimeout(collapseTimerRef.current);
-        collapseTimerRef.current = null;
-      }
-    };
-  }, [isCompleted, open]);
-
-  const toolIcon = isTerminal ? (
-    <Terminal className="size-4" />
-  ) : isBrowser ? (
-    <Globe className="size-4" />
-  ) : isHttp ? (
-    <Globe className="size-4" />
-  ) : isFindings ? (
-    <Radar className="size-4" />
-  ) : (
-    <Wrench className="size-4" />
-  );
-
-  const target = isTerminal && part.input?.command
-    ? String(part.input.command)
-    : (part.input?.target ?? part.input?.url)
-      ? String(part.input.target ?? part.input.url)
-      : undefined;
-
-  const action = isFailed
-    ? `${part.toolName} failed`
-    : part.state === "approval-requested"
-      ? "Awaiting approval"
-      : isRunning
-        ? `Running ${part.toolName}${part.progress === undefined ? "" : ` (${part.progress}%)`}${part.progress === undefined && part.elapsedSeconds !== undefined ? ` · ${Math.floor(part.elapsedSeconds)}s` : ""}`
-        : `${part.toolName} completed`;
-
-  const workspaceType = toolWorkspaceType(part.toolName);
-
-  const openToolWorkspace = () => {
-    if (!workspaceType) return;
-    openWorkspace({
-      type: workspaceType,
-      title: part.toolName,
-      toolCallId: part.toolCallId,
-      sessionId,
-      status: isFailed ? "failed" : isRunning ? "running" : "completed",
-      command: isTerminal ? target : undefined,
-      output: formatToolValue(part.output),
-      url:
-        typeof part.input?.url === "string"
-          ? part.input.url
-          : typeof part.input?.target === "string"
-            ? part.input.target
-            : undefined,
-      metadata: { runtimeAvailable: false },
-    });
-  };
-
-  const respondToApproval = async (approved: boolean) => {
-    const requestId = part.approval?.requestId;
-    if (!requestId) return;
-    await respondToStaiApproval(requestId, approved);
-    setApprovalDecision(approved);
-  };
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen} className="w-full my-2">
-      <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="group flex w-full max-w-full items-center gap-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
-          aria-label={`${action}${target ? `: ${target}` : ""}. ${open ? "Hide" : "Show"} details.`}
-          onClick={workspaceType ? openToolWorkspace : undefined}
-          data-testid={`tool-part-${part.toolCallId}`}
-        >
-          <ToolBlock
-            icon={toolIcon}
-            action={action}
-            target={target}
-            isShimmer={isRunning}
-            accessibleLabel={`${action}${target ? `: ${target}` : ""}`}
-            isClickable={Boolean(workspaceType)}
-            onClick={openToolWorkspace}
-            renderAs="div"
-          />
-        </button>
-      </CollapsibleTrigger>
-
-      <CollapsibleContent className="worked-for-content mt-2">
-        <div className="overflow-hidden rounded-lg border border-border bg-muted/20 text-xs">
-          {part.input && (
-            <div className="border-b border-border p-3">
-              <div className="mb-2 font-medium text-muted-foreground">Input</div>
-              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground">
-                {formatToolValue(part.input)}
-              </pre>
-            </div>
-          )}
-          {(part.output !== undefined || part.errorText) && (
-            <div className="p-3">
-              <div
-                className={`mb-2 font-medium ${part.errorText ? "text-destructive" : "text-muted-foreground"}`}
-              >
-                {part.errorText ? "Error" : "Output"}
-              </div>
-              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground">
-                {formatToolValue(part.errorText || part.output)}
-              </pre>
-            </div>
-          )}
-          {part.approval && (
-            <div className="border-t border-border p-3 text-muted-foreground">
-              {approvalDecision === null &&
-              part.approval.approved === undefined ? (
-                <div className="flex items-center justify-between gap-3">
-                  <span>Approval requested for this action.</span>
-                  <span className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void respondToApproval(false)}
-                      className="rounded border border-border px-2 py-1 text-xs hover:bg-muted"
-                    >
-                      Deny
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void respondToApproval(true)}
-                      className="rounded bg-foreground px-2 py-1 text-xs text-background hover:opacity-80"
-                    >
-                      Allow
-                    </button>
-                  </span>
-                </div>
-              ) : approvalDecision ?? part.approval.approved ? (
-                "Approved."
-              ) : (
-                "Denied."
-              )}
-            </div>
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }

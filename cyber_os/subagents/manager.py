@@ -12,6 +12,7 @@ Orchestrates defensive specialist subagents:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -31,8 +32,62 @@ from cyber_os.subagents.profiles import (
     DEFENSIVE_SPECIALIST_PROFILES,
     SpecialistProfileDefinition,
     get_profile_definition,
+    resolve_profile_definition,
 )
 from ui.event_bus import AgentEvent, event_bus
+
+
+# Split by kind because the two consumers want different things: reading a
+# .exe as text yields garbage, and running an entropy check on a .md is noise.
+# The optional single-letter drive prefix keeps Windows paths whole. Allowing
+# ":" inside the body instead would swallow "https://host/payload.py" — a URL
+# is not a local file, and handing one to a file tool just fails.
+_DRIVE_PREFIX = r"(?:[A-Za-z]:[\\/])?"
+_SOURCE_FILE_PATTERN = re.compile(
+    _DRIVE_PREFIX
+    + r"[\w./\\-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|cpp|c|md|json|ya?ml|txt|log|ini|cfg)\b",
+    re.I,
+)
+_BINARY_FILE_PATTERN = re.compile(
+    _DRIVE_PREFIX
+    + r"[\w./\\-]+\.(?:exe|dll|sys|bin|scr|com|msi|ps1|bat|cmd|vbs|jar|zip|7z|rar|docx?|xlsx?|pdf|dat)\b",
+    re.I,
+)
+
+
+def _first_path(task: SubagentTaskRequest, *patterns: re.Pattern) -> str:
+    """Return the first file the task actually names, or "" if it names none.
+
+    The objective is searched before the parent context so an explicit
+    instruction wins over an incidental filename quoted in the transcript.
+    Returning "" is the point: substituting a fixed sample path makes the
+    specialist analyse a file the investigation never mentioned and then
+    report that result as evidence.
+    """
+    haystacks = [task.objective or ""]
+    haystacks.extend((ref.content or "") for ref in (task.context_refs or []))
+    for text in haystacks:
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match:
+                return match.group(0)
+    return ""
+
+
+def _coerce_verdict(value: Any) -> SubagentVerdict:
+    """Map a model-supplied verdict string onto the enum without raising."""
+    try:
+        return SubagentVerdict(str(value).strip().lower())
+    except (ValueError, TypeError):
+        return SubagentVerdict.INCONCLUSIVE
+
+
+def _coerce_confidence(value: Any) -> ValidationConfidence:
+    """Map a model-supplied confidence string onto the enum without raising."""
+    try:
+        return ValidationConfidence(str(value).strip().lower())
+    except (ValueError, TypeError):
+        return ValidationConfidence.LOW
 
 
 class SubagentManager:
@@ -56,14 +111,48 @@ class SubagentManager:
         Spawns a specialist subagent, executes its bounded workflow, and returns
         a structured settlement result.
         """
-        # Resolve profile enum
-        try:
-            profile_enum = SubagentProfile(profile_name)
-        except Exception:
-            profile_enum = SubagentProfile.THREAT_ANALYSIS
-
-        profile_def = get_profile_definition(profile_enum)
+        # Resolve the delegation target. Covers the ten hand-written defensive
+        # Resolve the delegation target. Covers the ten hand-written defensive
+        # specialists and the markdown definitions in subagents/definitions/.
+        # An unknown name is rejected outright: previously it ran Threat
+        # Analysis instead, so a typo appeared to work while running a
+        # different specialist than the caller asked for.
+        profile_enum, profile_def, profile_origin = resolve_profile_definition(profile_name)
         subagent_id = f"sub_{uuid.uuid4().hex[:8]}"
+
+        if profile_origin == "fallback":
+            error = (
+                f"Unknown specialist {profile_name!r}. It is neither a built-in "
+                "defensive profile nor a definition in subagents/definitions/. "
+                "No subagent was run."
+            )
+            result = SubagentStructuredResult(
+                subagent_id=subagent_id,
+                profile=(profile_name or "").strip() or "<empty>",
+                status=SubagentStatus.FAILED,
+                verdict=SubagentVerdict.INCONCLUSIVE,
+                confidence=ValidationConfidence.LOW,
+                summary=error,
+                limitations=[error],
+                error=error,
+            )
+            with self._lock:
+                self.subagent_results[subagent_id] = result
+            event_bus.publish(
+                AgentEvent(
+                    type="subagent_failed",
+                    status="error",
+                    message=error,
+                    investigation_id=parent_investigation_id,
+                    source="subagent_manager",
+                    data={
+                        **result.to_dict(),
+                        "requested_profile": profile_name,
+                        "profile_origin": profile_origin,
+                    },
+                )
+            )
+            return result
 
         parsed_refs = [
             SubagentContextRef(label=r.get("label", "Context"), content=r.get("content", ""))
@@ -95,6 +184,8 @@ class SubagentManager:
                 data={
                     "subagent_id": subagent_id,
                     "profile": profile_enum.value,
+                    "requested_profile": profile_name,
+                    "profile_origin": profile_origin,
                     "name": profile_def.name,
                     "icon": profile_def.icon,
                     "objective": objective,
@@ -178,7 +269,6 @@ class SubagentManager:
         # Example: Threat Analysis specialist with IOC in objective
         if profile_def.profile == SubagentProfile.THREAT_ANALYSIS:
             # Check for IP or Hash in context/objective
-            import re
             ip_match = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", task.objective)
             hash_match = re.search(r"\b[a-fA-F0-9]{32,64}\b", task.objective)
 
@@ -195,16 +285,27 @@ class SubagentManager:
                 evidence_refs.append(f"ip:{ip_match.group(0)}")
 
         elif profile_def.profile == SubagentProfile.MALWARE_ANALYSIS:
-            if "entropy_check" in profile_def.allowed_tools and "code" in task.objective.lower():
+            candidate = _first_path(task, _BINARY_FILE_PATTERN, _SOURCE_FILE_PATTERN)
+            if candidate and "entropy_check" in profile_def.allowed_tools:
                 tool_calls_count += 1
-                res = self.agent.execute_tool("entropy_check", {"filepath": "ideas/code 1"})
-                tool_outputs.append(f"Entropy check: {res.get('output', '')[:300]}")
+                res = self.agent.execute_tool("entropy_check", {"filepath": candidate})
+                tool_outputs.append(f"Entropy check on '{candidate}': {res.get('output', '')[:300]}")
+                evidence_refs.append(f"file:{candidate}")
 
         elif profile_def.profile == SubagentProfile.NETWORK_ANALYSIS:
             if "network_inspect" in profile_def.allowed_tools:
                 tool_calls_count += 1
                 res = self.agent.execute_tool("network_inspect", {})
                 tool_outputs.append(f"Network inspect: {res.get('output', '')[:300]}")
+
+        else:
+            # Markdown-defined specialists carry SubagentProfile.GENERAL. Without
+            # this branch their declared allowed_tools were never exercised, so
+            # a definition could list a tool and still never call it. Every call
+            # below is gated on the profile's own allowlist and stays read-only.
+            tool_outputs, evidence_refs, tool_calls_count = self._run_markdown_tools(
+                task, profile_def, tool_outputs, evidence_refs, tool_calls_count
+            )
 
         summary = "\n".join(tool_outputs) if tool_outputs else "Scoped analysis executed without anomaly indicators."
         return {
@@ -213,6 +314,43 @@ class SubagentManager:
             "evidence_refs": evidence_refs,
             "summary": summary,
         }
+
+    def _run_markdown_tools(
+        self,
+        task: SubagentTaskRequest,
+        profile_def: SpecialistProfileDefinition,
+        tool_outputs: List[str],
+        evidence_refs: List[str],
+        tool_calls_count: int,
+    ) -> tuple:
+        """Bounded read-only tool use for a markdown-defined specialist.
+
+        Only tools the definition itself declared are invoked, and only
+        workspace-confined read-only ones. Returns the updated accumulators.
+        """
+        allowed = set(profile_def.allowed_tools)
+        objective = task.objective or ""
+
+        candidate = _first_path(task, _SOURCE_FILE_PATTERN)
+        if candidate and "workspace_read_file" in allowed:
+            res = self.agent.execute_tool("workspace_read_file", {"filepath": candidate})
+            tool_calls_count += 1
+            tool_outputs.append(
+                f"Read '{candidate}': {str(res.get('output') or res.get('error', ''))[:300]}"
+            )
+            evidence_refs.append(f"file:{candidate}")
+            return tool_outputs, evidence_refs, tool_calls_count
+
+        if "workspace_list_files" in allowed and any(
+            word in objective.lower()
+            for word in ("list", "files", "directory", "folder", "repo", "tree")
+        ):
+            res = self.agent.execute_tool("workspace_list_files", {"root": "."})
+            tool_calls_count += 1
+            tool_outputs.append(f"Listed workspace: {str(res.get('output') or res.get('error', ''))[:300]}")
+            evidence_refs.append("workspace:.")
+
+        return tool_outputs, evidence_refs, tool_calls_count
 
     def _generate_specialist_verdict(
         self,
@@ -234,35 +372,67 @@ class SubagentManager:
         )
 
         try:
-            if hasattr(self.agent, "orchestrator") and hasattr(self.agent.orchestrator, "llm"):
-                llm = self.agent.orchestrator.llm
-                resp = llm.chat(system=profile_def.system_prompt, user=prompt, role="investigator")
-                # Parse JSON if model emitted JSON
-                import re
+            resp = self._call_specialist_llm(profile_def.system_prompt, prompt)
+            if resp:
                 json_match = re.search(r"\{.*\}", resp, re.DOTALL)
                 if json_match:
-                    parsed = json.loads(json_match.group(0))
-                    return {
-                        "verdict": SubagentVerdict(parsed.get("verdict", "confirmed")),
-                        "confidence": ValidationConfidence(parsed.get("confidence", "high")),
-                        "summary": parsed.get("summary", resp[:200]),
-                        "limitations": parsed.get("limitations", []),
-                        "recommended_actions": parsed.get("recommended_actions", []),
-                    }
+                    try:
+                        parsed = json.loads(json_match.group(0))
+                    except (json.JSONDecodeError, ValueError):
+                        parsed = {}
+                    if parsed:
+                        return {
+                            "verdict": _coerce_verdict(parsed.get("verdict")),
+                            "confidence": _coerce_confidence(parsed.get("confidence")),
+                            "summary": parsed.get("summary", resp[:200]),
+                            "limitations": parsed.get("limitations", []),
+                            "recommended_actions": parsed.get("recommended_actions", []),
+                        }
                 return {
-                    "verdict": SubagentVerdict.CONFIRMED,
-                    "confidence": ValidationConfidence.HIGH,
+                    "verdict": SubagentVerdict.INCONCLUSIVE,
+                    "confidence": ValidationConfidence.MEDIUM,
                     "summary": resp[:300],
-                    "limitations": [],
+                    "limitations": ["The specialist returned prose rather than a structured JSON verdict."],
                     "recommended_actions": ["Review findings and monitor endpoint."],
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            last_error = "no AI backend is configured for specialist verdicts"
 
+        # No usable verdict. Report inconclusive rather than a fabricated
+        # confirmation: a specialist that did not actually reason must not look
+        # like one that validated the telemetry.
         return {
-            "verdict": SubagentVerdict.CONFIRMED,
-            "confidence": ValidationConfidence.HIGH,
-            "summary": f"{profile_def.name} analyzed the telemetry and validated findings.",
-            "limitations": [],
+            "verdict": SubagentVerdict.INCONCLUSIVE,
+            "confidence": ValidationConfidence.LOW,
+            "summary": f"{profile_def.name} could not produce a model verdict: {last_error}.",
+            "limitations": [last_error],
             "recommended_actions": ["Preserve collected logs and monitor endpoint."],
         }
+
+    def _call_specialist_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Invoke whatever AI backend the owning agent exposes.
+
+        CyberAgent carries a ``CyberSecurityOrchestrator`` (``_call_role``), not
+        a ``ToolOrchestrator`` (``.llm``). Testing only for ``.llm`` meant this
+        path never ran and every verdict silently fell through to the canned
+        stub. Both shapes are supported here so the specialist actually reasons.
+        """
+        orchestrator = getattr(self.agent, "orchestrator", None)
+        if orchestrator is None:
+            return ""
+
+        if hasattr(orchestrator, "_call_role"):
+            response = orchestrator._call_role("investigator", system_prompt, user_prompt)
+        elif hasattr(orchestrator, "llm"):
+            response = orchestrator.llm.chat(system=system_prompt, user=user_prompt, role="investigator")
+        else:
+            return ""
+
+        response = (response or "").strip()
+        if not response or response.startswith("[AI ERROR]"):
+            return ""
+        if "provider unavailable" in response.lower():
+            return ""
+        return response

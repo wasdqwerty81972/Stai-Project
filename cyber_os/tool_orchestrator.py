@@ -63,6 +63,7 @@ except Exception:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cyber_os.intent_router import IntentRouter, IntentResult, IntentType
+from cyber_os.assets import get_command_registry
 from cyber_tools import (
     ToolRegistry,
     ToolDefinition,
@@ -646,6 +647,11 @@ class ToolOrchestrator:
 
         This is the single entry point the UI should call.
         """
+        # Expand slash commands before any other processing
+        expanded = get_command_registry().expand(user_input)
+        if expanded is not None:
+            user_input = expanded.prompt
+
         steps: List[OrchestrationStep] = []
         tool_calls: List[ToolCall] = []
         self._tool_calls_used = []

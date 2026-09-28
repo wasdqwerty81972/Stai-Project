@@ -9,7 +9,7 @@ Adapted from mature agent subagent architecture for SVS-Cyber.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from cyber_os.subagents.contracts import (
     SubagentCapabilityBundle,
@@ -64,11 +64,10 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
             "malware directly on the host. Deliver clear technical evidence and IOCs."
         ),
         allowed_tools=[
-            "file_analyze",
-            "entropy_check",
             "static_analysis",
+            "entropy_check",
             "workspace_read_file",
-            "windows_defender_scan",
+            "shell_exec",
         ],
         capability_bundles=[SubagentCapabilityBundle.CODE_READ, SubagentCapabilityBundle.EVIDENCE_COLLECTION],
         max_steps=12,
@@ -87,8 +86,8 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
             "workspace_read_file",
             "workspace_list_files",
             "network_inspect",
-            "read_processes",
-            "list_findings",
+            "shell_exec",
+            "notes",
         ],
         capability_bundles=[SubagentCapabilityBundle.SYSTEM_INSPECTION, SubagentCapabilityBundle.CODE_READ],
         max_steps=14,
@@ -106,7 +105,7 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
         allowed_tools=[
             "workspace_read_file",
             "secret_scan",
-            "run_terminal_cmd",
+            "shell_exec",
         ],
         capability_bundles=[SubagentCapabilityBundle.CODE_READ, SubagentCapabilityBundle.DIAGNOSTIC_TERMINAL],
         max_steps=10,
@@ -123,7 +122,7 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
         ),
         allowed_tools=[
             "network_inspect",
-            "run_terminal_cmd",
+            "shell_exec",
         ],
         capability_bundles=[SubagentCapabilityBundle.SYSTEM_INSPECTION, SubagentCapabilityBundle.DIAGNOSTIC_TERMINAL],
         max_steps=10,
@@ -174,7 +173,7 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
             "and ensure chain of custody for all evidence discovered during the investigation."
         ),
         allowed_tools=[
-            "file_analyze",
+            "static_analysis",
             "workspace_read_file",
             "workspace_list_files",
         ],
@@ -193,7 +192,7 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
         ),
         allowed_tools=[
             "workspace_read_file",
-            "list_findings",
+            "notes",
         ],
         capability_bundles=[SubagentCapabilityBundle.CODE_READ],
         max_steps=8,
@@ -225,6 +224,117 @@ def get_profile_definition(profile: SubagentProfile) -> SpecialistProfileDefinit
     return DEFENSIVE_SPECIALIST_PROFILES[SubagentProfile.THREAT_ANALYSIS]
 
 
+# --- Markdown-defined subagents (subagents/definitions/) ---------------------
+#
+# The ten profiles above are hand-written with curated defensive allowlists.
+# ``subagents/definitions/*.md`` supplies many more, loaded at runtime by
+# cyber_os.assets.agents. Resolution below prefers the hand-written profile on
+# any name clash, because only that one has a vetted tool allowlist.
+
+# SVS tool -> capability bundle, so a markdown definition's translated tool
+# access implies the same bundles the hand-written profiles declare explicitly.
+_TOOL_CAPABILITY_BUNDLES: Dict[str, SubagentCapabilityBundle] = {
+    "workspace_read_file": SubagentCapabilityBundle.CODE_READ,
+    "workspace_list_files": SubagentCapabilityBundle.CODE_READ,
+    "shell_exec": SubagentCapabilityBundle.DIAGNOSTIC_TERMINAL,
+    "web_search": SubagentCapabilityBundle.WEB_RESEARCH,
+}
+
+
+def _bundles_for_tools(tools: List[str]) -> List[SubagentCapabilityBundle]:
+    """Derive capability bundles from a resolved SVS tool allowlist."""
+    bundles: List[SubagentCapabilityBundle] = []
+    for tool in tools:
+        bundle = _TOOL_CAPABILITY_BUNDLES.get(tool)
+        if bundle is not None and bundle not in bundles:
+            bundles.append(bundle)
+    return bundles
+
+
+def definition_to_profile(definition: Any) -> SpecialistProfileDefinition:
+    """Adapt a :class:`cyber_os.assets.agents.AgentDefinition` to a profile.
+
+    Markdown definitions have no ``SubagentProfile`` enum member of their own —
+    the enum is a closed set of the ten defensive specialists — so they carry
+    ``SubagentProfile.GENERAL`` as the enum and keep their real identity in
+    ``name``. Capabilities the definition could not be granted are appended to
+    the system prompt so the subagent does not act as though it has them.
+    """
+    allowed_tools = list(definition.allowed_tools)
+    notes = definition.capability_notes()
+
+    system_prompt = definition.system_prompt()
+    if notes:
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            "<capability_limits>\n"
+            "Capabilities declared by this definition that are unavailable in "
+            "this deployment:\n"
+            + "\n".join(f"- {note}" for note in notes)
+            + "\nDo not claim results that would require them.\n"
+            "</capability_limits>"
+        )
+
+    return SpecialistProfileDefinition(
+        profile=SubagentProfile.GENERAL,
+        name=definition.name,
+        icon="📄",
+        specialization=definition.description,
+        system_prompt=system_prompt,
+        allowed_tools=allowed_tools,
+        capability_bundles=_bundles_for_tools(allowed_tools),
+        max_steps=definition.max_steps,
+    )
+
+
+def resolve_profile_definition(
+    profile_name: str,
+) -> Tuple[SubagentProfile, SpecialistProfileDefinition, str]:
+    """Resolve a delegation target by name.
+
+    Returns ``(profile_enum, definition, origin)`` where ``origin`` is one of
+    ``"builtin"``, ``"markdown_definition"``, or ``"fallback"``.
+
+    Previously an unrecognised name silently became Threat Analysis, so
+    delegating to a markdown-defined agent ran a different specialist than the
+    caller asked for. Markdown definitions are now resolved properly, and the
+    legacy fallback is still reported as ``"fallback"`` so callers can tell the
+    difference.
+    """
+    cleaned = (profile_name or "").strip()
+
+    # 1. Hand-written defensive specialist. Wins any name clash.
+    try:
+        profile_enum = SubagentProfile(cleaned)
+    except ValueError:
+        profile_enum = None
+    if profile_enum is not None and profile_enum in DEFENSIVE_SPECIALIST_PROFILES:
+        return profile_enum, DEFENSIVE_SPECIALIST_PROFILES[profile_enum], "builtin"
+
+    # 2. Markdown definition. Imported lazily: cyber_os.assets reads the
+    #    filesystem, and profiles.py is imported during agent construction.
+    if cleaned:
+        try:
+            from cyber_os.assets.agents import get_agent_definition_registry
+
+            definition = get_agent_definition_registry().get(cleaned)
+        except Exception:
+            definition = None
+        if definition is not None:
+            return (
+                SubagentProfile.GENERAL,
+                definition_to_profile(definition),
+                "markdown_definition",
+            )
+
+    # 3. Legacy behaviour, now labelled so the caller can surface it.
+    return (
+        SubagentProfile.THREAT_ANALYSIS,
+        DEFENSIVE_SPECIALIST_PROFILES[SubagentProfile.THREAT_ANALYSIS],
+        "fallback",
+    )
+
+
 def list_available_profiles() -> List[Dict[str, Any]]:
     """Returns a list of all specialist profiles for UI selection and agent tool descriptions."""
     return [
@@ -234,6 +344,7 @@ def list_available_profiles() -> List[Dict[str, Any]]:
             "icon": p.icon,
             "specialization": p.specialization,
             "allowed_tools": p.allowed_tools,
+            "origin": "builtin",
         }
         for p in DEFENSIVE_SPECIALIST_PROFILES.values()
     ]

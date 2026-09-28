@@ -1,6 +1,8 @@
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
+import { DELETION_COORDINATED_RESUME_CLAIM_VERSION } from "./lib/subscriptionPauseResume";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { validateServiceKey } from "./lib/utils";
 
 const MAX_DUE_RESUMES = 50;
@@ -49,6 +51,8 @@ export const subscriptionPauseValidator = v.object({
   lastResumeError: v.optional(v.string()),
   resumedAt: v.optional(v.number()),
   resumedStripeSubscriptionId: v.optional(v.string()),
+  resumeClaimedAt: v.optional(v.number()),
+  resumeClaimVersion: v.optional(v.number()),
 });
 
 export type SubscriptionPauseStatus = Doc<"subscription_pauses">["status"];
@@ -89,6 +93,8 @@ export function toSubscriptionPause(row: Doc<"subscription_pauses">) {
     lastResumeError: row.last_resume_error,
     resumedAt: row.resumed_at,
     resumedStripeSubscriptionId: row.resumed_stripe_subscription_id,
+    resumeClaimedAt: row.resume_claimed_at,
+    resumeClaimVersion: row.resume_claim_version,
   };
 }
 
@@ -135,6 +141,9 @@ export const recordScheduledPause = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      throw new Error("User account deletion is in progress");
+    }
 
     const existing = await ctx.db
       .query("subscription_pauses")
@@ -347,6 +356,7 @@ export const claimResume = mutation({
 
     const row = await ctx.db.get(args.pauseId);
     if (!row) return null;
+    if (await isUserDeletionFenced(ctx.db, row.user_id)) return null;
 
     const staleClaim =
       row.status === "resuming" &&
@@ -366,6 +376,8 @@ export const claimResume = mutation({
     await ctx.db.patch(row._id, {
       status: "resuming",
       resume_claimed_at: args.now,
+      resume_claim_version: DELETION_COORDINATED_RESUME_CLAIM_VERSION,
+      resume_side_effect_authorized_at: undefined,
       last_resume_attempt_at: args.now,
       resume_attempt_count: row.resume_attempt_count + 1,
       updated_at: args.now,
@@ -373,6 +385,55 @@ export const claimResume = mutation({
 
     const claimed = await ctx.db.get(row._id);
     return claimed ? toSubscriptionPause(claimed) : null;
+  },
+});
+
+/** Authorizes the external Stripe call only while account deletion is not fenced. */
+export const authorizeResumeSideEffect = mutation({
+  args: {
+    serviceKey: v.string(),
+    pauseId: v.id("subscription_pauses"),
+    resumeClaimedAt: v.number(),
+    resumeAttemptCount: v.number(),
+    authorizedAt: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db.get(args.pauseId);
+    if (
+      !row ||
+      row.status !== "resuming" ||
+      row.resume_claimed_at !== args.resumeClaimedAt ||
+      row.resume_attempt_count !== args.resumeAttemptCount ||
+      row.resume_claim_version !== DELETION_COORDINATED_RESUME_CLAIM_VERSION ||
+      (await isUserDeletionFenced(ctx.db, row.user_id))
+    ) {
+      return false;
+    }
+    await ctx.db.patch(row._id, {
+      resume_side_effect_authorized_at: args.authorizedAt,
+      updated_at: args.authorizedAt,
+    });
+    return true;
+  },
+});
+
+/** Removes pause records for a deleted organization in bounded batches. */
+export const deleteForDeletedOrganization = mutation({
+  args: { serviceKey: v.string(), organizationId: v.string() },
+  returns: v.object({ deleted: v.number(), hasMore: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("subscription_pauses")
+      .withIndex("by_organization_requested", (q) =>
+        q.eq("organization_id", args.organizationId),
+      )
+      .take(MAX_SUBSCRIPTION_PAUSE_ROWS + 1);
+    const batch = rows.slice(0, MAX_SUBSCRIPTION_PAUSE_ROWS);
+    for (const row of batch) await ctx.db.delete(row._id);
+    return { deleted: batch.length, hasMore: rows.length > batch.length };
   },
 });
 

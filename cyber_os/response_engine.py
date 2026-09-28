@@ -33,6 +33,11 @@ class ResponseResult:
         self.status = status  # REQUESTED, EXECUTING, SUCCESS, FAILED, VERIFICATION_FAILED
         self.result = result
         self.verification = verification
+        # None = no audit logger configured, True = written, False = the write
+        # was attempted and failed. A response action that terminated a process
+        # but left no audit record has to be distinguishable from one that was
+        # recorded properly.
+        self.audited: Optional[bool] = None
         self.timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
     def to_dict(self):
@@ -43,6 +48,7 @@ class ResponseResult:
             'status': self.status,
             'result': self.result,
             'verification': self.verification,
+            'audited': self.audited,
             'timestamp': self.timestamp,
         }
 
@@ -72,7 +78,8 @@ class ResponseEngine:
                     status='FAILED',
                     result=f'Policy denied: {policy_check.get("reason", "Unknown")}',
                 )
-                self.results.append(result)
+                with self._lock:
+                    self.results.append(result)
                 return result
 
             if policy_check.get('requires_approval', False) and not approved:
@@ -83,7 +90,8 @@ class ResponseEngine:
                     status='REQUESTED',
                     result=f'Approval required. Policy: {policy_check.get("policy_id", "unknown")}',
                 )
-                self.results.append(result)
+                with self._lock:
+                    self.results.append(result)
                 return result
 
         # Execute the action
@@ -120,17 +128,24 @@ class ResponseEngine:
 
         # Audit log
         if self.audit_logger:
-            try:
-                self.audit_logger.log_action(
-                    actor="ResponseEngine",
-                    action=action_type,
-                    target=target,
-                    reason=reason,
-                    approval="USER_APPROVED" if approved else "AUTO_APPROVED",
-                    result=result.status,
-                )
-            except Exception:
-                pass
+            # AuditLogger exposes log_event, not log_action. This called the
+            # latter and the bare "except Exception: pass" below swallowed the
+            # AttributeError, so the first time a real logger was passed in
+            # every response action would have gone unrecorded with no sign of
+            # it. The only caller currently passes None, which is what kept the
+            # mismatch hidden.
+            result.audited = self.audit_logger.log_event(
+                action=f"response_{action_type}",
+                details={
+                    "actor": "ResponseEngine",
+                    "action_id": result.action_id,
+                    "target": target,
+                    "reason": reason,
+                    "approval": "USER_APPROVED" if approved else "AUTO_APPROVED",
+                    "result": result.result,
+                },
+                status=result.status,
+            )
 
         with self._lock:
             self.results.append(result)

@@ -29,11 +29,17 @@ import {
   type FormEvent,
 } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, Square, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useHotkeys } from "react-hotkeys-hook";
 import { SvsCyberModelSelector } from "./SvsCyberModelSelector";
-import type { SelectedModel } from "@/app/contexts/StaiGlobalState";
+import type { ChatMode, SelectedModel } from "@/app/contexts/StaiGlobalState";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +55,7 @@ interface SvsCyberComposerProps {
   onStop: () => void | Promise<void>;
   /** "ready" | "submitted" | "streaming" */
   status: SvsStatus;
-  /** Placeholder text */
+  /** Placeholder text (overrides chatMode default if provided) */
   placeholder?: string;
   /** Whether to auto-focus on mount */
   autoFocus?: boolean;
@@ -60,6 +66,10 @@ interface SvsCyberComposerProps {
   onModelChange?: (model: SelectedModel) => void;
   /** Whether to show on landing (centered) */
   isCentered?: boolean;
+  /** Chat mode: "agent" (autonomous with tools) or "ask" (fast Q&A) */
+  chatMode?: ChatMode;
+  /** Called when the user toggles chat mode */
+  onChatModeChange?: (mode: ChatMode) => void;
 }
 
 // ─── Constants matching HackerAI exactly ─────────────────────────────────────
@@ -74,16 +84,20 @@ export function SvsCyberComposer({
   onSubmit,
   onStop,
   status,
-  placeholder = "Message the SVS-Cyber agent",
+  placeholder,
   autoFocus = true,
+  chatId,
   selectedModel = "gemini",
   onModelChange,
   isCentered = false,
+  chatMode = "agent",
+  onChatModeChange,
 }: SvsCyberComposerProps) {
   const isGenerating = status === "submitted" || status === "streaming";
   const isStopping = useRef(false);
   const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Ctrl+C to stop — matches HackerAI SubmitStopButton while preserving normal text copy
   useHotkeys(
@@ -114,6 +128,52 @@ export function SvsCyberComposer({
     }
   }, [isGenerating]);
 
+  // ─── Draft persistence to localStorage ─────────────────────────────────────
+  const DRAFT_TTL = 7 * 24 * 60 * 60 * 1000;
+  const draftKey = `svs_draft_${chatId || 'landing'}`;
+
+  useEffect(() => {
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+    debounceTimer.current = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          draftKey,
+          JSON.stringify({ content: value, timestamp: Date.now() }),
+        );
+      } catch {
+        // ignore localStorage errors (quota, private mode, etc.)
+      }
+    }, 500);
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, [value, draftKey]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as {
+          content: string;
+          timestamp: number;
+        };
+        const age = Date.now() - parsed.timestamp;
+        if (age <= DRAFT_TTL && typeof parsed.content === "string") {
+          onChange(parsed.content);
+        } else if (age > DRAFT_TTL) {
+          localStorage.removeItem(draftKey);
+        }
+      }
+    } catch {
+      // ignore malformed stored drafts
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -130,9 +190,14 @@ export function SvsCyberComposer({
     (e: FormEvent) => {
       e.preventDefault();
       if (isGenerating || !value.trim()) return;
+      try {
+        localStorage.removeItem(draftKey);
+      } catch {
+        // ignore
+      }
       void onSubmit(e);
     },
-    [isGenerating, onSubmit, value],
+    [isGenerating, onSubmit, value, draftKey],
   );
 
   const handleStop = useCallback(async () => {
@@ -146,6 +211,12 @@ export function SvsCyberComposer({
   }, [onStop]);
 
   const canSend = status === "ready" && value.trim().length > 0;
+
+  const effectivePlaceholder =
+    placeholder ??
+    (chatMode === "ask"
+      ? "Ask SVS-Cyber a quick question…"
+      : "Tell SVS-Cyber to investigate your target…");
 
   return (
     /* Matches HackerAI: relative px-4 pb-3 wrapper */
@@ -174,10 +245,19 @@ export function SvsCyberComposer({
                   ? "ring-2 ring-ring/30 border-ring/40 dark:border-ring/40"
                   : ""
               }
+              ${
+                isGenerating
+                  ? "opacity-80 cursor-not-allowed"
+                  : ""
+              }
             `}
           >
             {/* Textarea row — matches HackerAI ChatInputTextarea wrapper */}
-            <div className="overflow-y-auto pl-4 pr-2 pt-3 flex-1">
+            <div
+              className={`overflow-y-auto pl-4 pr-12 pt-3.5 pb-3 flex-1 ${
+                isGenerating ? "pointer-events-none" : ""
+              }`}
+            >
               <TextareaAutosize
                 ref={textareaRef}
                 value={value}
@@ -185,7 +265,7 @@ export function SvsCyberComposer({
                 onKeyDown={handleKeyDown}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
-                placeholder={placeholder}
+                placeholder={effectivePlaceholder}
                 disabled={isGenerating}
                 autoFocus={autoFocus}
                 minRows={1}
@@ -194,7 +274,7 @@ export function SvsCyberComposer({
                   flex rounded-md border-input
                   focus-visible:outline-none focus-visible:ring-ring
                   disabled:cursor-not-allowed disabled:opacity-50
-                  overflow-hidden flex-1 bg-transparent p-0 pt-[1px]
+                  overflow-hidden flex-1 bg-transparent p-0 py-0.5 pr-1
                   border-0 focus-visible:ring-0 focus-visible:ring-offset-0
                   w-full placeholder:text-muted-foreground text-base
                   shadow-none resize-none min-h-[28px]
@@ -202,14 +282,89 @@ export function SvsCyberComposer({
               />
             </div>
 
-            {/* Toolbar row — model selector + send/stop button */}
+            {/* Toolbar row — attachment, chat mode, model selector + send/stop button */}
             <div className="flex min-w-0 items-center gap-2 px-3 pb-3 pt-1">
-              {/* Left: model selector */}
+              {/* Left: attachment button + chat mode toggle + model selector */}
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Wiring SVS file upload handler after backend endpoint is added
+                        }}
+                        disabled={true}
+                        className="
+                          flex h-7 items-center justify-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium
+                          bg-transparent text-muted-foreground
+                          border border-transparent
+                          transition-colors duration-150
+                          hover:bg-accent hover:text-accent-foreground hover:border-border/50
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring
+                          opacity-50 cursor-not-allowed
+                        "
+                        aria-label="Attach files (coming soon)"
+                        data-testid="attachment-button"
+                      >
+                        <Plus className="size-3.5 shrink-0" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs">
+                      Attach files (coming soon)
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+
+                {onChatModeChange && (
+                  <div
+                    className="
+                      inline-flex h-7 items-center rounded-full
+                      bg-muted/50 p-0.5
+                      border border-border/40
+                    "
+                    role="group"
+                    aria-label="Chat mode toggle"
+                    data-testid="chat-mode-toggle"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onChatModeChange("ask")}
+                      className={[
+                        "rounded-full px-2 py-1 text-xs font-medium transition-colors duration-150",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
+                        chatMode === "ask"
+                          ? "bg-background shadow-sm text-foreground border border-border/60"
+                          : "text-muted-foreground hover:text-foreground",
+                      ].join(" ")}
+                      aria-pressed={chatMode === "ask"}
+                    >
+                      Ask
+                      <span className="ml-1 text-[10px] font-normal opacity-60">fast</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChatModeChange("agent")}
+                      className={[
+                        "rounded-full px-2 py-1 text-xs font-medium transition-colors duration-150",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
+                        chatMode === "agent"
+                          ? "bg-background shadow-sm text-foreground border border-border/60"
+                          : "text-muted-foreground hover:text-foreground",
+                      ].join(" ")}
+                      aria-pressed={chatMode === "agent"}
+                    >
+                      Agent
+                      <span className="ml-1 text-[10px] font-normal opacity-60">tools</span>
+                    </button>
+                  </div>
+                )}
+
                 {onModelChange && (
                   <SvsCyberModelSelector
                     value={selectedModel}
                     onChange={onModelChange}
+                    disabled={isGenerating}
                   />
                 )}
               </div>

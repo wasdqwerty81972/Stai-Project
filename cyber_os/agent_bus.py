@@ -1,7 +1,88 @@
 """
-CyberOS Agent Event Bus
-Decouples agent actions from UI rendering via typed events
+CyberOS Agent Event Bus — Bridge Module
+
+This module used to contain a DUPLICATE definition of AgentEvent / AgentEventBus
+(technical debt — two instances with the "same" shape but independent code).
+
+It now re-exports the CANONICAL definitions from `ui.event_bus` so there is only
+ONE real class definition in the repository. Code that does
+``from cyber_os.agent_bus import AgentEventBus`` continues to work.
+
+The historical CyberOS bus had a different API from the canonical one: it was
+constructed per-session (``AgentEventBus(session_id)``) and exposed
+start/stop/emit/on/off, whereas ``ui.event_bus.AgentEventBus`` takes no
+constructor argument and exposes subscribe/publish/session_scope. Re-exporting
+the canonical class directly therefore broke existing callers such as
+``cyber_os/workspace.py``. ``AgentEventBus`` below is a thin legacy-compatible
+subclass that adapts the old surface onto the canonical implementation, so the
+de-duplication holds (one real implementation) without breaking importers.
+
+TODO(future-migration): migrate callers to the canonical
+subscribe/publish/session_scope API and drop this shim.
 """
+
+from ui.event_bus import (
+    AgentEvent,
+    event_bus,
+)
+from ui.event_bus import AgentEventBus as _CanonicalAgentEventBus
+
+# Re-export with explicit module-level aliases so importers get exactly the
+# same names they used to.
+__all__ = [
+    "AgentEvent",
+    "AgentEventBus",
+    "EventType",
+    "Session",
+    "SessionManager",
+    "event_bus",
+]
+
+
+class AgentEventBus(_CanonicalAgentEventBus):
+    """Canonical event bus plus the legacy CyberOS method names.
+
+    Behaviour note: the old bus drained a Queue on a worker thread, so
+    ``start()``/``stop()`` managed that thread. The canonical bus dispatches
+    synchronously inside ``publish()``, so those two calls are now no-ops kept
+    only for source compatibility.
+    """
+
+    def __init__(self, session_id: str = "default"):
+        super().__init__()
+        self.session_id = session_id
+
+    def start(self) -> None:
+        """No-op: the canonical bus has no worker thread to start."""
+
+    def stop(self) -> None:
+        """No-op counterpart to :meth:`start`."""
+
+    def emit(self, event: AgentEvent) -> None:
+        """Legacy alias for :meth:`publish`, stamped with this bus's session."""
+        if not getattr(event, "session_id", "") or event.session_id == "default":
+            event.session_id = self.session_id
+        self.publish(event)
+
+    def on(self, event_type: str, callback) -> None:
+        """Legacy alias for :meth:`subscribe`."""
+        self.subscribe(event_type, callback)
+
+    def off(self, event_type: str, callback) -> None:
+        """Legacy alias for :meth:`unsubscribe`."""
+        self.unsubscribe(event_type, callback)
+
+    def get_history(self, event_type=None, limit=None):
+        """Canonical ``get_history`` plus the legacy ``limit`` (most recent N)."""
+        history = super().get_history(event_type)
+        if limit is not None:
+            return history[-limit:]
+        return history
+
+# ---------------------------------------------------------------------------
+# CyberOS-specific exports that do not exist in ui/event_bus.py.
+# These are preserved because other modules import them.
+# ---------------------------------------------------------------------------
 
 import time
 import uuid
@@ -30,118 +111,6 @@ class EventType(Enum):
     INVESTIGATION_CREATED = "investigation.created"
     MITRE_MAPPED = "mitre.mapped"
     REMEDIATION_PROPOSED = "remediation.proposed"
-
-
-@dataclass
-class AgentEvent:
-    type: str
-    timestamp: str
-    session_id: str
-    tool: Optional[str] = None
-    agent: Optional[str] = None
-    status: str = "pending"
-    message: str = ""
-    data: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "type": self.type,
-            "timestamp": self.timestamp,
-            "session_id": self.session_id,
-            "tool": self.tool,
-            "agent": self.agent,
-            "status": self.status,
-            "message": self.message,
-            "data": self.data,
-        }
-
-    @classmethod
-    def create(cls, event_type: EventType, session_id: str, **kwargs) -> "AgentEvent":
-        return cls(
-            type=event_type.value,
-            timestamp=datetime.now().isoformat(),
-            session_id=session_id,
-            **kwargs,
-        )
-
-
-class AgentEventBus:
-    """Thread-safe event bus for agent-to-UI communication."""
-
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-        self._queue: Queue = Queue()
-        self._listeners: Dict[str, List[Callable]] = {}
-        self._history: List[AgentEvent] = []
-        self._lock = threading.RLock()
-        self._running = False
-        self._worker_thread = None
-
-    def start(self):
-        """Start the event processing loop."""
-        self._running = True
-        self._worker_thread = threading.Thread(target=self._process_loop, daemon=True)
-        self._worker_thread.start()
-
-    def stop(self):
-        """Stop the event processing loop."""
-        self._running = False
-        if self._worker_thread:
-            self._worker_thread.join(timeout=1)
-
-    def emit(self, event: AgentEvent):
-        """Emit an event to the bus."""
-        with self._lock:
-            self._history.append(event)
-            if len(self._history) > 1000:
-                self._history = self._history[-1000:]
-        self._queue.put(event)
-
-    def on(self, event_type: str, callback: Callable[[AgentEvent], None]):
-        """Register a callback for an event type."""
-        if event_type not in self._listeners:
-            self._listeners[event_type] = []
-        self._listeners[event_type].append(callback)
-
-    def off(self, event_type: str, callback: Callable[[AgentEvent], None]):
-        """Unregister a callback."""
-        if event_type in self._listeners:
-            self._listeners[event_type] = [cb for cb in self._listeners[event_type] if cb != callback]
-
-    def get_history(self, event_type: Optional[str] = None, limit: int = 100) -> List[AgentEvent]:
-        """Get event history, optionally filtered by type."""
-        with self._lock:
-            events = self._history
-            if event_type:
-                events = [e for e in events if e.type == event_type]
-            return events[-limit:]
-
-    def _process_loop(self):
-        """Process events from the queue."""
-        while self._running:
-            try:
-                event = self._queue.get(timeout=0.1)
-                self._dispatch(event)
-            except Exception:
-                continue
-
-    def _dispatch(self, event: AgentEvent):
-        """Dispatch event to registered listeners."""
-        # Dispatch to specific type listeners
-        callbacks = self._listeners.get(event.type, [])
-        for callback in callbacks:
-            try:
-                callback(event)
-            except Exception:
-                pass
-
-        # Dispatch to wildcard listeners
-        wildcards = self._listeners.get("*", [])
-        for callback in wildcards:
-            try:
-                callback(event)
-            except Exception:
-                pass
 
 
 class Session:

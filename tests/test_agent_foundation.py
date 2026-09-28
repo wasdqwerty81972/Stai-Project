@@ -27,7 +27,18 @@ class AgentFoundationTests(unittest.TestCase):
     def test_tool_manifest_contains_safety_metadata(self):
         orchestrator = ToolOrchestrator()
         manifest = orchestrator.tool_manifest()
-        defender = next(item for item in manifest if item["name"] == "windows_defender_scan")
+        # A bare next() raises StopIteration rather than failing an assertion,
+        # which reports as an error with no statement of what was expected. This
+        # is the only test covering the manifest's safety metadata, so it has to
+        # say so when the tool goes missing.
+        defender = next(
+            (item for item in manifest if item["name"] == "windows_defender_scan"), None
+        )
+        self.assertIsNotNone(
+            defender,
+            "windows_defender_scan is absent from the manifest; it is the only "
+            "tool whose detections are converted into critical findings",
+        )
         self.assertIn("risk_level", defender)
         self.assertIn("requires_admin", defender)
         self.assertIn("environments", defender)

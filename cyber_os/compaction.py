@@ -26,16 +26,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 DEFAULT_TOOL_OUTPUT_TOKEN_BUDGET = 25_000
 CHARS_PER_TOKEN = 4
 
-# Tools whose outputs must NEVER be pruned because they represent ongoing state
+# Tools whose outputs must NEVER be pruned because they represent ongoing state.
+# Every name here is checked against the live registry by
+# tests/test_tool_registry_consistency.py: a name no tool answers to protects
+# nothing, so a typo or an inherited alias would silently drop the protection.
 PROTECTED_TOOLS: Set[str] = {
     "todo_write",
     "notes",
-    "create_note",
-    "list_notes",
-    "update_note",
-    "delete_note",
-    "finding_created",
-    "evidence_added",
 }
 
 
@@ -51,14 +48,14 @@ def format_pruned_placeholder(tool_name: str, args: Dict[str, Any], output_str: 
     line_count = len(output_str.splitlines()) if output_str else 0
     byte_count = len(output_str.encode("utf-8")) if output_str else 0
 
-    if tool_name in ("run_terminal_cmd", "interact_terminal_session", "shell_exec"):
+    if tool_name == "shell_exec":
         cmd = args.get("command") or args.get("cmd") or "terminal command"
         short_cmd = (cmd[:60] + "...") if len(cmd) > 60 else cmd
         return f"[Terminal: ran '{short_cmd}' ({line_count} lines, {byte_count} bytes) - output compacted]"
-    elif tool_name in ("workspace_read_file", "file_read", "read_file"):
+    elif tool_name == "workspace_read_file":
         path = args.get("filepath") or args.get("path") or "file"
         return f"[File: read '{path}' ({byte_count} bytes) - output compacted]"
-    elif tool_name in ("workspace_list_files", "list_files"):
+    elif tool_name == "workspace_list_files":
         return f"[File Listing: {line_count} files discovered - output compacted]"
     elif tool_name == "windows_defender_scan":
         target = args.get("path") or args.get("target") or "target"
