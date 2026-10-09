@@ -11,14 +11,18 @@ Orchestrates defensive specialist subagents:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from cyber_os.llm_json import extract_json_object
 from cyber_os.subagents.contracts import (
+    MAX_ACTIVE_SUBAGENTS_PER_PARENT,
     SubagentCapabilityBundle,
     SubagentContextRef,
     SubagentProfile,
@@ -34,6 +38,7 @@ from cyber_os.subagents.profiles import (
     get_profile_definition,
     resolve_profile_definition,
 )
+from cyber_os.subagents.swarm import DefensiveSwarmExecution, DefensiveSwarmPlan
 from ui.event_bus import AgentEvent, event_bus
 
 
@@ -106,12 +111,30 @@ class SubagentManager:
         parent_investigation_id: str = "",
         context_refs: Optional[List[Dict[str, str]]] = None,
         success_criteria: Optional[List[str]] = None,
+        session_id: str = "",
     ) -> SubagentStructuredResult:
         """
         Spawns a specialist subagent, executes its bounded workflow, and returns
         a structured settlement result.
+
+        ``session_id`` is explicit because this runs on ThreadPoolExecutor
+        workers during a swarm, where the event bus's thread-local session scope
+        is not inherited. Without it every subagent event was stamped
+        "default" and the client discarded it.
         """
-        # Resolve the delegation target. Covers the ten hand-written defensive
+        with event_bus.session_scope(session_id) if session_id else contextlib.nullcontext():
+            return self._delegate_task(
+                profile_name, objective, parent_investigation_id, context_refs, success_criteria
+            )
+
+    def _delegate_task(
+        self,
+        profile_name: str,
+        objective: str,
+        parent_investigation_id: str,
+        context_refs: Optional[List[Dict[str, str]]],
+        success_criteria: Optional[List[str]],
+    ) -> SubagentStructuredResult:
         # Resolve the delegation target. Covers the ten hand-written defensive
         # specialists and the markdown definitions in subagents/definitions/.
         # An unknown name is rejected outright: previously it ran Threat
@@ -255,6 +278,91 @@ class SubagentManager:
 
         return result
 
+    def delegate_swarm(
+        self,
+        plan: DefensiveSwarmPlan,
+        parent_investigation_id: str = "",
+        context_refs: Optional[List[Dict[str, str]]] = None,
+        session_id: str = "",
+    ) -> DefensiveSwarmExecution:
+        """Run a small defensive team and return every child result to its parent.
+
+        The planner limits membership to vetted profiles. This method intentionally
+        performs no synthesis and no remediation: only the parent agent can make
+        a final assessment or request approval for a system-changing action.
+        """
+        selected_profiles = list(dict.fromkeys(plan.profiles))[:MAX_ACTIVE_SUBAGENTS_PER_PARENT]
+        event_bus.publish(
+            AgentEvent(
+                type="swarm_planned",
+                status="running",
+                message=f"Defensive team planned: {len(selected_profiles)} specialist(s)",
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data={
+                    "profiles": [profile.value for profile in selected_profiles],
+                    "read_only": plan.read_only,
+                    "max_concurrency": min(plan.max_concurrency, MAX_ACTIVE_SUBAGENTS_PER_PARENT),
+                },
+            )
+        )
+        if not selected_profiles:
+            return DefensiveSwarmExecution(plan=plan)
+
+        results_by_profile: Dict[SubagentProfile, SubagentStructuredResult] = {}
+        max_workers = min(plan.max_concurrency, MAX_ACTIVE_SUBAGENTS_PER_PARENT, len(selected_profiles))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="svs-swarm") as executor:
+            futures = {
+                executor.submit(
+                    self.delegate_task,
+                    profile.value,
+                    plan.objective,
+                    parent_investigation_id=parent_investigation_id,
+                    context_refs=context_refs,
+                    success_criteria=["Return only evidence-backed defensive findings."],
+                    session_id=session_id,
+                ): profile
+                for profile in selected_profiles
+            }
+            for future in as_completed(futures):
+                profile = futures[future]
+                try:
+                    results_by_profile[profile] = future.result()
+                except Exception as exc:
+                    results_by_profile[profile] = SubagentStructuredResult(
+                        subagent_id=f"sub_{profile.value}_failed",
+                        profile=profile.value,
+                        status=SubagentStatus.FAILED,
+                        verdict=SubagentVerdict.INCONCLUSIVE,
+                        confidence=ValidationConfidence.LOW,
+                        summary="Specialist execution failed before producing evidence.",
+                        limitations=[str(exc)],
+                        error=str(exc),
+                    )
+
+        execution = DefensiveSwarmExecution(
+            plan=plan,
+            results=[results_by_profile[profile] for profile in selected_profiles],
+        )
+        event_bus.publish(
+            AgentEvent(
+                type="swarm_completed",
+                status="completed" if execution.failed_count == 0 else "warning",
+                message=(
+                    f"Defensive team completed: {execution.completed_count} completed, "
+                    f"{execution.failed_count} unavailable"
+                ),
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data={
+                    "completed": execution.completed_count,
+                    "failed": execution.failed_count,
+                    "read_only": plan.read_only,
+                },
+            )
+        )
+        return execution
+
     def _execute_subagent_tools(
         self,
         task: SubagentTaskRequest,
@@ -274,29 +382,56 @@ class SubagentManager:
 
             if hash_match and "virustotal_hash_lookup" in profile_def.allowed_tools:
                 tool_calls_count += 1
-                res = self.agent.execute_tool("virustotal_hash_lookup", {"hash": hash_match.group(0)})
-                tool_outputs.append(f"Hash lookup: {res.get('output', '')[:300]}")
+                # The registered tool is vt_hash_lookup(file_hash=...); passing
+                # "hash" raised TypeError, so the threat-intel branch collected
+                # no evidence and never reported a hash lookup.
+                res = self._call_scoped_tool(
+                    "virustotal_hash_lookup", {"file_hash": hash_match.group(0)}
+                )
+                tool_outputs.append(f"Hash lookup: {res[:300]}")
                 evidence_refs.append(f"hash:{hash_match.group(0)}")
+                findings.extend(self._findings_from_tool("virustotal_hash_lookup", res))
 
             elif ip_match and "virustotal_ip_lookup" in profile_def.allowed_tools:
                 tool_calls_count += 1
-                res = self.agent.execute_tool("virustotal_ip_lookup", {"ip": ip_match.group(0)})
-                tool_outputs.append(f"IP lookup: {res.get('output', '')[:300]}")
+                res = self._call_scoped_tool(
+                    "virustotal_ip_lookup", {"ip_address": ip_match.group(0)}
+                )
+                tool_outputs.append(f"IP lookup: {res[:300]}")
                 evidence_refs.append(f"ip:{ip_match.group(0)}")
+                findings.extend(self._findings_from_tool("virustotal_ip_lookup", res))
 
         elif profile_def.profile == SubagentProfile.MALWARE_ANALYSIS:
             candidate = _first_path(task, _BINARY_FILE_PATTERN, _SOURCE_FILE_PATTERN)
             if candidate and "entropy_check" in profile_def.allowed_tools:
                 tool_calls_count += 1
-                res = self.agent.execute_tool("entropy_check", {"filepath": candidate})
-                tool_outputs.append(f"Entropy check on '{candidate}': {res.get('output', '')[:300]}")
+                res = self._call_scoped_tool("entropy_check", {"filepath": candidate})
+                tool_outputs.append(f"Entropy check on '{candidate}': {res[:300]}")
                 evidence_refs.append(f"file:{candidate}")
+                findings.extend(self._findings_from_tool("entropy_check", res))
 
         elif profile_def.profile == SubagentProfile.NETWORK_ANALYSIS:
             if "network_inspect" in profile_def.allowed_tools:
                 tool_calls_count += 1
-                res = self.agent.execute_tool("network_inspect", {})
-                tool_outputs.append(f"Network inspect: {res.get('output', '')[:300]}")
+                res = self._call_scoped_tool("network_inspect", {})
+                tool_outputs.append(f"Network inspect: {res[:300]}")
+
+        elif profile_def.profile == SubagentProfile.NETWORK_CONTAINMENT_ADVISOR:
+            # This specialist is intentionally advisory-only. It can reason
+            # over parent-supplied evidence but cannot inspect or modify the
+            # endpoint itself, avoiding accidental containment authority.
+            refs = [ref.label for ref in task.context_refs]
+            summary = (
+                "Reviewing parent-supplied network evidence for reversible, approval-gated recommendations."
+                if refs
+                else "No network evidence was supplied; no containment recommendation can be verified."
+            )
+            return {
+                "tool_calls_count": 0,
+                "findings": [],
+                "evidence_refs": refs,
+                "summary": summary,
+            }
 
         else:
             # Markdown-defined specialists carry SubagentProfile.GENERAL. Without
@@ -333,11 +468,9 @@ class SubagentManager:
 
         candidate = _first_path(task, _SOURCE_FILE_PATTERN)
         if candidate and "workspace_read_file" in allowed:
-            res = self.agent.execute_tool("workspace_read_file", {"filepath": candidate})
+            res = self._call_scoped_tool("workspace_read_file", {"filepath": candidate})
             tool_calls_count += 1
-            tool_outputs.append(
-                f"Read '{candidate}': {str(res.get('output') or res.get('error', ''))[:300]}"
-            )
+            tool_outputs.append(f"Read '{candidate}': {res[:300]}")
             evidence_refs.append(f"file:{candidate}")
             return tool_outputs, evidence_refs, tool_calls_count
 
@@ -345,12 +478,63 @@ class SubagentManager:
             word in objective.lower()
             for word in ("list", "files", "directory", "folder", "repo", "tree")
         ):
-            res = self.agent.execute_tool("workspace_list_files", {"root": "."})
+            res = self._call_scoped_tool("workspace_list_files", {"root": "."})
             tool_calls_count += 1
-            tool_outputs.append(f"Listed workspace: {str(res.get('output') or res.get('error', ''))[:300]}")
+            tool_outputs.append(f"Listed workspace: {res[:300]}")
             evidence_refs.append("workspace:.")
 
         return tool_outputs, evidence_refs, tool_calls_count
+
+    def _call_scoped_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Run a scoped tool and return its output text, never raising.
+
+        A wrong argument name or an absent binary used to propagate out of
+        ``_execute_subagent_tools``, and ``delegate_task`` reported the whole
+        delegation as failed. A specialist that could not run one lookup should
+        still return the verdict for the evidence it did collect.
+        """
+        try:
+            result = self.agent.execute_tool(tool_name, args)
+        except Exception as exc:
+            return f"Tool '{tool_name}' raised {type(exc).__name__}: {exc}"
+        if not isinstance(result, dict):
+            return str(result or "")
+        if result.get("success") is False:
+            return str(result.get("error") or result.get("output") or "")
+        return str(result.get("output") or "")
+
+    def _findings_from_tool(self, tool_name: str, output: str) -> List[Dict[str, Any]]:
+        """Structured findings a scoped tool reported, if it reported any.
+
+        Only the tool's own structured findings count. Inferring them from
+        output text would let a tool's help text or an IOC's own name read as a
+        confirmed detection.
+        """
+        try:
+            payload = json.loads(output)
+        except (TypeError, ValueError):
+            return []
+        if isinstance(payload, list):
+            reported = payload
+        elif isinstance(payload, dict):
+            reported = payload.get("findings") or payload.get("finding") or []
+        else:
+            return []
+        if isinstance(reported, dict):
+            reported = [reported]
+        findings: List[Dict[str, Any]] = []
+        for item in reported:
+            if not isinstance(item, dict):
+                continue
+            findings.append(
+                {
+                    "tool": tool_name,
+                    "title": item.get("title") or item.get("type") or f"Finding from {tool_name}",
+                    "severity": str(item.get("severity") or "medium").lower(),
+                    "evidence": str(item.get("message") or item.get("evidence") or "")[:300],
+                }
+            )
+        return findings
 
     def _generate_specialist_verdict(
         self,
@@ -374,20 +558,15 @@ class SubagentManager:
         try:
             resp = self._call_specialist_llm(profile_def.system_prompt, prompt)
             if resp:
-                json_match = re.search(r"\{.*\}", resp, re.DOTALL)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group(0))
-                    except (json.JSONDecodeError, ValueError):
-                        parsed = {}
-                    if parsed:
-                        return {
-                            "verdict": _coerce_verdict(parsed.get("verdict")),
-                            "confidence": _coerce_confidence(parsed.get("confidence")),
-                            "summary": parsed.get("summary", resp[:200]),
-                            "limitations": parsed.get("limitations", []),
-                            "recommended_actions": parsed.get("recommended_actions", []),
-                        }
+                parsed = extract_json_object(resp)
+                if parsed:
+                    return {
+                        "verdict": _coerce_verdict(parsed.get("verdict")),
+                        "confidence": _coerce_confidence(parsed.get("confidence")),
+                        "summary": parsed.get("summary", resp[:200]),
+                        "limitations": parsed.get("limitations", []),
+                        "recommended_actions": parsed.get("recommended_actions", []),
+                    }
                 return {
                     "verdict": SubagentVerdict.INCONCLUSIVE,
                     "confidence": ValidationConfidence.MEDIUM,
@@ -432,6 +611,8 @@ class SubagentManager:
 
         response = (response or "").strip()
         if not response or response.startswith("[AI ERROR]"):
+            if response.startswith("[AI ERROR]"):
+                raise RuntimeError(response)
             return ""
         if "provider unavailable" in response.lower():
             return ""

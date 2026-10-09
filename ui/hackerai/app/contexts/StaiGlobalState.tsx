@@ -30,10 +30,9 @@ import {
 export type ChatMode = "agent" | "ask";
 export type SelectedModel =
   | "auto"
-  | "gemini"
-  | "omniroute"
-  | "svs-cyber-ai"
-  | "3-brain-stack";
+  | "gemini-3.1-flash-lite"
+  | "gemini-3.1-pro-preview"
+  | "gemini-3.8-flash";
 export type SandboxPreference = "local" | "e2b" | "desktop" | null;
 export type SubscriptionTier = "free" | "pro" | "team";
 export type AgentPermissionMode = "normal" | "cautious" | "yolo";
@@ -64,33 +63,26 @@ export const SVS_MODELS: Array<{
   {
     id: "auto",
     label: "Automatic",
-    description: "Use SVS-Cyber's configured local provider routing",
+    description: "Use SVS-Cyber's default Gemini routing",
     available: true,
   },
   {
-    id: "gemini",
-    label: "Gemini",
-    description: "Google Gemini — fast general-purpose",
+    id: "gemini-3.1-flash-lite",
+    label: "Gemini 3.1 Flash-Lite",
+    description: "Fast, efficient investigations",
     available: true,
   },
   {
-    id: "omniroute",
-    label: "OmniRoute",
-    description: "SVS-Cyber OmniRoute — balanced routing",
+    id: "gemini-3.1-pro-preview",
+    label: "Gemini 3.1 Pro",
+    description: "Advanced reasoning for complex investigations",
     available: true,
   },
   {
-    id: "svs-cyber-ai",
-    label: "SVS-Cyber AI",
-    description: "Specialized defensive security model",
+    id: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    description: "Latest fast Gemini model",
     available: true,
-  },
-  {
-    id: "3-brain-stack",
-    label: "3-Brain Stack",
-    description: "Gemini + OmniRoute + SVS-Cyber AI combined",
-    available: false,
-    badge: "Development",
   },
 ];
 

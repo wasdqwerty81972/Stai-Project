@@ -12,6 +12,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import threading
@@ -23,6 +24,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from cyber_os.assets import get_command_registry
 from ui.event_bus import AgentEvent, event_bus
 
 # ---------------------------------------------------------------------------
@@ -47,11 +49,30 @@ def _get_agent() -> Any:
     return _agent
 
 
+def _session_conversation_history(session_id: str) -> list[dict[str, str]]:
+    """Return bounded user/assistant turns for one investigation only."""
+    turns: list[dict[str, str]] = []
+    for event in chat_history:
+        if event.get("session_id") != session_id or event.get("type") not in {"user_message", "response"}:
+            continue
+        message = str(event.get("message") or "").strip()
+        if message:
+            turns.append({"role": "user" if event["type"] == "user_message" else "assistant", "content": message[:1200]})
+    return turns[-12:]
+
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="CyberAgent API")
+
+SUPPORTED_CHAT_MODELS = {
+    "auto",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.8-flash",
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -120,12 +141,26 @@ def api_health() -> dict[str, str]:
 
 @app.get("/api/models")
 def list_models() -> list[dict[str, str]]:
-    """Return only model modes the local agent can actually execute."""
-    return [{
-        "id": "auto",
-        "label": "Automatic",
-        "description": "Use SVS-Cyber's configured local provider routing",
-    }]
+    """Return Gemini-only models that the local agent can execute."""
+    return [
+        {"id": "auto", "label": "Automatic", "description": "Use SVS-Cyber's default Gemini routing"},
+        {"id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite", "description": "Fast, efficient investigations"},
+        {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "description": "Advanced reasoning for complex investigations"},
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "description": "Latest fast Gemini model"},
+    ]
+
+
+@app.get("/api/commands")
+def list_commands() -> list[dict[str, str]]:
+    """Expose composer-safe slash-command metadata without prompt bodies."""
+    return [
+        {
+            "name": str(command["name"]),
+            "description": str(command["description"]),
+            "argument_hint": str(command.get("argument_hint") or ""),
+        }
+        for command in get_command_registry().index()
+    ]
 
 
 @app.post("/api/chat")
@@ -149,8 +184,8 @@ async def chat(payload: dict[str, Any]) -> dict[str, Any]:
 
     session_id = payload.get("session_id") or payload.get("chatId") or "default"
     model = payload.get("model")
-    if model and model != "auto":
-        raise HTTPException(status_code=400, detail="This SVS-Cyber backend only supports automatic model routing")
+    if model and model not in SUPPORTED_CHAT_MODELS:
+        raise HTTPException(status_code=400, detail="Unsupported Gemini model")
     had_user_message = any(
         entry.get("session_id") == session_id and entry.get("type") == "user_message"
         for entry in chat_history
@@ -264,8 +299,12 @@ _load_history()
 @app.get("/api/conversations")
 def list_conversations() -> list[dict[str, Any]]:
     """Return lightweight investigation metadata, never lifecycle rows as titles."""
+    # Snapshot under the lock: iterating a deque that ``_on_event`` appends to
+    # concurrently raises RuntimeError mid-response.
+    with _history_lock:
+        entries = list(chat_history)
     sessions: dict[str, dict[str, Any]] = {}
-    for entry in chat_history:
+    for entry in entries:
         sid = entry.get("session_id") or "default"
         if sid not in sessions:
             sessions[sid] = {
@@ -286,17 +325,21 @@ def list_conversations() -> list[dict[str, Any]]:
 
 @app.get("/api/conversations/{session_id}/messages")
 def get_messages(session_id: str) -> list[dict[str, Any]]:
-    return [e for e in chat_history if e.get("session_id", "default") == session_id]
+    with _history_lock:
+        return [e for e in list(chat_history) if e.get("session_id", "default") == session_id]
 
 
 @app.delete("/api/conversations/{session_id}")
 def clear_session(session_id: str) -> dict[str, str]:
     global chat_history
-    chat_history = deque(
-        (e for e in chat_history if e.get("session_id", "default") != session_id),
-        maxlen=MAX_HISTORY,
-    )
+    # Rebuilt under the lock. Filtering outside it raced with ``_on_event``,
+    # which appends to the deque it is about to replace, so a clear could
+    # resurrect events published during the call.
     with _history_lock:
+        chat_history = deque(
+            (e for e in chat_history if e.get("session_id", "default") != session_id),
+            maxlen=MAX_HISTORY,
+        )
         _save_history()
     return {"status": "cleared", "session_id": session_id}
 
@@ -620,9 +663,20 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     with _ws_lock:
         active_connections.append(ws)
 
-    # Send current state immediately on connect
+    # Send current state immediately on connect. Shaped as a full AgentEvent:
+    # the client filters and renders every frame through the same reducer, and a
+    # bare {"type","data"} dict left event.session_id undefined, so the frame
+    # was dropped by the session check rather than applied.
     try:
-        await ws.send_json({"type": "state", "data": _get_state()})
+        await ws.send_json(
+            AgentEvent(
+                type="state",
+                status="ok",
+                message="Backend state",
+                source="api_server",
+                data=_get_state(),
+            ).to_dict()
+        )
     except Exception:
         pass
 
@@ -688,20 +742,27 @@ def _run_agent_prompt(prompt: str) -> None:
 
 def _run_agent_prompt_sync(prompt: str, session_id: str, model: str | None = None) -> str:
     """Execute one prompt and attach the session to newly emitted events."""
-    # The orchestrator owns provider routing.  Avoid mutating undeclared
-    # attributes and never pretend that the UI chose a provider.
-    if model and model != "auto":
-        raise ValueError("This SVS-Cyber backend only supports automatic model routing")
+    if model and model not in SUPPORTED_CHAT_MODELS:
+        raise ValueError("Unsupported Gemini model")
     # CyberAgent keeps cancellation and investigation state on one singleton.
     # Serialize runs so one session cannot clear or signal another run's state.
     with _agent_run_lock:
         agent = _get_agent()
+        provider = getattr(getattr(agent, "orchestrator", None), "_api", None)
+        previous_model = getattr(provider, "model_override", None)
+        if provider is not None:
+            provider.model_override = None if model in (None, "auto") else model
         with _active_runs_lock:
             _active_runs[session_id] = agent.cancel_event
         try:
             with event_bus.session_scope(session_id):
+                history = _session_conversation_history(session_id)
+                if "conversation_history" in inspect.signature(agent.process_chat_command).parameters:
+                    return str(agent.process_chat_command(prompt, session_id=session_id, conversation_history=history))
                 return str(agent.process_chat_command(prompt, session_id=session_id))
         finally:
+            if provider is not None:
+                provider.model_override = previous_model
             with _active_runs_lock:
                 _active_runs.pop(session_id, None)
 

@@ -26,6 +26,27 @@ import urllib.error
 import urllib.request
 
 
+def _http_responded(url: str, timeout: float = 1.0) -> bool:
+    """Return True once ``url`` gets any HTTP response at all.
+
+    Readiness here means "this process is listening and serving", not "this
+    route returned 200". ``urllib.request.urlopen`` raises ``HTTPError`` for
+    every status >= 400, and ``HTTPError`` subclasses ``URLError``, so a 404
+    used to land in the same ``except`` clause as a refused connection. The
+    previous ``200 <= status < 500`` check could therefore never see a 4xx: it
+    was dead code, and a Next.js dev server that was up and answering 404 was
+    reported as not running until the launch timed out.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        # The server answered; the status is not what this probe measures.
+        return True
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the SVS-Cyber CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -138,21 +159,14 @@ def main() -> int:
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError(f"Process exited with code {process.returncode}: {url}")
-                try:
-                    with urllib.request.urlopen(url, timeout=1) as response:
-                        if 200 <= response.status < 500:
-                            return
-                except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-                    last_error = str(exc)
+                if _http_responded(url):
+                    return
+                last_error = "no response"
                 time.sleep(0.25)
             raise TimeoutError(f"Timed out waiting for {url}: {last_error}")
 
         def is_ready(url: str) -> bool:
-            try:
-                with urllib.request.urlopen(url, timeout=1) as response:
-                    return 200 <= response.status < 500
-            except (urllib.error.URLError, TimeoutError, ConnectionError):
-                return False
+            return _http_responded(url)
 
         def stop_children() -> None:
             for process in reversed(children):
@@ -189,8 +203,12 @@ def main() -> int:
                     [node, next_cli, "dev", "-p", str(args.frontend_port), "--turbopack"],
                     os.path.join(project_root, "ui", "hackerai"),
                 )
+                # Probe the app root, not an incidental SEO route. A 404 on
+                # /robots.txt previously held the launcher for the full
+                # 360s timeout even though the dev server was serving; the
+                # root is the page the UI is actually opened on.
                 wait_ready(
-                    f"{frontend_url}/robots.txt",
+                    f"{frontend_url}/",
                     frontend,
                     timeout_seconds=360,
                 )

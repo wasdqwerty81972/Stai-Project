@@ -15,3 +15,8 @@ tsconfig.tsbuildinfo
 dataxyz/
 .cyber_soc_engine.git-backup/
 
+# Runtime forensic audit trail. Per-run operator data, not source. audit_log.json
+# is the pre-JSONL format, kept here so an already-tracked copy stops churning.
+audit_log.jsonl
+audit_log.json
+

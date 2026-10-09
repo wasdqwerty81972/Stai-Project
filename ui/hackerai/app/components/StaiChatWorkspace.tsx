@@ -27,15 +27,11 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Activity } from "lucide-react";
 import { useRouter } from "next/navigation";
-import {
-  ToolWorkspaceProvider,
-  useToolWorkspace,
-} from "@/app/contexts/ToolWorkspaceContext";
-import { ToolWorkspaceContainer } from "./ToolWorkspaceContainer";
 import type { ToolWorkspaceContent } from "@/app/contexts/ToolWorkspaceContext";
 import {
   getStaiMessages,
   getStaiConversations,
+  getStaiCommands,
   clearStaiConversations,
   openStaiEvents,
   respondToStaiApproval,
@@ -605,9 +601,7 @@ export function StaiChatWorkspace(props: {
 }) {
   return (
     <StaiGlobalStateProvider>
-      <ToolWorkspaceProvider>
-        <StaiChatWorkspaceContent {...props} />
-      </ToolWorkspaceProvider>
+      <StaiChatWorkspaceContent {...props} />
     </StaiGlobalStateProvider>
   );
 }
@@ -629,10 +623,12 @@ function StaiChatWorkspaceContent({
   const [status, setStatus] = useState<SvsStatus>("ready");
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [commands, setCommands] = useState<
+    { name: string; description: string; argument_hint?: string }[]
+  >([]);
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // The backend owns provider routing. "auto" is the only mode it exposes.
   const [selectedModel, setSelectedModel] = useState<SelectedModel>("auto");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const eventLogRef = useRef(new Map<string, StaiAgentEvent>());
   const loggedSessionRef = useRef(sessionId);
@@ -640,7 +636,6 @@ function StaiChatWorkspaceContent({
   const activeSessionIdRef = useRef<string | null>(null);
   const requestControllerRef = useRef<AbortController | null>(null);
   const router = useRouter();
-  const { openWorkspace, updateWorkspaceContent } = useToolWorkspace();
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 767px)");
@@ -676,17 +671,9 @@ function StaiChatWorkspaceContent({
           ].slice(-8),
         );
       }
-      const workspace = workspaceFromEvent(
-        event,
-        event.session_id || sessionId,
-      );
-      if (workspace) {
-        if (event.type === "tool_started") openWorkspace(workspace);
-        else updateWorkspaceContent(workspace);
-      }
       setEntries(reconcileEvents([...eventLogRef.current.values()]));
     },
-    [openWorkspace, sessionId, updateWorkspaceContent],
+    [],
   );
 
   // Load conversations list + connect WebSocket
@@ -702,6 +689,12 @@ function StaiChatWorkspaceContent({
     getStaiConversations()
       .then((items) => {
         if (!cancelled) setConversations(items);
+      })
+      .catch(() => undefined);
+
+    getStaiCommands()
+      .then((items) => {
+        if (!cancelled) setCommands(items);
       })
       .catch(() => undefined);
 
@@ -953,7 +946,7 @@ function StaiChatWorkspaceContent({
         )}
 
         {/* Message list */}
-        <section className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-4">
+        <section className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-28">
           {landing && displayed.length === 0 && status === "ready" ? (
             <SvsLandingState onSuggestion={setDraft} />
           ) : (
@@ -986,11 +979,9 @@ function StaiChatWorkspaceContent({
           selectedModel={selectedModel}
           onModelChange={setSelectedModel}
           isCentered={landing}
+          commands={commands}
         />
       </main>
-
-      {/* Right-side tool workspace */}
-      <ToolWorkspaceContainer />
     </div>
   );
 }

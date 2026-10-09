@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260919152313-740673d0",
+  "session_id": "test",
+  "objective": "# Code Review\n\n> PR review mode adapted from PRPs-agentic-eng by Wirasm. Part of the PRP workflow series.\n\n**Input**: main.py\n\n---\n\n## Mode Selection\n\nIf `main.py` contains a PR number, PR URL, or `--",
+  "status": "running",
+  "created_at": "2026-09-19T15:23:13.977042+00:00",
+  "updated_at": "2026-09-19T15:23:13.977042+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

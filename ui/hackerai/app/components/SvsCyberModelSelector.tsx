@@ -82,7 +82,7 @@ export function SvsCyberModelSelector({
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
 
-        {SVS_MODELS.filter((model) => model.id === "auto").map((model) => (
+        {SVS_MODELS.map((model) => (
           <DropdownMenuItem
             key={model.id}
             disabled={!model.available}

@@ -31,6 +31,7 @@ from cyber_os.approval_engine import ApprovalEngine
 from cyber_os.assets import paths
 from cyber_os.compaction import ContextCompactor, estimate_tokens
 from cyber_os.doom_loop_detector import DoomLoopDetector, DoomLoopSeverity
+from cyber_os.llm_json import extract_json_object, is_ai_error_marker
 from cyber_os.pty_session_manager import PtySessionManager
 from cyber_os.stop_conditions import FinishReason, StopConditions
 from cyber_os.subagents.manager import SubagentManager
@@ -48,6 +49,38 @@ STEP_STORE_CHARS = 8000
 
 DEFAULT_MAX_STEPS = 15
 DEFAULT_MAX_ELAPSED_SECONDS = 300.0
+
+# A model that has just been handed 160 tools, including shell_exec and
+# pty_run, and then answers "I don't have access to a live terminal" has
+# misreported its own capabilities. Publishing that ends the run before any
+# tool executes and sends the user to do manually what the agent can do now.
+#
+# Matching runs in two steps. The pattern captures what the denial is *about*;
+# the vocabulary decides whether that is a capability this deployment actually
+# has. A genuine "I don't have access to your email inbox" is left alone,
+# because mailbox access is not something these tools provide.
+_CAPABILITY_DENIAL_RE = re.compile(
+    r"\b(?:i|we)\s*(?:'m|'re)?\s*"
+    r"(?:"
+    r"do\s+not\s+have|don'?t\s+have|do\s+not|don'?t|cannot|can'?t|"
+    r"am\s+unable\s+to|are\s+unable\s+to|unable\s+to|"
+    r"lack(?:s|ing)?\s+access\s+to|have\s+no\s+access\s+to"
+    r")\s+"
+    r"(?:[a-z]+\s+){0,3}?"
+    r"(?P<object>[^.;!?\n]{0,90})",
+    re.IGNORECASE,
+)
+
+# Words naming something the agent can act on. Deliberately excludes data
+# sources the tools cannot reach (mail, bank, social media, private messages)
+# so a real limitation is not mistaken for a shirked step.
+_AGENT_CAPABILITY_VOCAB = re.compile(
+    r"\b(?:terminal|shell|command|powershell|bash|cmd|network|networks|"
+    r"host|hosts|machine|machines|system|systems|local|port|ports|"
+    r"socket|sockets|file|files|process|processes|registry|packet|packets|"
+    r"subnet|firewall|endpoint|device|devices|scan|scanner)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -83,6 +116,7 @@ class _RunState:
     notices: List[str] = field(default_factory=list)
     pending_recovery: Optional[Dict[str, Any]] = None
     recovered_tools: set = field(default_factory=set)
+    conversation_history: List[Dict[str, str]] = field(default_factory=list)
     # tool name the model asked for -> how many times it was not registered
     rejected_tools: Dict[str, int] = field(default_factory=dict)
 
@@ -126,6 +160,7 @@ class AgentRuntime:
         session_id: str = "default",
         investigation_id: Optional[str] = None,
         custom_instructions: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> AgentRunResult:
         """
         Executes a complete, resilient multi-step defensive investigation.
@@ -151,6 +186,7 @@ class AgentRuntime:
                 max_elapsed_seconds=self.max_elapsed_seconds,
             ),
             doom_loop_detector=DoomLoopDetector(),
+            conversation_history=list(conversation_history or []),
         )
 
         with self._lock:
@@ -290,6 +326,7 @@ class AgentRuntime:
                         profile_name=subagent_profile,
                         objective=subagent_objective,
                         parent_investigation_id=inv_id,
+                        session_id=session_id,
                     )
                     state.stop_conditions.record_step(
                         tokens_used=estimate_tokens(subagent_result.summary)
@@ -560,6 +597,13 @@ class AgentRuntime:
         pruned text alive and send each tool output twice.
         """
         lines = [f"User Request: {state.user_input}"]
+        if state.conversation_history:
+            lines.append("\nPrior conversation:")
+            for turn in state.conversation_history[-12:]:
+                role = str(turn.get("role") or "user").lower()
+                content = str(turn.get("content") or "").strip()
+                if role in {"user", "assistant"} and content:
+                    lines.append(f"- {role}: {content[:1200]}")
 
         for step in state.steps_record:
             output = str(step.get("output") or "")
@@ -739,7 +783,7 @@ Use only a tool name from the list above — any other name will be rejected.
 Consider:
 - What tools have already been executed and their results
 - Whether the user's objective requires web research (use web_search, open_url)
-- Whether it requires local system investigation (network_inspect, windows_defender_scan, etc.)
+- Whether it requires local system investigation (network_inspect, shell_exec, etc.)
 - Whether findings need to be recorded (notes, todo_write)
 - Whether a specialist subagent is needed
 
@@ -763,10 +807,11 @@ If the investigation is complete and you can provide a final answer:
 
         try:
             response = self._call_llm(system=system_prompt, user=prompt)
-            json_match = re.search(r'\{.*\}', response, re.DOTALL) if response else None
-            if json_match:
-                decision = json.loads(json_match.group(0))
-
+            if is_ai_error_marker(response):
+                print("[AgentRuntime] Provider returned an error marker; using heuristics.")
+                response = None
+            decision = extract_json_object(response)
+            if decision:
                 if decision.get("action_type") == "tool":
                     tool_name = decision.get("tool_name")
                     registry = getattr(self.agent.registry, "tools", {})
@@ -784,7 +829,18 @@ If the investigation is complete and you can provide a final answer:
                     escalation = self._reject_unknown_tool(state, tool_name, tool_names)
                     if escalation is not None:
                         return escalation
-                elif decision.get("action_type") in ("subagent", "final_answer"):
+                elif decision.get("action_type") == "final_answer":
+                    denial = self._capability_denial(state, decision.get("response"))
+                    if denial is None:
+                        return decision
+                    # The model answered "I don't have access to a live
+                    # terminal" while 160 tools, including shell_exec and
+                    # pty_run, were in the prompt it was just given. Publishing
+                    # that tells the user to go do manually what the agent can
+                    # do right now, and it ends the run before any tool runs.
+                    state.notices.append(denial["notice"])
+                    print(f"[AgentRuntime] Rejected capability-denying final answer: {denial['matched']!r}")
+                elif decision.get("action_type") == "subagent":
                     return decision
         except Exception as e:
             print(f"[AgentRuntime] LLM decision failed: {e}")
@@ -795,6 +851,45 @@ If the investigation is complete and you can provide a final answer:
             conversation_context=conversation_context,
             step_index=step_index,
         )
+
+    def _capability_denial(
+        self, state: _RunState, response: Any
+    ) -> Optional[Dict[str, str]]:
+        """Reject a final answer that denies a capability this agent has.
+
+        Only before anything has been executed. Once tools have run, "I could
+        not reach that host" is a truthful report of a real limitation and must
+        reach the user; before any tool has run, the same words can only mean
+        the model shirked the step, because it was holding the tool list when
+        it wrote them.
+        """
+        if not isinstance(response, str) or not response.strip():
+            return None
+        if not self._registered_tool_names():
+            # Nothing is actually available, so any denial is accurate.
+            return None
+        if any(
+            step.get("tool") or step.get("type") == "subagent"
+            for step in state.steps_record
+        ):
+            return None
+
+        denial = _CAPABILITY_DENIAL_RE.search(response)
+        if denial is None:
+            return None
+        claimed_absent = denial.group("object").strip()
+        if not _AGENT_CAPABILITY_VOCAB.search(claimed_absent):
+            # A real limitation of this deployment, not a misreport.
+            return None
+        return {
+            "matched": f"{denial.group(0).strip()}",
+            "notice": (
+                f"A final answer denying access to {claimed_absent!r} was "
+                "discarded: read-only local and network tools are available in "
+                "this deployment. Act on the objective with a tool instead of "
+                "declining it."
+            ),
+        }
 
     def _reject_unknown_tool(
         self, state: _RunState, tool_name: Optional[str], tool_names: List[str]
@@ -872,20 +967,32 @@ If the investigation is complete and you can provide a final answer:
         if any(w in lower for w in ("network", "port", "connection", "listening")) and "network_inspect" not in executed_tools:
             return {"action_type": "tool", "tool_name": "network_inspect", "arguments": {}, "brief": "Inspecting active network connections and listening sockets"}
 
-        # Malware / File investigation
-        if any(w in lower for w in ("malware", "virus", "defender", "download")) and "windows_defender_scan" not in executed_tools:
-            scan_target = self.agent._extract_scan_target(user_input) if hasattr(self.agent, "_extract_scan_target") else "."
-            return {"action_type": "tool", "tool_name": "windows_defender_scan", "arguments": {"path": scan_target}, "brief": f"Running Windows Defender scan on '{scan_target}'"}
+        # Malware / File investigation. windows_defender_scan is a command
+        # preset, not a registry tool: the old wrapper tools were removed in
+        # favour of shell_exec(preset=...). Naming the bare id here produced a
+        # step the executor rejected outright, so the scan never ran.
+        if any(w in lower for w in ("malware", "virus", "defender", "download")):
+            if "shell_exec" not in executed_tools and "windows_defender_scan" in self._preset_names():
+                scan_target = self.agent._extract_scan_target(user_input) if hasattr(self.agent, "_extract_scan_target") else "."
+                return {
+                    "action_type": "tool",
+                    "tool_name": "shell_exec",
+                    "arguments": {"preset": "windows_defender_scan", "params": {"target": scan_target}},
+                    "brief": f"Running Windows Defender scan on '{scan_target}'",
+                }
+            if "network_inspect" not in executed_tools:
+                return {"action_type": "tool", "tool_name": "network_inspect", "arguments": {}, "brief": "Inspecting active network connections and listening sockets"}
 
         # Code / SAST analysis. Skipped unless the request names a real target:
         # a default path would analyze a file nobody asked about.
         if any(w in lower for w in ("code", "sast", "source", "script")) and "static_analysis" not in executed_tools:
             target = self._extract_path(user_input)
-            if target:
+            code = self._read_source_file(target) if target else ""
+            if code:
                 return {
                     "action_type": "tool",
                     "tool_name": "static_analysis",
-                    "arguments": {"filepath": target},
+                    "arguments": {"code": code},
                     "brief": f"Analyzing '{target}' for security vulnerabilities",
                 }
 
@@ -938,11 +1045,10 @@ Suggest an alternative tool or approach. Return JSON:
 """
         try:
             response = self._call_llm(system=system_prompt, user=prompt)
-            if not response:
+            if not response or is_ai_error_marker(response):
                 return None
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                decision = json.loads(json_match.group(0))
+            decision = extract_json_object(response)
+            if decision:
                 if decision.get("action_type") == "tool":
                     tool_name = decision.get("tool_name")
                     # A recovery that re-proposes the tool that just failed is
@@ -977,16 +1083,22 @@ Suggest an alternative tool or approach. Return JSON:
         elif tool_name == "network_inspect":
             args = {}
 
-        elif tool_name == "windows_defender_scan":
-            if hasattr(self.agent, "_extract_scan_target"):
-                args["path"] = self.agent._extract_scan_target(user_input)
-            else:
-                args["path"] = "."
-
         elif tool_name == "static_analysis":
+            # The registered tool is StaticCodeAnalyzer.analyze_python_code(code),
+            # which takes source text, not a path. Passing "filepath" raised a
+            # TypeError inside the tool, so every SAST step failed.
             target = self._extract_path(user_input)
-            if target:
-                args["filepath"] = target
+            code = self._read_source_file(target) if target else ""
+            if code:
+                args["code"] = code
+
+        elif tool_name == "shell_exec":
+            preset = self._infer_preset(user_input)
+            if preset:
+                args["preset"] = preset
+                target = self._preset_target(preset, user_input)
+                if target is not None:
+                    args["params"] = {"target": target}
 
         elif tool_name == "notes":
             args = {"action": "create", "title": "Investigation Note", "content": user_input}
@@ -995,6 +1107,75 @@ Suggest an alternative tool or approach. Return JSON:
             args = {"todos": [{"id": "1", "text": user_input, "status": "in_progress"}]}
 
         return args
+
+    def _read_source_file(self, path: str, max_bytes: int = 200_000) -> str:
+        """Read a file for an in-process analyzer, or return ''.
+
+        Resolved against the agent workspace so a request naming a repo-relative
+        path works regardless of the server's working directory.
+        """
+        if not path:
+            return ""
+        import os
+
+        candidates = [path]
+        workspace = getattr(self.agent, "workspace_path", None)
+        if workspace and not os.path.isabs(path):
+            candidates.insert(0, os.path.join(str(workspace), path))
+
+        for candidate in candidates:
+            try:
+                if not os.path.isfile(candidate):
+                    continue
+                with open(candidate, "r", encoding="utf-8", errors="replace") as handle:
+                    return handle.read(max_bytes)
+            except OSError:
+                continue
+        return ""
+
+    @staticmethod
+    def _preset_names() -> List[str]:
+        """Ids in the vetted command-preset catalogue, empty when unavailable."""
+        try:
+            from cyber_os.command_presets import COMMAND_PRESETS
+
+            return sorted(COMMAND_PRESETS)
+        except Exception:
+            return []
+
+    _PRESET_KEYWORDS: Dict[str, tuple] = {
+        "windows_defender_scan": ("malware", "virus", "defender", "antivirus", "infected"),
+        "clamav_scan": ("clamav",),
+        "nmap_scan": ("nmap", "port scan", "open ports", "recon"),
+        "yara_scan": ("yara",),
+        "semgrep_scan": ("semgrep",),
+        "trivy_scan": ("trivy", "vulnerability scan", "cve scan"),
+        "bandit_scan": ("bandit",),
+    }
+
+    def _infer_preset(self, user_input: str) -> str:
+        """Pick a command preset the request clearly names, else ''."""
+        available = set(self._preset_names())
+        if not available:
+            return ""
+        lower = user_input.lower()
+        for preset, keywords in self._PRESET_KEYWORDS.items():
+            if preset in available and any(word in lower for word in keywords):
+                return preset
+        return ""
+
+    def _preset_target(self, preset: str, user_input: str) -> Optional[str]:
+        """Fill the preset's placeholder from the request.
+
+        Only real targets: a placeholder path or default target turns a scan
+        step into a confident-looking result with no bearing on the request.
+        """
+        if preset == "windows_defender_scan":
+            extractor = getattr(self.agent, "_extract_scan_target", None)
+            if callable(extractor):
+                return str(extractor(user_input))
+            return self._extract_path(user_input) or None
+        return self._extract_path(user_input) or self._extract_url(user_input) or None
 
     def _extract_search_query(self, user_input: str) -> str:
         """Extract a search query from user input."""
@@ -1019,7 +1200,7 @@ Suggest an alternative tool or approach. Return JSON:
     def _extract_path(user_input: str) -> str:
         """Extract a file or directory path mentioned in the request."""
         match = re.search(
-            r"[\w./\\-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|cpp|c|md|json|ya?ml|txt|log|ini|cfg|exe|dll|ps1|sh|bat)",
+            r"[A-Za-z]:?[\w./\\-]*[\w./\\-]\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|cpp|c|md|json|ya?ml|txt|log|ini|cfg|exe|dll|ps1|sh|bat)",
             user_input,
         )
         if match:
@@ -1047,7 +1228,7 @@ Suggest an alternative tool or approach. Return JSON:
                 return True
             return False
         
-        if tool_name in ("network_inspect", "windows_defender_scan", "static_analysis"):
+        if tool_name in ("network_inspect", "static_analysis", "shell_exec"):
             # These tools should have substantial output
             return len(output) > 100
         
@@ -1099,7 +1280,7 @@ Suggest an alternative tool or approach. Return JSON:
             "4. Recommended Next Actions"
         )
         report = self._call_llm(system=system_prompt, user=prompt)
-        if report and report.strip():
+        if report and report.strip() and not is_ai_error_marker(report):
             return report
         return self._offline_report(user_input, conversation_context, findings)
 

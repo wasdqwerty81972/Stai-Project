@@ -17,6 +17,13 @@ from cyber_os.subagents.profiles import (
     list_available_profiles,
 )
 from cyber_os.subagents.manager import SubagentManager
+from cyber_os.subagents.swarm import (
+    DefensiveSwarmExecution,
+    DefensiveSwarmPlan,
+    DefensiveSwarmPlanner,
+    MergedSwarmEvidence,
+    merge_swarm_evidence,
+)
 
 __all__ = [
     "SubagentProfile",
@@ -30,4 +37,9 @@ __all__ = [
     "get_profile_definition",
     "list_available_profiles",
     "SubagentManager",
+    "DefensiveSwarmPlan",
+    "DefensiveSwarmExecution",
+    "MergedSwarmEvidence",
+    "merge_swarm_evidence",
+    "DefensiveSwarmPlanner",
 ]

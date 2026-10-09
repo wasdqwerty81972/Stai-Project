@@ -1,0 +1,7 @@
+{
+  "guardrails": {
+    "requireApprovalForBash": true,
+    "blockSecrets": true,
+    "limitContextLength": 200000
+  }
+}

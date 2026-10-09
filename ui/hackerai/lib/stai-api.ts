@@ -36,13 +36,30 @@ export interface StaiConversationSummary {
   timestamp: string;
 }
 
+/** Safe metadata shown by the composer slash-command picker. */
+export interface StaiCommand {
+  name: string;
+  description: string;
+  argument_hint?: string;
+}
+
+export function getBackendOrigin(): string {
+  const envOrigin = process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim();
+  if (envOrigin) {
+    return envOrigin;
+  }
+  if (typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}//${window.location.hostname}:6764`;
+  }
+  return "http://127.0.0.1:6764";
+}
+
 const jsonHeaders = { "Content-Type": "application/json" };
-const backendOrigin =
-  process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim() ||
-  "http://127.0.0.1:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(new URL(path, backendOrigin), {
+  const origin = getBackendOrigin();
+  const response = await fetch(new URL(path, origin), {
     ...init,
     headers: { ...jsonHeaders, ...(init?.headers ?? {}) },
     cache: "no-store",
@@ -75,6 +92,10 @@ export function getStaiMessages(sessionId: string) {
 
 export function getStaiConversations() {
   return request<StaiConversationSummary[]>("/api/conversations");
+}
+
+export function getStaiCommands() {
+  return request<StaiCommand[]>("/api/commands");
 }
 
 export function clearStaiConversations() {
@@ -130,9 +151,12 @@ export function openStaiEvents(
   onOpen?: () => void,
   onClose?: () => void,
 ): StaiEventStreamHandle {
-  const backendUrl = backendOrigin
-    ? new URL(backendOrigin)
-    : new URL(window.location.origin);
+  let backendUrl: URL;
+  try {
+    backendUrl = new URL(getBackendOrigin());
+  } catch {
+    backendUrl = new URL(window.location.origin);
+  }
   const protocol = backendUrl.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${backendUrl.host}/ws`;
 

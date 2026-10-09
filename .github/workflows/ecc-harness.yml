@@ -1,0 +1,29 @@
+name: ECC Harness Audit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  harness-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install ECC
+        run: npm install -g ecc-universal
+
+      - name: Run ECC Harness Audit
+        run: node $(npm root -g)/ecc-universal/scripts/harness-audit.js
+        continue-on-error: true
+
+      - name: Run ECC Skills Health Check
+        run: node $(npm root -g)/ecc-universal/scripts/skills-health.js
+        continue-on-error: true

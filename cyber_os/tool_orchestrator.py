@@ -64,6 +64,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cyber_os.intent_router import IntentRouter, IntentResult, IntentType
 from cyber_os.assets import get_command_registry
+from cyber_os.llm_json import extract_json_object
 from cyber_tools import (
     ToolRegistry,
     ToolDefinition,
@@ -437,13 +438,13 @@ class LLMClient:
                 parsed = json.loads(cleaned)
                 return parsed if isinstance(parsed, dict) else {"response": text}
             except (json.JSONDecodeError, ValueError):
-                match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-                if match:
-                    try:
-                        parsed = json.loads(match.group(0))
-                        return parsed if isinstance(parsed, dict) else {"response": text}
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+                # Last resort: pull the object out of the prose. The previous
+                # greedy ``\{.*\}`` span ran from the first brace to the last,
+                # so any brace in the surrounding text produced a span that
+                # could not decode and the call silently degraded to prose.
+                parsed = extract_json_object(cleaned)
+                if parsed:
+                    return parsed
                 return {"response": text}
 
 

@@ -19,6 +19,7 @@ class SubagentProfile(str, Enum):
     INCIDENT_INVESTIGATION = "incident_investigation"
     LOG_ANALYSIS = "log_analysis"
     NETWORK_ANALYSIS = "network_analysis"
+    NETWORK_CONTAINMENT_ADVISOR = "network_containment_advisor"
     VULNERABILITY_ANALYSIS = "vulnerability_analysis"
     DETECTION_ENGINEERING = "detection_engineering"
     FORENSICS_EVIDENCE = "forensics_evidence"

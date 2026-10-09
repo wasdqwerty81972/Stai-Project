@@ -326,12 +326,34 @@ class RoleKeyManager:
         """
         if self._omniroute_available and self._omniroute_client:
             return self._omniroute_client, f"omniroute-role-{role_index}"
-        state = self._states[role_index % len(self._states)]
+        if not self._states:
+            raise RuntimeError("No Gemini API keys are configured")
+        preferred_index = role_index % len(self._states)
+        state = self._states[preferred_index]
+        # A role normally has a preferred key, but a key that recently hit a
+        # provider capacity error should not block the entire agent run.
+        if not state.is_available():
+            for offset in range(1, len(self._states)):
+                candidate = self._states[(preferred_index + offset) % len(self._states)]
+                if candidate.is_available():
+                    state = candidate
+                    break
         try:
             return self._genai_client_for(state), state.label
         except Exception as e:
             print(f"[KeyManager] Key {state.label} failed: {e}")
             raise
+
+    def mark_temporary_failure(self, label: str, cooldown_seconds: int = 10) -> None:
+        """Temporarily remove an overloaded Gemini key from role selection."""
+        with self._lock:
+            for state in self._states:
+                if state.label == label:
+                    state.failure_count += 1
+                    state.cooldown_until = max(
+                        state.cooldown_until, time.time() + cooldown_seconds
+                    )
+                    return
 
     def _pool_states(self, pool_name: str) -> list:
         if pool_name == self.SEARCH_POOL:
@@ -817,6 +839,9 @@ class AiApi:
             self._km = RoleKeyManager()
         
         self._vision_supported = True  # Will be set to False if vision fails
+        # Scoped by the API server for a serialized user run. None keeps the
+        # configured default model.
+        self.model_override: Optional[str] = None
 
     def _get_client_for_role(self, role: str):
         """Get client for a specific role."""
@@ -930,7 +955,7 @@ class AiApi:
             top_p: Top-p sampling
             max_retries: Max retry attempts
         """
-        client, label = self._get_client_for_role(role)
+        role_index = self._ROLE_MAP.get(role.lower(), 0)
         
         if _GENAI_AVAILABLE:
             config = _genai_types.GenerateContentConfig(
@@ -951,12 +976,21 @@ class AiApi:
         contents = self._build_contents(system, user)
         
         last_error = None
-        backoff = 1.0
-        
-        for attempt in range(max_retries):
+        # One attempt per configured Gemini key prevents a temporary provider
+        # overload on a role's preferred key from failing the whole request.
+        try:
+            configured_key_count = len(
+                [status for status in self._km.status() if str(status.get("label", "")).startswith("gemini-key-")]
+            )
+        except Exception:
+            configured_key_count = 0
+        max_attempts = max(max_retries, configured_key_count or 1)
+
+        for attempt in range(max_attempts):
+            client, label = self._km.client_for_role(role_index + attempt)
             try:
                 response = client.models.generate_content(
-                    model=self._select_model(client, None),
+                    model=self._select_model(client, self.model_override),
                     contents=contents,
                     config=config
                 )
@@ -975,11 +1009,29 @@ class AiApi:
                         model=label,
                     )
                 error_code = getattr(e, "code", None) or getattr(e, "status_code", None)
-                is_rate_limit = error_code == 429 or "429" in err_str or "rate" in err_str.lower()
-                
-                if is_rate_limit and attempt < max_retries - 1:
-                    time.sleep(min(backoff, 32))
-                    backoff *= 2
+                normalized_error = err_str.lower()
+                is_temporary_provider_error = (
+                    error_code in (429, 500, 502, 503, 504)
+                    or any(
+                        marker in normalized_error
+                        for marker in (
+                            "429",
+                            "500",
+                            "502",
+                            "503",
+                            "504",
+                            "rate",
+                            "unavailable",
+                            "high demand",
+                            "overloaded",
+                            "timeout",
+                        )
+                    )
+                )
+                if is_temporary_provider_error and attempt < max_attempts - 1:
+                    mark_failed_key = getattr(self._km, "mark_temporary_failure", None)
+                    if callable(mark_failed_key):
+                        mark_failed_key(label)
                     continue
                 raise
         

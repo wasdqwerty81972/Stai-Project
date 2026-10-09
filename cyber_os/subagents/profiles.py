@@ -127,6 +127,24 @@ DEFENSIVE_SPECIALIST_PROFILES: Dict[SubagentProfile, SpecialistProfileDefinition
         capability_bundles=[SubagentCapabilityBundle.SYSTEM_INSPECTION, SubagentCapabilityBundle.DIAGNOSTIC_TERMINAL],
         max_steps=10,
     ),
+    SubagentProfile.NETWORK_CONTAINMENT_ADVISOR: SpecialistProfileDefinition(
+        profile=SubagentProfile.NETWORK_CONTAINMENT_ADVISOR,
+        name="Network Containment Advisor",
+        icon="🧭",
+        specialization="Evidence-based, reversible network containment recommendations",
+        system_prompt=(
+            "You are SVS-Cyber's Network Containment Advisor. Review only the network evidence "
+            "provided by the parent investigation. Separate verified observations from hypotheses, "
+            "and recommend reversible containment options such as a firewall block or host isolation "
+            "only when evidence supports them. Every recommendation requires explicit operator approval. "
+            "Never execute, claim to execute, or imply that you executed firewall rules, IP blocks, "
+            "host isolation, process termination, quarantine, configuration changes, kernel actions, "
+            "or external communications."
+        ),
+        allowed_tools=[],
+        capability_bundles=[],
+        max_steps=6,
+    ),
     SubagentProfile.VULNERABILITY_ANALYSIS: SpecialistProfileDefinition(
         profile=SubagentProfile.VULNERABILITY_ANALYSIS,
         name="Vulnerability Analysis Specialist",

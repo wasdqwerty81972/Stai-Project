@@ -159,6 +159,32 @@ def test_unsupported_model_does_not_record_or_execute_prompt(monkeypatch, isolat
     assert calls == []
 
 
+def test_gemini_model_catalog_and_selected_model_are_available(monkeypatch, isolated_history):
+    received = []
+    monkeypatch.setattr(
+        server,
+        "_run_agent_prompt_sync",
+        lambda prompt, session_id, model: received.append((prompt, session_id, model)) or "Answer",
+    )
+    monkeypatch.setattr(server, "_generate_conversation_title", lambda prompt: "Investigation")
+
+    with TestClient(server.app) as client:
+        models = client.get("/api/models").json()
+        reply = client.post(
+            "/api/chat",
+            json={"message": "Question", "session_id": "alpha", "model": "gemini-3.1-pro-preview"},
+        )
+
+    assert {model["id"] for model in models} >= {
+        "auto",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+    }
+    assert reply.status_code == 200
+    assert received == [("Question", "alpha", "gemini-3.1-pro-preview")]
+
+
 def test_approval_response_is_recorded_in_requested_session(isolated_history):
     with TestClient(server.app) as client:
         reply = client.post(
@@ -174,6 +200,34 @@ def test_approval_response_is_recorded_in_requested_session(isolated_history):
     assert alpha_history[0]["session_id"] == "alpha"
     assert alpha_history[0]["data"] == {"request_id": "request-1", "approved": True}
     assert default_history == []
+
+
+def test_command_catalog_exposes_safe_composer_metadata(monkeypatch):
+    registry = SimpleNamespace(
+        index=lambda: [
+            {
+                "name": "plan",
+                "description": "Create an investigation plan",
+                "argument_hint": "objective",
+                "agent": "planner",
+                "subtask": False,
+                "model": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(server, "get_command_registry", lambda: registry)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/commands")
+
+    assert reply.status_code == 200
+    assert reply.json() == [
+        {
+            "name": "plan",
+            "description": "Create an investigation plan",
+            "argument_hint": "objective",
+        }
+    ]
 
 
 def test_agent_approve_uses_payload_session(monkeypatch, isolated_history):

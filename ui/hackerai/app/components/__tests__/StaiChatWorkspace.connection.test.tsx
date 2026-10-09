@@ -4,6 +4,7 @@ import { openStaiEvents } from "@/lib/stai-api";
 
 jest.mock("@/lib/stai-api", () => ({
   openStaiEvents: jest.fn(() => ({ close: jest.fn() })),
+  getStaiCommands: jest.fn(async () => []),
   getStaiConversations: jest.fn(async () => []),
   getStaiMessages: jest.fn(async () => []),
   clearStaiConversations: jest.fn(async () => ({ status: "cleared", count: 0 })),
@@ -18,7 +19,7 @@ jest.mock("@/app/contexts/ToolWorkspaceContext", () => ({
   ToolWorkspaceProvider: ({ children }: { children: React.ReactNode }) => children,
   useToolWorkspace: () => ({ openWorkspace: jest.fn(), updateWorkspaceContent: jest.fn() }),
 }));
-jest.mock("../ToolWorkspaceContainer", () => ({ ToolWorkspaceContainer: () => null }));
+jest.mock("../ToolWorkspaceContainer", () => ({ ToolWorkspaceContainer: () => <div>Tool drawer</div> }));
 jest.mock("../SvsCyberComposer", () => ({ SvsCyberComposer: () => null }));
 
 test("subscribes to connection state through the event stream handle callbacks", async () => {
@@ -27,6 +28,7 @@ test("subscribes to connection state through the event stream handle callbacks",
   expect(screen.getByText("Connecting...")).toBeInTheDocument();
   expect(screen.getByRole("navigation", { name: "Investigation history" })).toBeInTheDocument();
   expect(screen.getByLabelText("Investigation transcript")).toBeInTheDocument();
+  expect(screen.queryByText("Tool drawer")).not.toBeInTheDocument();
   expect(openStaiEvents).toHaveBeenCalledWith(
     expect.any(Function),
     expect.any(Function),

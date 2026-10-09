@@ -29,6 +29,7 @@ from cyber_os.task_manager import TaskManager
 from cyber_os.notes_manager import NotesManager
 from cyber_os.subagents.manager import SubagentManager
 from cyber_os.subagents.profiles import list_available_profiles
+from cyber_os.subagents.swarm import DefensiveSwarmPlanner, merge_swarm_evidence
 from cyber_os.agent_runtime import AgentRuntime
 from cyber_os.assets import get_command_registry, get_skill_registry, get_agent_definition_registry
 
@@ -431,6 +432,9 @@ class SOCOrchestrator:
                 continue
             tool_outputs = {}
             for tool in phase.tools:
+                if self._agent is None:
+                    tool_outputs[tool] = "ERROR: No agent attached to SOCOrchestrator — cannot execute tool."
+                    continue
                 try:
                     res = self._agent.execute_tool(tool)
                     tool_outputs[tool] = res.get("output", "")
@@ -510,7 +514,7 @@ class CyberSecurityOrchestrator:
 
     def __init__(self, use_mock: bool = True):
         self.use_mock = use_mock
-        self._api = AiApi(use_mock=use_mock) if use_mock else AiApi()
+        self._api = AiApi(use_mock=use_mock)
 
     def _call_role(self, role: str, system: str, user: str) -> str:
         if self.use_mock:
@@ -814,7 +818,7 @@ class CyberAgent:
             name="notes_delete",
             environments=["cross_platform"],
             command_template="",
-            risk_level=RiskLevel.READ_ONLY,
+            risk_level=RiskLevel.MODIFIES_SYSTEM,
             python_func=_notes_delete,
         ))
         self.registry.register_tool(ToolDefinition(
@@ -946,11 +950,24 @@ class CyberAgent:
         with self._approval_lock:
             self._approval_events[request_id] = done
 
-        approved = done.wait(timeout=300)
+        # Poll rather than block: a blocking wait(300) cannot observe
+        # cancel_event, so a cancelled run sat on a pending approval card for
+        # five minutes and only then reported failure. The UI was already
+        # showing the run as stopped.
+        deadline = time.monotonic() + 300
+        approved = False
+        while True:
+            approved = done.wait(timeout=0.5)
+            if approved or self.cancel_event.is_set() or time.monotonic() >= deadline:
+                break
+
         with self._approval_lock:
             self._approval_events.pop(request_id, None)
             result = self._approval_results.pop(request_id, False)
 
+        if self.cancel_event.is_set() and not approved:
+            print(f"[!] Approval for '{action_name}' abandoned: run cancelled.")
+            return False
         if not approved:
             print(f"[!] Approval timed out for '{action_name}' — denying.")
             return False
@@ -1080,27 +1097,55 @@ class CyberAgent:
             try:
                 res = tool_def.python_func(**args)
                 self.audit_logger.log_event("tool_executed", {"tool": tool_name, "environment": target_env})
-                self._publish_ui_event(
-                    "tool_completed",
-                    f"{tool_name} completed",
-                    "completed",
-                    tool=tool_name,
-                    tool_call_id=tool_call_id,
-                    output=res,
-                )
+                inner_success = res.get("success") if isinstance(res, dict) else None
+                if inner_success is not False:
+                    self._publish_ui_event(
+                        "tool_completed",
+                        f"{tool_name} completed",
+                        "completed",
+                        tool=tool_name,
+                        tool_call_id=tool_call_id,
+                        output=res,
+                    )
+                else:
+                    self._publish_ui_event(
+                        "tool_failed",
+                        f"{tool_name} failed",
+                        "error",
+                        tool=tool_name,
+                        tool_call_id=tool_call_id,
+                        output=res,
+                        error=str(res.get("error", "") or f"{tool_name} reported failure"),
+                    )
                 self._publish_ui_event(
                     "agent_reasoning",
                     f"{tool_name} returned evidence. I am reviewing the result before giving you a conclusion.",
                     "completed",
                     tool=tool_name,
                 )
-                return {
+                # A python_func that returned without raising has not necessarily
+                # succeeded. Tools that report their own outcome -- shell_exec
+                # above all, which carries {"success": False, "error": ...} for a
+                # nonzero exit, an unknown preset, or an absent binary -- must not
+                # have that verdict overwritten with True and their error blanked;
+                # otherwise a failed command reads to every caller as a clean run.
+                # Tools that return no "success" key keep the old behaviour.
+                result = {
                     "tool": tool_name,
                     "environment_used": target_env,
-                    "success": True,
+                    "success": True if inner_success is None else bool(inner_success),
                     "output": json.dumps(res, indent=2) if isinstance(res, (dict, list)) else str(res),
-                    "error": ""
+                    "error": "" if inner_success is not False else str(res.get("error", "") or "")
                 }
+                # Findings the tool reported are hoisted to the top level. They
+                # were previously only inside the serialised "output" string, so
+                # every structured finding a tool returned was unreachable to
+                # callers that read the result dict.
+                if isinstance(res, dict):
+                    for key in ("finding", "findings"):
+                        if res.get(key):
+                            result[key] = res[key]
+                return result
             except Exception as e:
                 self.audit_logger.log_event("tool_executed", {"tool": tool_name, "error": str(e)}, status="ERROR")
                 self._publish_ui_event("tool_failed", f"{tool_name} failed", "error", tool=tool_name, tool_call_id=tool_call_id, error=str(e))
@@ -1501,15 +1546,15 @@ class CyberAgent:
         except (AttributeError, OSError):
             return False
 
-    def process_chat_command(self, user_input: str, session_id: str = "default") -> str:
+    def process_chat_command(self, user_input: str, session_id: str = "default", conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Process a chat request and publish concise lifecycle events for the UI."""
         self.cancel_event.clear()
-        self.current_investigation = self.investigations.create(user_input)
+        self.current_investigation = self.investigations.create(user_input, session_id=session_id)
         self._publish_ui_event("investigation_started", "Investigation started", "running", objective=user_input)
         self._publish_ui_event("agent_started", "Understanding the request", "running")
         self._publish_model_info("CyberSecurityOrchestrator")
         try:
-            response = self._process_chat_command(user_input, session_id=session_id)
+            response = self._process_chat_command(user_input, session_id=session_id, conversation_history=conversation_history)
             self._publish_ui_event("agent_completed", "Investigation complete", "completed")
             if self.current_investigation:
                 self.current_investigation["status"] = "completed"
@@ -1522,12 +1567,21 @@ class CyberAgent:
                 self.investigations.save(self.current_investigation)
             raise
 
-    def _process_chat_command(self, user_input: str, session_id: str = "default") -> str:
+    def _process_chat_command(self, user_input: str, session_id: str = "default", conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Process natural language commands from the chat interface.
         
         Uses intent routing to determine whether tools are required.
         """
+        # Swarms are explicit: normal questions must never accidentally spend
+        # credits on several specialists.
+        raw_input = user_input.strip()
+        if raw_input.lower().startswith("/swarm"):
+            objective = raw_input[len("/swarm"):].strip()
+            if not objective:
+                return "Use `/swarm` followed by a multi-domain defensive investigation objective."
+            return self._run_defensive_swarm(objective, session_id=session_id)
+
         # Expand slash commands before any other processing
         expanded = get_command_registry().expand(user_input)
         if expanded is not None:
@@ -1622,7 +1676,30 @@ class CyberAgent:
                 target=scan_target,
             )
             res = self.execute_tool("shell_exec", {"preset": "windows_defender_scan", "params": {"target": scan_target}, "timeout": 300}, timeout=None)
-            scan_output = res.get("output") or res.get("error")
+            # execute_tool serialises a python_func tool's own result dict into
+            # "output" as JSON, so unwrap it to reach the scanner's real stdout.
+            # Left wrapped, that blob is always truthy: the "no result" guard
+            # below could never fire, and an absent MpCmdRun.exe would reach the
+            # analyst below framed as a real scan -- exactly what shell_exec's
+            # tool_absent marker exists to prevent.
+            raw_output = res.get("output") or ""
+            try:
+                inner = json.loads(raw_output)
+            except (TypeError, ValueError):
+                inner = None
+            if not isinstance(inner, dict):
+                inner = None
+            if inner and inner.get("status") == "tool_absent":
+                raise RuntimeError(
+                    f"windows_defender_scan could not run: {inner.get('binary') or 'the scanner'} "
+                    "is not present on this host. No scan was performed."
+                )
+            if not res.get("success", False):
+                raise RuntimeError(
+                    "windows_defender_scan failed: "
+                    f"{(inner or {}).get('error') or res.get('error') or 'unknown error'}"
+                )
+            scan_output = str((inner.get("output") if inner else raw_output) or "").strip()
             if not scan_output:
                 raise RuntimeError("windows_defender_scan returned no result")
             summary = self.orchestrator._call_role(
@@ -1638,12 +1715,8 @@ class CyberAgent:
             router = IntentRouter()
             intent_result = router.classify(user_input)
             
-            if intent_result.intent.value == "conversational":
-                return router.get_response_for_intent(intent_result, user_input)
-            elif intent_result.intent.value == "informational":
-                return router.get_response_for_intent(intent_result, user_input)
-            elif intent_result.requires_tools:
-                return self._run_ai_orchestrated_request(user_input, session_id=session_id)
+            if intent_result.intent.value in {"conversational", "informational"} and not intent_result.requires_tools:
+                return self._run_ai_orchestrated_request(user_input, session_id=session_id, conversation_history=conversation_history)
         except ImportError:
             pass
 
@@ -1673,7 +1746,11 @@ class CyberAgent:
         if "mitre" in lower or "attack" in lower:
             mapping = self.db_map_to_mitre(user_input)
             if mapping:
-                return "MITRE mappings:\n" + "\n".join(f"  {m['id']}: {m['name']} ({m['tactic']})" for m in mapping)
+                return "MITRE mappings:\n" + "\n".join(
+                    f"  {m.get('technique_id', m.get('id', '?'))}: {m.get('name', '?')}"  # tactic not always present
+                    f" ({m.get('tactic', 'N/A')})"
+                    for m in mapping
+                )
             return "No MITRE technique matches found for that input."
 
         # Tool executions
@@ -1852,7 +1929,7 @@ class CyberAgent:
             })
         return json.dumps({"agents": agent_results, "workflows": workflow_results}, indent=2)
 
-    def _run_ai_orchestrated_request(self, user_input: str, session_id: str = "default") -> str:
+    def _run_ai_orchestrated_request(self, user_input: str, session_id: str = "default", conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Executes a multi-step investigation using the autonomous AgentRuntime.
         
         Features:
@@ -1868,6 +1945,7 @@ class CyberAgent:
                 user_input=user_input,
                 session_id=session_id,
                 investigation_id=inv_id,
+                conversation_history=conversation_history,
             )
             return run_result.response
         except Exception as exc:
@@ -1878,6 +1956,66 @@ class CyberAgent:
                 error=str(exc),
             )
             raise
+
+    def _run_defensive_swarm(self, objective: str, session_id: str = "default") -> str:
+        """Run an explicitly requested, read-only specialist investigation."""
+        plan = DefensiveSwarmPlanner().plan(objective)
+        if not plan.profiles:
+            return (
+                "A swarm is not needed for this request. Use `/swarm` for an incident "
+                "that needs multiple security specialties."
+            )
+        inv_id = self.current_investigation.get("investigation_id", "") if self.current_investigation else ""
+        self._publish_ui_event(
+            "agent_reasoning",
+            f"Starting a read-only defensive team with {len(plan.profiles)} specialists.",
+            "running",
+            swarm=True,
+        )
+        execution = self.agent_runtime.subagent_manager.delegate_swarm(
+            plan,
+            parent_investigation_id=inv_id,
+            session_id=session_id,
+        )
+        merged = merge_swarm_evidence(execution)
+        self._publish_ui_event(
+            "swarm_merged",
+            merged.summary,
+            "completed" if not merged.failed_profiles else "warning",
+            swarm=True,
+            evidence_coverage=merged.coverage,
+            evidence_refs=merged.evidence_refs,
+            limitations=merged.limitations,
+        )
+        evidence_package = json.dumps(
+            {
+                "summary": merged.summary,
+                "evidence_coverage": merged.coverage,
+                "evidence_refs": merged.evidence_refs,
+                "findings": merged.findings,
+                "limitations": merged.limitations,
+                "confirmed_specialists": merged.confirmed_profiles,
+                "inconclusive_specialists": merged.inconclusive_profiles,
+                "unavailable_specialists": merged.failed_profiles,
+            },
+            indent=2,
+        )
+        response = self.orchestrator._call_role(
+            "investigator",
+            CYBER_ROLES["investigator"],
+            "Create a concise defensive assessment from this specialist evidence package. "
+            "Keep confirmed facts, limitations, and inconclusive results distinct. "
+            "Do not claim containment occurred and do not invent evidence.\n\n"
+            + evidence_package,
+        )
+        if response and not str(response).startswith("[AI ERROR]"):
+            return str(response)
+        return (
+            "## Defensive swarm evidence\n\n"
+            f"{merged.summary}\n\n"
+            f"Evidence coverage: **{merged.coverage}**\n\n"
+            + ("Limitations:\n" + "\n".join(f"- {item}" for item in merged.limitations) if merged.limitations else "")
+        )
 
     # --- CyberOS Live Defense System ---
 
