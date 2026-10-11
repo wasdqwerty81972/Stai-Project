@@ -52,6 +52,7 @@ Tor-selected guard -> middle -> exit -> destination
 - WSL, virtual machines, containers, mobile hotspots, and other virtual interfaces require separate coverage verification. The first release reports them as unsupported until tests prove they cannot bypass the route.
 
 ## State model and user experience
+**Where users control it:** Add a persistent **Network Privacy** status control in the SVS workspace header, using the existing shield area. Clicking it opens a dedicated Network & Privacy panel with the verified state, coverage, limitations, and explicit **Enable Tor protection** / **Disable Tor protection** actions. This is separate from the existing Communications settings. Add matching status and enable/disable/recovery actions to the STAI Windows system-tray menu so users can turn protection off or recover even when the main window is closed. Both entry points call the same service and approval flow. A chat request may open the panel or request an action, but cannot silently toggle networking.
 
 - **Off** — no STAI-owned routes or filters are active.
 - **Preparing** — administrator check, binary signature/version checks, and Tor bootstrap run before traffic is released.
