@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 
 RuleKind = Literal["sha256", "yara"]
@@ -54,3 +54,18 @@ class ScanRootSnapshot:
     job_id: str
     folder_id: str
     path: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScanSchedule:
+    """One enrolled user's daily or weekly Quick Scan schedule."""
+
+    owner_sid: str
+    enabled: bool
+    cadence: Literal["daily", "weekly"]
+    local_time: str
+    days_of_week: tuple[str, ...]
+    last_run_date: Optional[str]
+    last_job_id: Optional[str]
+    last_result: Optional[str]
+    next_run_local: Optional[str]

@@ -14,8 +14,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -146,7 +145,11 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
             raise PipeProtocolError("local_time must use HH:MM")
         days = parsed["days_of_week"]
         allowed_days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
-        if not isinstance(days, list) or any(day not in allowed_days for day in days) or len(set(days)) != len(days):
+        if (
+            not isinstance(days, list)
+            or any(not isinstance(day, str) or day not in allowed_days for day in days)
+            or len(set(days)) != len(days)
+        ):
             raise PipeProtocolError("days_of_week is invalid")
         if (parsed["cadence"] == "weekly") != bool(days):
             raise PipeProtocolError("weekly schedules require days; daily schedules require none")
@@ -198,7 +201,7 @@ def process_pipe_request(
             "ok": False,
             "error": str(exc),
         }
-    except (LookupError, ProtectionServiceUnavailable) as exc:
+    except (LookupError, ProtectionServiceUnavailable, ValueError) as exc:
         response = {
             "version": PROTOCOL_VERSION,
             "request_id": request_id,
@@ -420,7 +423,9 @@ class WindowsNamedPipeServer:
         try:
             win32security.ImpersonateNamedPipeClient(handle)
             token = win32security.OpenThreadToken(
-                win32api.GetCurrentThread(), win32security.TOKEN_QUERY, True
+                win32api.GetCurrentThread(),
+                win32security.TOKEN_QUERY | win32security.TOKEN_IMPERSONATE,
+                True,
             )
             token_sid = win32security.GetTokenInformation(
                 token, win32security.TokenUser
@@ -431,7 +436,7 @@ class WindowsNamedPipeServer:
                 token = None
         except Exception:
             LOGGER.warning("rejected pipe client whose identity could not be verified")
-            return False
+            return None
         finally:
             if token is not None:
                 try:
@@ -571,48 +576,81 @@ class ProtectionServiceHost:
         self._health_lock = threading.Lock()
         self._windows_security: Any = None
         self._health_thread: threading.Thread | None = None
+        self._scheduler: Any = None
         if self.pipe_server is None and client_sid:
             self.pipe_server = WindowsNamedPipeServer(client_sid, self.handle_request)
         self._stop_event = threading.Event()
+        self._stopping_event = threading.Event()
+        self._lifecycle_lock = threading.RLock()
         self._filter_thread: threading.Thread | None = None
         self._started = False
+        self._lifecycle_state = "stopped"
         self._service_state = "stopped"
         self._last_error: str | None = None
 
     def start(self) -> None:
-        self._started = True
-        self._service_state = "running"
-        self._stop_event.clear()
-        self._start_health_refresh()
-        if not self.rules_trusted or self.service is None:
-            self._last_error = "trusted rule package is unavailable"
-        elif self.filter_client is not None:
+        with self._lifecycle_lock:
+            if self._lifecycle_state in {"starting", "running", "stopping"}:
+                return
+            self._lifecycle_state = "starting"
+            self._started = True
+            self._stopping_event.clear()
+        recover = getattr(self.store, "recover_interrupted_scan_jobs", None)
+        if callable(recover):
             try:
-                if self.filter_client.connect():
-                    self._filter_thread = threading.Thread(
-                        target=self._run_filter_client,
-                        name="stai-protection-filter-client",
-                        daemon=True,
-                    )
-                    self._filter_thread.start()
-                else:
+                recover()
+            except Exception:
+                LOGGER.exception("failed to recover interrupted protection scans")
+        with self._lifecycle_lock:
+            if self._lifecycle_state != "starting":
+                return
+            resume_scheduled_scans = getattr(self.service, "resume_scheduled_scans", None)
+            if callable(resume_scheduled_scans):
+                resume_scheduled_scans()
+            self._service_state = "running"
+            self._stop_event.clear()
+            self._start_health_refresh()
+            if not self.rules_trusted or self.service is None:
+                self._last_error = "trusted rule package is unavailable"
+            elif self.filter_client is not None:
+                try:
+                    if self.filter_client.connect():
+                        self._filter_thread = threading.Thread(
+                            target=self._run_filter_client,
+                            name="stai-protection-filter-client",
+                            daemon=True,
+                        )
+                        self._filter_thread.start()
+                    else:
+                        self._last_error = "minifilter communication port is unavailable"
+                        self._start_filter_reconnect_loop()
+                except Exception:
+                    LOGGER.exception("unable to connect to minifilter communication port")
                     self._last_error = "minifilter communication port is unavailable"
                     self._start_filter_reconnect_loop()
-            except Exception:
-                LOGGER.exception("unable to connect to minifilter communication port")
-                self._last_error = "minifilter communication port is unavailable"
-                self._start_filter_reconnect_loop()
-        else:
-            self._last_error = "minifilter client is unavailable"
+            else:
+                self._last_error = "minifilter client is unavailable"
 
-        if self.pipe_server is not None:
-            try:
-                self.pipe_server.start()
-            except Exception:
-                LOGGER.exception("unable to start the protection named pipe")
-                self._last_error = "protection named pipe is unavailable"
-        elif not self.client_sid:
-            self._last_error = "installed dashboard client SID is not configured"
+            if self.pipe_server is not None:
+                try:
+                    self.pipe_server.start()
+                except Exception:
+                    LOGGER.exception("unable to start the protection named pipe")
+                    self._last_error = "protection named pipe is unavailable"
+            elif not self.client_sid:
+                self._last_error = "installed dashboard client SID is not configured"
+            if (
+                self.service is not None
+                and self.rules_trusted
+                and self.client_sid
+                and callable(getattr(self.service, "run_due_scheduled_scan", None))
+            ):
+                from .scheduler import ProtectionScheduler
+
+                if self._scheduler is None or not self._scheduler.running:
+                    self._scheduler = ProtectionScheduler(self.service, self.client_sid)
+                    self._scheduler.start()
+            self._lifecycle_state = "running"
 
     def _start_filter_reconnect_loop(self) -> None:
         if self.filter_client is None or self.service is None or not self.rules_trusted:
@@ -669,13 +707,37 @@ class ProtectionServiceHost:
                 return
 
     def stop(self) -> None:
+        with self._lifecycle_lock:
+            if self._lifecycle_state == "stopping":
+                return
+            self._lifecycle_state = "stopping"
+            self._stopping_event.set()
         self._stop_event.set()
         self._health_stop_event.set()
+        stop_scheduled_scans = getattr(self.service, "stop_scheduled_scans", None)
+        if callable(stop_scheduled_scans):
+            try:
+                stop_scheduled_scans()
+            except Exception:
+                LOGGER.exception("failed to gate scheduled scan claims")
+        if self._scheduler is not None:
+            try:
+                self._scheduler.stop()
+            except Exception:
+                LOGGER.exception("failed to stop scheduled scan worker")
+            finally:
+                self._scheduler = None
         if self.pipe_server is not None:
             try:
                 self.pipe_server.close()
             except Exception:
                 LOGGER.exception("failed to close protection named pipe")
+        stop_scan = getattr(self.service, "stop_scan", None)
+        if callable(stop_scan):
+            try:
+                stop_scan(timeout=5)
+            except Exception:
+                LOGGER.exception("failed to stop the active protection scan")
         if self.triage is not None:
             try:
                 self.triage.close()
@@ -690,8 +752,10 @@ class ProtectionServiceHost:
             self._filter_thread.join(timeout=6)
         if self._health_thread and self._health_thread.is_alive():
             self._health_thread.join(timeout=2)
-        self._started = False
-        self._service_state = "stopped"
+        with self._lifecycle_lock:
+            self._started = False
+            self._service_state = "stopped"
+            self._lifecycle_state = "stopped"
 
     def get_status(self) -> dict[str, Any]:
         connected = bool(
@@ -770,7 +834,10 @@ class ProtectionServiceHost:
             job = self.store.get_scan_job(payload["job_id"])
             if job is None:
                 raise LookupError("scan job not found")
-            return job
+            result = _to_jsonable(job)
+            if isinstance(result, dict):
+                result["coverage"] = self.store.get_scan_job_root_coverage(payload["job_id"])
+            return result
         if operation in ("get_triage", "request_triage"):
             if self.triage is None:
                 raise ProtectionServiceUnavailable("protection triage is unavailable")
@@ -822,10 +889,13 @@ class ProtectionServiceHost:
                 return self._schedule_response(schedule)
             if self.service is None or not self.rules_trusted:
                 raise ProtectionServiceUnavailable("protection service is unavailable")
-            profile = self.service.refresh_scan_profile(
-                self.client_sid,
-                caller_context.token_handle,
-            )
+            try:
+                profile = self.service.refresh_scan_profile(
+                    self.client_sid,
+                    caller_context.token_handle,
+                )
+            except Exception as exc:
+                raise ProtectionServiceUnavailable("Windows scan folders could not be resolved") from exc
             return {
                 "ready": True,
                 "refreshed_at": profile.refreshed_at,
@@ -834,7 +904,20 @@ class ProtectionServiceHost:
         if self.service is None or not self.rules_trusted:
             raise ProtectionServiceUnavailable("protection service is unavailable")
         if operation == "start_scan":
-            return self.service.start_scan(payload["scope"])
+            with self._lifecycle_lock:
+                if self._stopping_event.is_set():
+                    raise ProtectionServiceUnavailable("protection service is stopping")
+                if payload["scope"] == "quick":
+                    self._require_enrolled_caller(caller_context)
+                    try:
+                        profile = self.service.refresh_scan_profile(
+                            self.client_sid,
+                            caller_context.token_handle,
+                        )
+                    except Exception as exc:
+                        raise ProtectionServiceUnavailable("Windows scan folders could not be resolved") from exc
+                    return self.service.start_scan("quick", roots=profile.roots)
+                return self.service.start_scan("system")
         if operation == "cancel_scan":
             job_id = payload["job_id"]
             self.service.cancel_scan(job_id)
@@ -862,6 +945,7 @@ class ProtectionServiceHost:
         result = _to_jsonable(schedule)
         if not isinstance(result, dict):
             return {"enabled": False, "configured": False}
+        result.pop("owner_sid", None)
         result["configured"] = True
         return result
 

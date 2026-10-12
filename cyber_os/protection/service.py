@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import ntpath
 import os
-import stat
 import threading
 import uuid
 from dataclasses import dataclass
@@ -59,6 +59,7 @@ class ProtectionService:
         self._scan_lock = threading.Lock()
         self._current_job_id: Optional[str] = None
         self._profile_resolver = self._config.profile_resolver or KnownFolderResolver()
+        self._scheduled_scans_stopped = False
 
     @property
     def rules(self) -> RuleSet:
@@ -187,18 +188,64 @@ class ProtectionService:
                 roots or (),
                 source=source,
             )
-            self._config.store.update_scan_job(job_id, state="running")
-
-            self._cancel_scan.clear()
-            self._current_job_id = job_id
-            self._scan_thread = threading.Thread(
-                target=self._run_scan,
-                args=(job_id, scope),
-                daemon=True,
-            )
-            self._scan_thread.start()
-
+            self._start_job_locked(job)
             return job
+
+    def run_due_scheduled_scan(
+        self,
+        owner_sid: str,
+        *,
+        now_local: datetime | None = None,
+    ) -> ScanJob | None:
+        """Claim one due scheduled scan without resolving folders at run time."""
+        with self._scan_lock:
+            if self._scheduled_scans_stopped:
+                return None
+            scan_active = bool(self._scan_thread and self._scan_thread.is_alive())
+            job = self._config.store.claim_due_scan(
+                owner_sid,
+                now_local or datetime.now(),
+                scan_active=scan_active,
+            )
+            if job is None:
+                return None
+            try:
+                self._start_job_locked(job)
+            except Exception:
+                LOGGER.exception("failed to start scheduled scan worker")
+                return None
+            return job
+
+    def stop_scheduled_scans(self) -> None:
+        """Prevent timer callbacks from claiming or starting a scan during shutdown."""
+        with self._scan_lock:
+            self._scheduled_scans_stopped = True
+
+    def resume_scheduled_scans(self) -> None:
+        """Re-enable timer callbacks when the service host starts again."""
+        with self._scan_lock:
+            self._scheduled_scans_stopped = False
+
+    def _start_job_locked(self, job: ScanJob) -> None:
+        self._config.store.update_scan_job(job.job_id, state="running")
+        self._cancel_scan.clear()
+        self._current_job_id = job.job_id
+        self._scan_thread = threading.Thread(
+            target=self._run_scan,
+            args=(job.job_id, job.scope),
+            daemon=True,
+        )
+        try:
+            self._scan_thread.start()
+        except Exception:
+            self._config.store.update_scan_job(
+                job.job_id,
+                state="failed",
+                error_message="scan worker could not start",
+            )
+            self._scan_thread = None
+            self._current_job_id = None
+            raise
 
     def cancel_scan(self, job_id: str) -> bool:
         """Cancel a running scan job."""
@@ -210,6 +257,15 @@ class ProtectionService:
 
             self._cancel_scan.set()
             return True
+
+    def stop_scan(self, *, timeout: float = 5.0) -> None:
+        """Request cancellation and wait briefly for the active worker to exit."""
+        with self._scan_lock:
+            thread = self._scan_thread
+            if thread is None or not thread.is_alive():
+                return
+            self._cancel_scan.set()
+        thread.join(timeout=max(0.0, timeout))
 
     def _run_scan(self, job_id: str, scope: Literal["quick", "system"]) -> None:
         try:
@@ -247,9 +303,31 @@ class ProtectionService:
                 )
                 return
 
+            # Scan a parent once when known folders overlap, while retaining
+            # every folder label in the job's coverage report.
+            scan_roots: list[tuple[str, Path]] = []
+            for folder_id, root in sorted(
+                accessible_roots,
+                key=lambda item: len(ntpath.normcase(ntpath.normpath(str(item[1])))),
+            ):
+                normalized = ntpath.normcase(ntpath.normpath(str(root)))
+                covered_by_parent = False
+                for _parent_id, parent in scan_roots:
+                    parent_path = ntpath.normcase(ntpath.normpath(str(parent)))
+                    try:
+                        if ntpath.normcase(ntpath.commonpath((parent_path, normalized))) == parent_path:
+                            covered_by_parent = True
+                            break
+                    except ValueError:
+                        continue
+                if covered_by_parent:
+                    self._config.store.update_scan_job_root(job_id, folder_id, "covered")
+                else:
+                    scan_roots.append((folder_id, root))
+
             # Count total files first (for progress)
             total_files = 0
-            for _folder_id, root in accessible_roots:
+            for _folder_id, root in scan_roots:
                 try:
                     for _ in self._iter_files(root):
                         total_files += 1
@@ -261,14 +339,20 @@ class ProtectionService:
             files_scanned = 0
             detections = 0
 
-            for folder_id, root in accessible_roots:
+            for folder_id, root in scan_roots:
                 if self._cancel_scan.is_set():
                     self._config.store.update_scan_job(job_id, state="cancelled")
                     return
 
                 self._config.store.update_scan_job_root(job_id, folder_id, "scanning")
+                errors_before_root = errors
+
+                def record_walk_error(_error: OSError) -> None:
+                    nonlocal errors
+                    errors += 1
+
                 try:
-                    for file_path in self._iter_files(root):
+                    for file_path in self._iter_files(root, on_error=record_walk_error):
                         if self._cancel_scan.is_set():
                             self._config.store.update_scan_job(job_id, state="cancelled")
                             return
@@ -293,7 +377,15 @@ class ProtectionService:
                         job_id, folder_id, "skipped", error="scan folder became inaccessible"
                     )
                 else:
-                    self._config.store.update_scan_job_root(job_id, folder_id, "scanned")
+                    if errors > errors_before_root:
+                        self._config.store.update_scan_job_root(
+                            job_id,
+                            folder_id,
+                            "partial",
+                            error="some files or folders were inaccessible",
+                        )
+                    else:
+                        self._config.store.update_scan_job_root(job_id, folder_id, "scanned")
 
             final_state = "cancelled" if self._cancel_scan.is_set() else "completed"
             self._config.store.update_scan_job(
@@ -310,7 +402,12 @@ class ProtectionService:
             with self._scan_lock:
                 self._current_job_id = None
 
-    def _iter_files(self, root: Path) -> Iterator[Path]:
+    def _iter_files(
+        self,
+        root: Path,
+        *,
+        on_error: Callable[[OSError], None] | None = None,
+    ) -> Iterator[Path]:
         """Iterate files under root, skipping reparse points and quarantine dir."""
         def is_reparse_point(path: Path) -> bool:
             try:
@@ -321,6 +418,8 @@ class ProtectionService:
 
         def on_walk_error(error: OSError) -> None:
             LOGGER.debug("skipping inaccessible scan path %s", error.filename or "unknown")
+            if on_error is not None:
+                on_error(error)
 
         try:
             for current, directories, files in os.walk(root, topdown=True, followlinks=False, onerror=on_walk_error):
@@ -340,7 +439,9 @@ class ProtectionService:
                         continue
                     if entry.is_file():
                         yield entry
-        except OSError:
+        except OSError as error:
+            if on_error is not None:
+                on_error(error)
             return
 
     def _is_under_quarantine(self, path: Path) -> bool:

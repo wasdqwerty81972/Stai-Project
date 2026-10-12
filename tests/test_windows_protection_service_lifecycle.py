@@ -2,23 +2,156 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
+import types
 import uuid
 
 import pytest
 
 from cyber_os.protection.windows_service import (
     ProtectionServiceHost,
+    ProtectionServiceUnavailable,
     WindowsNamedPipeServer,
+    AuthenticatedPipeClient,
     build_pipe_sddl,
     is_allowed_pipe_client,
     process_pipe_request,
 )
+from cyber_os.protection.store import ProtectionStore
 
 
 CLIENT_SID = "S-1-5-21-123456789-123456789-123456789-1001"
 OTHER_SID = "S-1-5-21-123456789-123456789-123456789-1002"
+
+
+def test_authenticated_pipe_token_requests_known_folder_access(monkeypatch):
+    requested = []
+    security = types.SimpleNamespace(
+        TOKEN_QUERY=0x0008,
+        TOKEN_IMPERSONATE=0x0004,
+        TokenUser=1,
+        ImpersonateNamedPipeClient=lambda _handle: None,
+        OpenThreadToken=lambda _thread, access, _open_as_self: requested.append(access) or 23,
+        GetTokenInformation=lambda _token, _kind: ("sid",),
+        ConvertSidToStringSid=lambda _sid: CLIENT_SID,
+        RevertToSelf=lambda: None,
+    )
+    api = types.SimpleNamespace(
+        GetCurrentThread=lambda: 7,
+        CloseHandle=lambda _handle: None,
+    )
+    monkeypatch.setitem(sys.modules, "win32security", security)
+    monkeypatch.setitem(sys.modules, "win32api", api)
+    server = WindowsNamedPipeServer(CLIENT_SID, lambda body: body)
+
+    caller = server._authenticated_client(object())
+
+    assert isinstance(caller, AuthenticatedPipeClient)
+    assert requested == [security.TOKEN_QUERY | security.TOKEN_IMPERSONATE]
+    caller.close()
+
+
+def test_authenticated_pipe_identity_failure_returns_no_caller(monkeypatch):
+    reverted = []
+    security = types.SimpleNamespace(
+        ImpersonateNamedPipeClient=lambda _handle: (_ for _ in ()).throw(OSError("bad client")),
+        RevertToSelf=lambda: reverted.append(True),
+    )
+    monkeypatch.setitem(sys.modules, "win32security", security)
+    monkeypatch.setitem(sys.modules, "win32api", types.SimpleNamespace())
+    server = WindowsNamedPipeServer(CLIENT_SID, lambda body: body)
+
+    caller = server._authenticated_client(object())
+
+    assert caller is None
+    assert reverted == [True]
+
+
+def test_host_stop_gates_new_scan_requests():
+    class Pipe:
+        def close(self):
+            pass
+
+    class Service:
+        rules = types.SimpleNamespace(version="test")
+
+        def __init__(self):
+            self.started = []
+
+        def start_scan(self, scope, **kwargs):
+            self.started.append(scope)
+            return scope
+
+    service = Service()
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=service,
+        pipe_server=Pipe(),
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+    host.stop()
+
+    with pytest.raises(ProtectionServiceUnavailable, match="stopping"):
+        host.dispatch("start_scan", {"scope": "system"})
+    assert service.started == []
+
+
+def test_stop_during_recovery_prevents_startup_from_reenabling_scheduler():
+    recovery_entered = threading.Event()
+    release_recovery = threading.Event()
+
+    class Store(_Store):
+        def recover_interrupted_scan_jobs(self):
+            recovery_entered.set()
+            assert release_recovery.wait(timeout=2)
+
+    class Pipe:
+        started = False
+
+        def start(self):
+            self.started = True
+
+        def close(self):
+            pass
+
+    class Service:
+        rules = types.SimpleNamespace(version="test")
+
+        def __init__(self):
+            self.resumed = 0
+            self.due_calls = 0
+
+        def resume_scheduled_scans(self):
+            self.resumed += 1
+
+        def run_due_scheduled_scan(self, _sid):
+            self.due_calls += 1
+
+    store = Store()
+    pipe = Pipe()
+    service = Service()
+    host = ProtectionServiceHost(
+        store=store,
+        service=service,
+        pipe_server=pipe,
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+    starter = threading.Thread(target=host.start)
+    starter.start()
+    assert recovery_entered.wait(timeout=1)
+
+    host.stop()
+    release_recovery.set()
+    starter.join(timeout=2)
+
+    assert not starter.is_alive()
+    assert pipe.started is False
+    assert service.resumed == 0
+    assert service.due_calls == 0
 
 
 class _Store:
@@ -149,6 +282,74 @@ def test_profile_refresh_rejects_caller_supplied_identity_or_paths():
     assert "payload" in response["error"].lower()
 
 
+def test_set_scan_schedule_rejects_executable_and_caller_owned_fields():
+    request = {
+        "version": 1,
+        "request_id": "f" * 32,
+        "operation": "set_scan_schedule",
+        "payload": {
+            "enabled": True,
+            "cadence": "daily",
+            "local_time": "21:30",
+            "days_of_week": [],
+            "sid": CLIENT_SID,
+            "command": "powershell.exe",
+        },
+    }
+
+    response = json.loads(process_pipe_request(json.dumps(request).encode(), object()))
+
+    assert response["ok"] is False
+    assert "payload" in response["error"].lower()
+
+
+def test_scan_schedule_response_hides_sid_and_profile_paths(tmp_path):
+    store = ProtectionStore(tmp_path / "schedule-response.db")
+    store.replace_scan_profile(
+        CLIENT_SID,
+        (("desktop", r"C:\Users\alice\Desktop"),
+         ("downloads", r"C:\Users\alice\Downloads"),
+         ("startup", r"C:\Users\alice\Startup")),
+        "2026-10-12T09:00:00",
+    )
+    store.set_scan_schedule(
+        CLIENT_SID, enabled=True, cadence="daily", local_time="21:30", days_of_week=()
+    )
+    host = ProtectionServiceHost(
+        store=store,
+        service=None,
+        rules_trusted=False,
+        client_sid=CLIENT_SID,
+    )
+    caller = type("Caller", (), {"sid": CLIENT_SID, "token_handle": object()})()
+
+    result = host.dispatch("get_scan_schedule", {}, caller_context=caller)
+    encoded = json.dumps(result)
+
+    assert result["configured"] is True
+    assert "owner_sid" not in result
+    assert "C:\\Users\\alice" not in encoded
+
+
+def test_set_scan_schedule_rejects_non_string_weekday_values():
+    request = {
+        "version": 1,
+        "request_id": "9" * 32,
+        "operation": "set_scan_schedule",
+        "payload": {
+            "enabled": True,
+            "cadence": "weekly",
+            "local_time": "21:30",
+            "days_of_week": [[]],
+        },
+    }
+
+    response = json.loads(process_pipe_request(json.dumps(request).encode(), object()))
+
+    assert response["ok"] is False
+    assert "days_of_week" in response["error"]
+
+
 def test_pipe_request_passes_authenticated_context_outside_json():
     class ContextHost:
         caller = None
@@ -172,6 +373,20 @@ def test_pipe_request_passes_authenticated_context_outside_json():
 
     assert response["ok"] is True
     assert host.caller is caller
+
+
+def test_quick_scan_dispatch_requires_exact_enrolled_user():
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+    caller = type("Caller", (), {"sid": OTHER_SID, "token_handle": object()})()
+
+    with pytest.raises(ProtectionServiceUnavailable, match="enrolled dashboard user"):
+        host.dispatch("start_scan", {"scope": "quick"}, caller_context=caller)
 
 
 def test_pipe_dispatch_rejects_non_allowlisted_operation():

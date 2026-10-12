@@ -12,6 +12,8 @@ must enforce on top of the store:
 from __future__ import annotations
 
 import hashlib
+import threading
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -201,6 +203,57 @@ def test_iter_files_excludes_quarantine_directory(tmp_path: Path) -> None:
     assert (quarantine_root / "held.bin").resolve() not in found
 
 
+def test_iter_files_reports_inaccessible_descendants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    svc, _store = _service(tmp_path, RuleSet("test-1", ()))
+    errors: list[OSError] = []
+
+    def inaccessible_walk(_root, *, topdown, followlinks, onerror):
+        assert topdown is True and followlinks is False
+        onerror(PermissionError(13, "permission denied", str(root / "private")))
+        yield str(root), [], []
+
+    monkeypatch.setattr(service_mod.os, "walk", inaccessible_walk)
+
+    assert list(svc._iter_files(root, on_error=errors.append)) == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], PermissionError)
+
+
+def test_quick_scan_deduplicates_overlapping_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outer = tmp_path / "user"
+    nested = outer / "Downloads"
+    startup = tmp_path / "startup"
+    nested.mkdir(parents=True)
+    startup.mkdir()
+    outer_file = outer / "document.txt"
+    nested_file = nested / "download.txt"
+    startup_file = startup / "startup.txt"
+    for path in (outer_file, nested_file, startup_file):
+        path.write_text("clean", encoding="utf-8")
+    roots = (("desktop", str(outer)), ("downloads", str(nested)), ("startup", str(startup)))
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    observed: list[Path] = []
+    monkeypatch.setattr(
+        svc,
+        "scan_file",
+        lambda path: observed.append(path) or ScanVerdict(
+            status="clean", action="allow", rule_id=None, rule_version="test-1", sha256=None, reason="clean"
+        ),
+    )
+
+    job = svc.start_scan("quick", roots=roots)
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+
+    assert sorted(path.resolve() for path in observed) == sorted(
+        (outer_file.resolve(), nested_file.resolve(), startup_file.resolve())
+    )
+    coverage = {item["folder_id"]: item["status"] for item in store.get_scan_job_root_coverage(job.job_id)}
+    assert coverage == {"desktop": "scanned", "downloads": "covered", "startup": "scanned"}
+
+
 def test_scan_does_not_follow_symlink_outside_scope(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -290,6 +343,37 @@ def test_refresh_scan_profile_persists_only_resolved_known_folders(tmp_path: Pat
     assert store.get_scan_profile(profile.owner_sid) == profile
 
 
+def test_scheduled_scan_claim_uses_saved_profile_without_resolving_user_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "enrolled" / "Desktop"
+    root.mkdir(parents=True)
+    (root / "sample.txt").write_text("scan me", encoding="utf-8")
+    roots = (
+        ("desktop", str(root)),
+        ("downloads", str(tmp_path / "offline-downloads")),
+        ("startup", str(tmp_path / "offline-startup")),
+    )
+    sid = "S-1-5-21-1-2-3-1001"
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    store.replace_scan_profile(sid, roots, "2026-10-12T09:00:00")
+    store.set_scan_schedule(
+        sid, enabled=True, cadence="daily", local_time="10:00", days_of_week=(),
+        now_local=datetime(2026, 10, 12, 9, 0),
+    )
+    observed: list[Path] = []
+    monkeypatch.setattr(svc, "scan_file", lambda path: observed.append(path) or ScanVerdict(
+        status="clean", action="allow", rule_id=None, rule_version="test-1", sha256=None, reason="clean"
+    ))
+    job = svc.run_due_scheduled_scan(sid, now_local=datetime(2026, 10, 12, 10, 5))
+    assert job is not None and job.source == "schedule"
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+    final = store.get_scan_job(job.job_id)
+    assert final is not None and final.state == "completed" and final.errors == 2
+    assert observed == [root / "sample.txt"]
+
+
 def test_running_scan_can_be_cancelled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -306,7 +390,7 @@ def test_running_scan_can_be_cancelled(
         ("startup", str(tmp_path / "startup")),
     )
 
-    def _fake_iter(self, root):  # noqa: ANN001 - test stub
+    def _fake_iter(self, root, **_kwargs):  # noqa: ANN001 - test stub
         yield from files
 
     def _cancel_on_scan(self, path):  # noqa: ANN001 - test stub
@@ -327,3 +411,46 @@ def test_running_scan_can_be_cancelled(
     final = store.get_scan_job(job.job_id)
     assert final is not None
     assert final.state == "cancelled"
+
+
+def test_scheduled_worker_start_failure_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sid = "S-1-5-21-1-2-3-1001"
+    roots = (
+        ("desktop", r"C:\Users\alice\Desktop"),
+        ("downloads", r"C:\Users\alice\Downloads"),
+        ("startup", r"C:\Users\alice\Startup"),
+    )
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    store.replace_scan_profile(sid, roots, "2026-10-12T09:00:00")
+    store.set_scan_schedule(
+        sid, enabled=True, cadence="daily", local_time="10:00", days_of_week=(),
+        now_local=datetime(2026, 10, 12, 9, 0),
+    )
+    monkeypatch.setattr(threading.Thread, "start", lambda _self: (_ for _ in ()).throw(RuntimeError("thread failure")))
+
+    assert svc.run_due_scheduled_scan(sid, now_local=datetime(2026, 10, 12, 10, 5)) is None
+
+    schedule = store.get_scan_schedule(sid)
+    assert schedule is not None and schedule.last_result == "failed"
+    assert store.get_scan_job(schedule.last_job_id).state == "failed"
+
+
+def test_shutdown_gate_prevents_scheduled_occurrence_claim(tmp_path: Path) -> None:
+    sid = "S-1-5-21-1-2-3-1001"
+    roots = (
+        ("desktop", r"C:\Users\alice\Desktop"),
+        ("downloads", r"C:\Users\alice\Downloads"),
+        ("startup", r"C:\Users\alice\Startup"),
+    )
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    store.replace_scan_profile(sid, roots, "2026-10-12T09:00:00")
+    store.set_scan_schedule(
+        sid, enabled=True, cadence="daily", local_time="10:00", days_of_week=(),
+        now_local=datetime(2026, 10, 12, 9, 0),
+    )
+    svc.stop_scheduled_scans()
+
+    assert svc.run_due_scheduled_scan(sid, now_local=datetime(2026, 10, 12, 10, 5)) is None
+
+    schedule = store.get_scan_schedule(sid)
+    assert schedule is not None and schedule.last_job_id is None

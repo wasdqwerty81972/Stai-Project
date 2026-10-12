@@ -6,17 +6,19 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, time as datetime_time, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Literal, Optional
 
-from .models import DetectionRule, RuleSet, ScanProfile, ScanRootSnapshot, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanProfile, ScanRootSnapshot, ScanSchedule, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 5
 KNOWN_SCAN_FOLDER_IDS = ("desktop", "downloads", "startup")
+_WEEKDAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -83,7 +85,7 @@ CREATE TABLE IF NOT EXISTS scan_job_roots (
     job_id TEXT NOT NULL REFERENCES scan_jobs(job_id) ON DELETE CASCADE,
     folder_id TEXT NOT NULL,
     path TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'scanning', 'scanned', 'skipped')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'scanning', 'scanned', 'skipped', 'partial', 'covered')),
     error TEXT,
     PRIMARY KEY (job_id, folder_id)
 );
@@ -98,6 +100,7 @@ CREATE TABLE IF NOT EXISTS scan_schedules (
     last_run_date TEXT,
     last_job_id TEXT,
     last_result TEXT,
+    next_run_local TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -241,6 +244,39 @@ class WindowsSecurityStatus:
     query_available: bool
 
 
+def _next_schedule_occurrence(
+    cadence: Literal["daily", "weekly"],
+    local_time: str,
+    days_of_week: tuple[str, ...],
+    after: datetime,
+) -> str:
+    scheduled_time = datetime.strptime(local_time, "%H:%M").time()
+    for offset in range(8):
+        candidate_date = after.date() + timedelta(days=offset)
+        if cadence == "weekly" and candidate_date.weekday() not in {
+            _WEEKDAY_INDEX[day] for day in days_of_week
+        }:
+            continue
+        candidate = datetime.combine(candidate_date, scheduled_time)
+        if candidate > after:
+            return candidate.isoformat(timespec="minutes")
+    raise ValueError("unable to compute next scan occurrence")
+
+
+def _row_to_schedule(row: sqlite3.Row) -> ScanSchedule:
+    return ScanSchedule(
+        owner_sid=str(row["owner_sid"]),
+        enabled=bool(row["enabled"]),
+        cadence=row["cadence"],
+        local_time=str(row["local_time"]),
+        days_of_week=tuple(json.loads(row["days_json"])),
+        last_run_date=row["last_run_date"],
+        last_job_id=row["last_job_id"],
+        last_result=row["last_result"],
+        next_run_local=row["next_run_local"],
+    )
+
+
 class ProtectionStore:
     """Thread-safe SQLite store for protection data."""
 
@@ -266,6 +302,36 @@ class ProtectionStore:
                 conn.execute(
                     "ALTER TABLE scan_jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'interactive'"
                 )
+            schedule_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(scan_schedules)")
+            }
+            if "next_run_local" not in schedule_columns:
+                conn.execute("ALTER TABLE scan_schedules ADD COLUMN next_run_local TEXT")
+            root_table = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scan_job_roots'"
+            ).fetchone()
+            if root_table is not None and "'partial'" not in str(root_table[0]):
+                conn.execute("PRAGMA foreign_keys = OFF")
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """CREATE TABLE scan_job_roots_v5 (
+                        job_id TEXT NOT NULL REFERENCES scan_jobs(job_id) ON DELETE CASCADE,
+                        folder_id TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending'
+                            CHECK(status IN ('pending', 'scanning', 'scanned', 'skipped', 'partial', 'covered')),
+                        error TEXT,
+                        PRIMARY KEY (job_id, folder_id)
+                    )"""
+                )
+                conn.execute(
+                    """INSERT INTO scan_job_roots_v5 (job_id, folder_id, path, status, error)
+                       SELECT job_id, folder_id, path, status, error FROM scan_job_roots"""
+                )
+                conn.execute("DROP TABLE scan_job_roots")
+                conn.execute("ALTER TABLE scan_job_roots_v5 RENAME TO scan_job_roots")
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row is None:
@@ -679,11 +745,11 @@ class ProtectionStore:
         self,
         job_id: str,
         folder_id: str,
-        status: Literal["pending", "scanning", "scanned", "skipped"],
+        status: Literal["pending", "scanning", "scanned", "skipped", "partial", "covered"],
         *,
         error: str | None = None,
     ) -> bool:
-        if status not in ("pending", "scanning", "scanned", "skipped"):
+        if status not in ("pending", "scanning", "scanned", "skipped", "partial", "covered"):
             raise ValueError("invalid scan root status")
         with self._transaction() as conn:
             cursor = conn.execute(
@@ -703,6 +769,206 @@ class ProtectionStore:
             {"folder_id": str(row["folder_id"]), "status": str(row["status"]), "error": row["error"]}
             for row in rows
         )
+
+    def recover_interrupted_scan_jobs(self) -> tuple[str, ...]:
+        """Fail scans left pending or running by a previous service process."""
+        message = "service restarted while scan was active"
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT job_id FROM scan_jobs WHERE state IN ('pending', 'running')"
+            ).fetchall()
+            job_ids = tuple(str(row["job_id"]) for row in rows)
+            if not job_ids:
+                return ()
+            placeholders = ",".join("?" for _ in job_ids)
+            conn.execute(
+                f"""UPDATE scan_jobs SET state = 'failed', error_message = ?,
+                       completed_at = ? WHERE job_id IN ({placeholders})""",
+                (message, datetime.now().isoformat(), *job_ids),
+            )
+            conn.execute(
+                f"""UPDATE scan_job_roots
+                       SET status = CASE WHEN status IN ('scanning', 'covered') THEN 'partial' ELSE 'skipped' END,
+                           error = ?
+                       WHERE job_id IN ({placeholders}) AND status IN ('pending', 'scanning', 'covered')""",
+                (message, *job_ids),
+            )
+            conn.execute(
+                f"""UPDATE scan_schedule_runs SET state = 'failed'
+                       WHERE state = 'claimed' AND job_id IN ({placeholders})""",
+                job_ids,
+            )
+            conn.execute(
+                f"""UPDATE scan_schedules SET last_result = 'failed'
+                       WHERE last_job_id IN ({placeholders})""",
+                job_ids,
+            )
+            return job_ids
+
+    def set_scan_schedule(
+        self,
+        owner_sid: str,
+        *,
+        enabled: bool,
+        cadence: Literal["daily", "weekly"],
+        local_time: str,
+        days_of_week: tuple[str, ...],
+        now_local: datetime | None = None,
+    ) -> ScanSchedule:
+        if not owner_sid or "\x00" in owner_sid:
+            raise ValueError("schedule owner SID is invalid")
+        if type(enabled) is not bool or cadence not in ("daily", "weekly"):
+            raise ValueError("schedule settings are invalid")
+        try:
+            parsed_time = datetime.strptime(local_time, "%H:%M").time()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("schedule time must use HH:MM") from exc
+        if parsed_time.strftime("%H:%M") != local_time:
+            raise ValueError("schedule time must use HH:MM")
+        if any(day not in _WEEKDAY_INDEX for day in days_of_week):
+            raise ValueError("schedule weekdays are invalid")
+        if len(set(days_of_week)) != len(days_of_week):
+            raise ValueError("schedule weekdays must be unique")
+        days = tuple(sorted(days_of_week, key=lambda day: _WEEKDAY_INDEX[day]))
+        if (cadence == "weekly") != bool(days):
+            raise ValueError("weekly schedules require weekdays; daily schedules do not")
+        now = now_local or datetime.now()
+        if now.tzinfo is not None:
+            now = now.astimezone().replace(tzinfo=None)
+        if enabled and self.get_scan_profile(owner_sid) is None:
+            raise ValueError("a successfully resolved scan profile is required before enabling a schedule")
+        next_run = _next_schedule_occurrence(cadence, local_time, days, now) if enabled else None
+        with self._transaction() as conn:
+            conn.execute(
+                """INSERT INTO scan_schedules
+                   (owner_sid, version, enabled, cadence, local_time, days_json, next_run_local)
+                   VALUES (?, 1, ?, ?, ?, ?, ?)
+                   ON CONFLICT(owner_sid) DO UPDATE SET
+                     version = scan_schedules.version + 1,
+                     enabled = excluded.enabled,
+                     cadence = excluded.cadence,
+                     local_time = excluded.local_time,
+                     days_json = excluded.days_json,
+                     next_run_local = excluded.next_run_local,
+                     updated_at = datetime('now')""",
+                (owner_sid, int(enabled), cadence, local_time, json.dumps(days), next_run),
+            )
+            row = conn.execute(
+                "SELECT * FROM scan_schedules WHERE owner_sid = ?", (owner_sid,)
+            ).fetchone()
+        return _row_to_schedule(row)
+
+    def get_scan_schedule(self, owner_sid: str) -> ScanSchedule | None:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scan_schedules WHERE owner_sid = ?", (owner_sid,)
+            ).fetchone()
+        return _row_to_schedule(row) if row is not None else None
+
+    def claim_due_scan(
+        self,
+        owner_sid: str,
+        now_local: datetime,
+        *,
+        scan_active: bool,
+    ) -> ScanJob | None:
+        """Claim one due occurrence and snapshot its roots in the same transaction."""
+        now = now_local.astimezone().replace(tzinfo=None) if now_local.tzinfo else now_local
+        with self._transaction() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            schedule = conn.execute(
+                "SELECT * FROM scan_schedules WHERE owner_sid = ? AND enabled = 1",
+                (owner_sid,),
+            ).fetchone()
+            if schedule is None or not schedule["next_run_local"]:
+                return None
+            due_at = datetime.fromisoformat(schedule["next_run_local"])
+            if due_at > now:
+                return None
+            occurrence_date = due_at.date().isoformat()
+            days = tuple(json.loads(schedule["days_json"]))
+            next_run = _next_schedule_occurrence(
+                schedule["cadence"], schedule["local_time"], days, now
+            )
+            if schedule["last_run_date"] == occurrence_date:
+                conn.execute(
+                    "UPDATE scan_schedules SET next_run_local = ? WHERE owner_sid = ?",
+                    (next_run, owner_sid),
+                )
+                return None
+
+            if scan_active:
+                conn.execute(
+                    """INSERT INTO scan_schedule_runs
+                       (run_id, owner_sid, occurrence_date, state) VALUES (?, ?, ?, 'skipped')""",
+                    (str(uuid.uuid4()), owner_sid, occurrence_date),
+                )
+                conn.execute(
+                    """UPDATE scan_schedules SET last_run_date = ?, last_job_id = NULL,
+                       last_result = 'skipped', next_run_local = ?, updated_at = datetime('now')
+                       WHERE owner_sid = ?""",
+                    (occurrence_date, next_run, owner_sid),
+                )
+                return None
+
+            profile = conn.execute(
+                "SELECT roots_json FROM scan_profiles WHERE owner_sid = ?", (owner_sid,)
+            ).fetchone()
+            try:
+                roots = tuple((str(folder_id), str(path)) for folder_id, path in json.loads(profile["roots_json"])) if profile else ()
+            except (TypeError, ValueError):
+                roots = ()
+            if tuple(folder_id for folder_id, _path in roots) != KNOWN_SCAN_FOLDER_IDS:
+                conn.execute(
+                    """INSERT INTO scan_schedule_runs
+                       (run_id, owner_sid, occurrence_date, state) VALUES (?, ?, ?, 'failed')""",
+                    (str(uuid.uuid4()), owner_sid, occurrence_date),
+                )
+                conn.execute(
+                    """UPDATE scan_schedules SET last_run_date = ?, last_job_id = NULL,
+                       last_result = 'failed', next_run_local = ?, updated_at = datetime('now')
+                       WHERE owner_sid = ?""",
+                    (occurrence_date, next_run, owner_sid),
+                )
+                return None
+
+            job_id = str(uuid.uuid4())
+            started_at = now.isoformat()
+            conn.execute(
+                """INSERT INTO scan_jobs
+                   (job_id, scope, state, files_scanned, files_total, detections, errors, started_at, source)
+                   VALUES (?, 'quick', 'pending', 0, 0, 0, 0, ?, 'schedule')""",
+                (job_id, started_at),
+            )
+            conn.executemany(
+                "INSERT INTO scan_job_roots (job_id, folder_id, path) VALUES (?, ?, ?)",
+                ((job_id, folder_id, path) for folder_id, path in roots),
+            )
+            conn.execute(
+                """INSERT INTO scan_schedule_runs
+                   (run_id, owner_sid, occurrence_date, state, job_id)
+                   VALUES (?, ?, ?, 'claimed', ?)""",
+                (str(uuid.uuid4()), owner_sid, occurrence_date, job_id),
+            )
+            conn.execute(
+                """UPDATE scan_schedules SET last_run_date = ?, last_job_id = ?,
+                   last_result = 'running', next_run_local = ?, updated_at = datetime('now')
+                   WHERE owner_sid = ?""",
+                (occurrence_date, job_id, next_run, owner_sid),
+            )
+            return ScanJob(
+                job_id=job_id,
+                scope="quick",
+                state="pending",
+                files_scanned=0,
+                files_total=0,
+                detections=0,
+                errors=0,
+                started_at=started_at,
+                completed_at=None,
+                error_message=None,
+                source="schedule",
+            )
 
     def update_scan_job(
         self,
@@ -745,6 +1011,16 @@ class ProtectionStore:
             cursor = conn.execute(
                 f"UPDATE scan_jobs SET {', '.join(updates)} WHERE job_id = ?", params
             )
+            if cursor.rowcount and state in ("completed", "failed", "cancelled"):
+                schedule_result = "completed" if state == "completed" else "failed"
+                conn.execute(
+                    "UPDATE scan_schedule_runs SET state = ? WHERE job_id = ? AND state = 'claimed'",
+                    (schedule_result, job_id),
+                )
+                conn.execute(
+                    "UPDATE scan_schedules SET last_result = ? WHERE last_job_id = ?",
+                    (state, job_id),
+                )
             return cursor.rowcount > 0
 
     def get_scan_job(self, job_id: str) -> Optional[ScanJob]:
