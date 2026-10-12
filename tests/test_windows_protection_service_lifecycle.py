@@ -135,6 +135,45 @@ def test_pipe_dispatch_rejects_client_supplied_scan_roots():
     assert "payload" in response["error"].lower()
 
 
+def test_profile_refresh_rejects_caller_supplied_identity_or_paths():
+    request = {
+        "version": 1,
+        "request_id": "d" * 32,
+        "operation": "refresh_scan_profile",
+        "payload": {"sid": CLIENT_SID, "roots": ["C:\\"]},
+    }
+
+    response = json.loads(process_pipe_request(json.dumps(request).encode(), object()))
+
+    assert response["ok"] is False
+    assert "payload" in response["error"].lower()
+
+
+def test_pipe_request_passes_authenticated_context_outside_json():
+    class ContextHost:
+        caller = None
+
+        def dispatch(self, operation, payload, *, caller_context=None):
+            self.caller = caller_context
+            assert operation == "refresh_scan_profile"
+            assert payload == {}
+            return {"ready": True}
+
+    request = {
+        "version": 1,
+        "request_id": "e" * 32,
+        "operation": "refresh_scan_profile",
+        "payload": {},
+    }
+    caller = type("Caller", (), {"sid": CLIENT_SID, "token_handle": object()})()
+    host = ContextHost()
+
+    response = json.loads(process_pipe_request(json.dumps(request).encode(), host, caller))
+
+    assert response["ok"] is True
+    assert host.caller is caller
+
+
 def test_pipe_dispatch_rejects_non_allowlisted_operation():
     request = {
         "version": 1,
@@ -224,7 +263,7 @@ def test_windows_named_pipe_round_trips_one_bounded_frame():
         win32api.CloseHandle(token)
 
     pipe_name = rf"\\.\pipe\STAI.Protection.Test.{uuid.uuid4().hex}"
-    server = WindowsNamedPipeServer(client_sid, lambda body: body[::-1], pipe_name=pipe_name)
+    server = WindowsNamedPipeServer(client_sid, lambda body, caller: body[::-1], pipe_name=pipe_name)
     handle = None
     try:
         server.start()

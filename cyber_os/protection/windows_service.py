@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -76,7 +77,9 @@ def _require_identifier(value: Any, name: str) -> str:
     return value
 
 
-_EMPTY_OPERATIONS = {"get_status", "list_threats", "list_quarantine"}
+_EMPTY_OPERATIONS = {
+    "get_status", "list_threats", "list_quarantine", "refresh_scan_profile", "get_scan_schedule"
+}
 _SINGLE_ID_OPERATIONS = {
     "get_scan": ("job_id",),
     "cancel_scan": ("job_id",),
@@ -86,7 +89,7 @@ _SINGLE_ID_OPERATIONS = {
     "restore_quarantine": ("item_id",),
 }
 _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
-    "start_scan", "send_agent_message"
+    "start_scan", "send_agent_message", "set_scan_schedule"
 }
 
 
@@ -133,10 +136,46 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
         detection_id = parsed["detection_id"]
         if detection_id is not None:
             _require_identifier(detection_id, "detection_id")
+    elif operation == "set_scan_schedule":
+        parsed = _require_payload(payload, {"enabled", "cadence", "local_time", "days_of_week"})
+        if type(parsed["enabled"]) is not bool:
+            raise PipeProtocolError("enabled must be a boolean")
+        if parsed["cadence"] not in ("daily", "weekly"):
+            raise PipeProtocolError("cadence must be daily or weekly")
+        if not isinstance(parsed["local_time"], str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", parsed["local_time"]):
+            raise PipeProtocolError("local_time must use HH:MM")
+        days = parsed["days_of_week"]
+        allowed_days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        if not isinstance(days, list) or any(day not in allowed_days for day in days) or len(set(days)) != len(days):
+            raise PipeProtocolError("days_of_week is invalid")
+        if (parsed["cadence"] == "weekly") != bool(days):
+            raise PipeProtocolError("weekly schedules require days; daily schedules require none")
     return request_id, operation, payload
 
 
-def process_pipe_request(raw: bytes, host: Any) -> bytes:
+@dataclass(frozen=True, slots=True)
+class AuthenticatedPipeClient:
+    """Verified pipe identity and its short-lived token handle."""
+
+    sid: str
+    token_handle: Any
+
+    def close(self) -> None:
+        if self.token_handle is None:
+            return
+        try:
+            import win32api
+
+            win32api.CloseHandle(self.token_handle)
+        except ImportError:
+            pass
+
+
+def process_pipe_request(
+    raw: bytes,
+    host: Any,
+    caller_context: AuthenticatedPipeClient | Any | None = None,
+) -> bytes:
     """Validate and dispatch one length-delimited request body."""
     request_id = ""
     try:
@@ -145,7 +184,7 @@ def process_pipe_request(raw: bytes, host: Any) -> bytes:
         if isinstance(candidate_id, str) and _REQUEST_ID.fullmatch(candidate_id):
             request_id = candidate_id
         request_id, operation, payload = _validate_pipe_request(request)
-        data = host.dispatch(operation, payload)
+        data = host.dispatch(operation, payload, caller_context=caller_context)
         response = {
             "version": PROTOCOL_VERSION,
             "request_id": request_id,
@@ -325,14 +364,18 @@ class WindowsNamedPipeServer:
                 # first, then verify the client before reading or dispatching
                 # its request body.
                 frame_header = self._read_exact(handle, 4, win32file, frame_deadline)
-                if not self._authenticated_client(handle):
+                caller = self._authenticated_client(handle)
+                if caller is None:
                     continue
                 body_size = int.from_bytes(frame_header, "little")
-                if body_size <= 0 or body_size > MAX_FRAME_BYTES:
-                    response = process_pipe_request(b"", self)
-                else:
-                    body = self._read_exact(handle, body_size, win32file, frame_deadline)
-                    response = self._request_handler(body)
+                try:
+                    if body_size <= 0 or body_size > MAX_FRAME_BYTES:
+                        response = process_pipe_request(b"", self, caller)
+                    else:
+                        body = self._read_exact(handle, body_size, win32file, frame_deadline)
+                        response = self._request_handler(body, caller)
+                finally:
+                    caller.close()
                 response_deadline = time.monotonic() + _PIPE_IO_TIMEOUT_SECONDS
                 self._write_all(
                     handle,
@@ -367,11 +410,13 @@ class WindowsNamedPipeServer:
                         pass
         self._healthy = False
 
-    def _authenticated_client(self, handle: Any) -> bool:
+    def _authenticated_client(self, handle: Any) -> AuthenticatedPipeClient | None:
         import win32api
         import win32security
 
         token = None
+        caller = None
+        reverted = False
         try:
             win32security.ImpersonateNamedPipeClient(handle)
             token = win32security.OpenThreadToken(
@@ -381,7 +426,9 @@ class WindowsNamedPipeServer:
                 token, win32security.TokenUser
             )[0]
             sid_text = win32security.ConvertSidToStringSid(token_sid)
-            return is_allowed_pipe_client(sid_text, self._client_sid)
+            if is_allowed_pipe_client(sid_text, self._client_sid):
+                caller = AuthenticatedPipeClient(sid_text, token)
+                token = None
         except Exception:
             LOGGER.warning("rejected pipe client whose identity could not be verified")
             return False
@@ -395,8 +442,14 @@ class WindowsNamedPipeServer:
                     pass
             try:
                 win32security.RevertToSelf()
+                reverted = True
             except Exception:
-                pass
+                LOGGER.error("failed to revert pipe client impersonation")
+        if not reverted:
+            if caller is not None:
+                caller.close()
+            return None
+        return caller
 
     @staticmethod
     def _read_exact(
@@ -691,10 +744,20 @@ class ProtectionServiceHost:
             result["last_error"] = self._last_error
         return result
 
-    def handle_request(self, body: bytes) -> bytes:
-        return process_pipe_request(body, self)
+    def handle_request(
+        self,
+        body: bytes,
+        caller_context: AuthenticatedPipeClient | None = None,
+    ) -> bytes:
+        return process_pipe_request(body, self, caller_context)
 
-    def dispatch(self, operation: str, payload: dict[str, Any]) -> Any:
+    def dispatch(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        *,
+        caller_context: AuthenticatedPipeClient | None = None,
+    ) -> Any:
         if operation == "get_status":
             return self.get_status()
         if operation == "list_threats":
@@ -744,6 +807,30 @@ class ProtectionServiceHost:
                 message=payload["message"],
                 detection_id=payload["detection_id"],
             )
+        if operation in {"refresh_scan_profile", "get_scan_schedule", "set_scan_schedule"}:
+            self._require_enrolled_caller(caller_context)
+            if operation == "get_scan_schedule":
+                return self._schedule_response(self.store.get_scan_schedule(self.client_sid))
+            if operation == "set_scan_schedule":
+                schedule = self.store.set_scan_schedule(
+                    self.client_sid,
+                    enabled=payload["enabled"],
+                    cadence=payload["cadence"],
+                    local_time=payload["local_time"],
+                    days_of_week=tuple(payload["days_of_week"]),
+                )
+                return self._schedule_response(schedule)
+            if self.service is None or not self.rules_trusted:
+                raise ProtectionServiceUnavailable("protection service is unavailable")
+            profile = self.service.refresh_scan_profile(
+                self.client_sid,
+                caller_context.token_handle,
+            )
+            return {
+                "ready": True,
+                "refreshed_at": profile.refreshed_at,
+                "folders": [folder_id for folder_id, _path in profile.roots],
+            }
         if self.service is None or not self.rules_trusted:
             raise ProtectionServiceUnavailable("protection service is unavailable")
         if operation == "start_scan":
@@ -759,6 +846,24 @@ class ProtectionServiceHost:
             result = self.service.restore_quarantine(payload["item_id"])
             return _to_jsonable(result)
         raise PipeProtocolError("operation is not allowlisted")
+
+    def _require_enrolled_caller(self, caller_context: AuthenticatedPipeClient | None) -> None:
+        if (
+            caller_context is None
+            or not self.client_sid
+            or caller_context.sid.casefold() != self.client_sid.casefold()
+        ):
+            raise ProtectionServiceUnavailable("operation requires the enrolled dashboard user")
+
+    @staticmethod
+    def _schedule_response(schedule: Any | None) -> dict[str, Any]:
+        if schedule is None:
+            return {"enabled": False, "configured": False}
+        result = _to_jsonable(schedule)
+        if not isinstance(result, dict):
+            return {"enabled": False, "configured": False}
+        result["configured"] = True
+        return result
 
 
 def _read_installed_client_sid() -> str | None:
