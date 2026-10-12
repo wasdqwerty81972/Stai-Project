@@ -157,14 +157,17 @@ test("renders_degraded_state_without_fake_counts", async () => {
 
   expect(await screen.findByText("Protection needs attention")).toBeInTheDocument();
   expect(screen.getByText("Rule package is unavailable.")).toBeInTheDocument();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Antivirus" }));
   expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(3);
   expect(screen.queryByText("0 blocked")).not.toBeInTheDocument();
   expect(screen.queryByText("Protected and up to date")).not.toBeInTheDocument();
 });
 
 test("shows_last_scan_rule_version_and_agent_escalations", async () => {
+  const user = userEvent.setup();
   render(<App />);
 
+  await user.click(await screen.findByRole("button", { name: "Antivirus" }));
   expect(await screen.findByText("rules-2026.10")).toBeInTheDocument();
   expect(screen.getByText(new Date(status.last_scan).toLocaleString())).toBeInTheDocument();
   const reviewQueue = screen.getByText("AI review queue").closest("article");
@@ -190,8 +193,10 @@ test("starts_and_tracks_quick_scan", async () => {
 });
 
 test("shows_distinct_detection_block_and_quarantine_totals", async () => {
+  const user = userEvent.setup();
   render(<App />);
 
+  await user.click(await screen.findByRole("button", { name: "Antivirus" }));
   const totals = await screen.findByRole("region", { name: "Protection totals" });
   expect(within(totals).getByRole("article", { name: /^Detected:/ })).toHaveTextContent("4");
   expect(within(totals).getByRole("article", { name: /^Blocked:/ })).toHaveTextContent("2");
@@ -245,10 +250,10 @@ test("keeps_navigation_and_scan_action_keyboard_reachable", async () => {
   const user = userEvent.setup();
   render(<App />);
 
-  const dashboard = await screen.findByRole("button", { name: "Dashboard" });
-  dashboard.focus();
+  const home = await screen.findByRole("button", { name: "Home" });
+  home.focus();
   await user.keyboard("{Enter}");
-  expect(dashboard).toHaveAttribute("aria-current", "page");
+  expect(home).toHaveAttribute("aria-current", "page");
 
   const scan = screen.getByRole("button", { name: "Quick Scan" });
   scan.focus();

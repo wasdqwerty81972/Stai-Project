@@ -1,7 +1,7 @@
 import {
   Activity,
   Bot,
-  LayoutDashboard,
+  House,
   ListChecks,
   LockKeyhole,
   ScanSearch,
@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 
 export type DashboardPage =
-  | "Dashboard"
+  | "Home"
+  | "Antivirus"
   | "AI Agent"
   | "System Status"
   | "Threat Activity"
@@ -20,7 +21,8 @@ export type DashboardPage =
   | "Settings";
 
 const pages: { label: DashboardPage; icon: LucideIcon }[] = [
-  { label: "Dashboard", icon: LayoutDashboard },
+  { label: "Home", icon: House },
+  { label: "Antivirus", icon: Shield },
   { label: "AI Agent", icon: Bot },
   { label: "System Status", icon: Activity },
   { label: "Threat Activity", icon: Shield },
@@ -49,7 +51,7 @@ export function Navigation({
         </div>
       </div>
 
-      <div className="sidebar-section-label">DEVICE SECURITY</div>
+      <div className="sidebar-section-label">STAI SECURITY</div>
       <nav className="primary-nav" aria-label="Main navigation">
         {pages.map(({ label, icon: Icon }) => (
           <button

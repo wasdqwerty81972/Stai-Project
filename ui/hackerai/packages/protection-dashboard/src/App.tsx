@@ -22,6 +22,7 @@ import {
   type TriageRecord,
 } from "./protection-api";
 import { AgentView } from "./components/AgentView";
+import { HomeView } from "./components/HomeView";
 import { Navigation, type DashboardPage } from "./components/Navigation";
 import { ProtectionOverview } from "./components/ProtectionOverview";
 import { QuarantineView } from "./components/QuarantineView";
@@ -35,11 +36,13 @@ function messageFor(error: unknown, fallback: string): string {
 }
 
 function pageSubtitle(page: DashboardPage) {
-  return page === "Dashboard" ? "Windows endpoint protection" : "Local Windows protection";
+  if (page === "Home") return "Your security workspace";
+  if (page === "Antivirus") return "Windows endpoint protection";
+  return "Local Windows protection";
 }
 
 export default function App() {
-  const [page, setPage] = useState<DashboardPage>("Dashboard");
+  const [page, setPage] = useState<DashboardPage>("Home");
   const [status, setStatus] = useState<ProtectionStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -279,7 +282,20 @@ export default function App() {
 
         <div className="page-scroll" key={page}>
           <div className="page-content">
-            {page === "Dashboard" && (
+            {page === "Home" && (
+              <HomeView
+                status={status}
+                statusError={statusError}
+                statusLoading={statusLoading}
+                scanError={scanError}
+                threats={threats}
+                onNavigate={setPage}
+                onRetry={() => void refresh()}
+                onStartQuickScan={() => void handleStartScan("quick").catch(() => undefined)}
+                scanBusy={scanBusy === "quick"}
+              />
+            )}
+            {page === "Antivirus" && (
               statusLoading && !status && !statusError ? (
                 <div className="page-loading" role="status"><span className="spinner" /> Connecting to local protection service…</div>
               ) : (
