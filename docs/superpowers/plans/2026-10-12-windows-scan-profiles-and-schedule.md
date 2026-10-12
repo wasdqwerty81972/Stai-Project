@@ -114,7 +114,7 @@
 - [x] Run focused schedule tests and verify expected failures.
 - [x] Implement durable schedule storage, recurrence calculation, and service-owned polling.
 - [x] Run focused scheduler and lifecycle tests.
-- [ ] Commit `feat: schedule daily and weekly quick scans`.
+- [x] Commit `feat: schedule daily and weekly quick scans`.
 
 ### Task 5: Reconcile feature inventory and release limits
 
@@ -125,7 +125,7 @@
 
 - [x] Update implementation status to distinguish delivered service backend from UI bridge, driver, signature feed, signing, altitude, and VM gates.
 - [x] Inspect the final diff and confirm no claim of production antivirus parity or active protection without evidence.
-- [ ] Commit `docs: record Windows scan feature status`.
+- [x] Commit `docs: record Windows scan feature status`.
 
 ## Pre-flight / boundaries
 

@@ -1,7 +1,7 @@
 # STAI Custom Windows Endpoint Protection Design
 
 **Date:** 2026-10-12
-**Status:** Design approved by user; implementation plans awaiting review
+**Status:** Protection foundation implemented; production release gates remain open
 
 ## Goal
 
@@ -105,3 +105,9 @@ Quick Scan targets common user execution and startup locations. System Scan cove
 - Dashboard navigation and controls operate against the local Windows service, and Threats Blocked counts only confirmed denied operations.
 - The Windows package uses a trusted local UI/service bridge and does not expose privileged controls to the hosted page.
 - Release readiness is not claimed until the driver is Microsoft-signed and the end-to-end behavior is validated on supported Windows versions.
+
+## Implementation status (2026-10-12)
+
+Implemented foundations include the deterministic hash/YARA scanner, signed rule-package verification, durable detections and scan jobs, quarantine and restore records, Level 2 triage isolation, a bounded authenticated service pipe, a minifilter source vertical slice, installer scaffolding, and a dark protection dashboard. This change adds enrolled-user Quick Scan profile resolution, immutable per-job root snapshots, and one daily or weekly scheduled Quick Scan through the service pipe/backend.
+
+These foundations do not establish full antivirus protection or Bitdefender parity. The installed Windows dashboard still lacks a trusted bundled local bridge to the protection pipe; the web development API uses a separate local database. The minifilter does not cover the broader write, rename, delete, and ransomware operation set. Production rule-feed updates and rollback, verified quarantine ACLs, all-volume System Scan coverage, a signed production driver package, a Microsoft-assigned altitude, isolated Windows VM enforcement evidence, and independent security testing remain incomplete. Release readiness remains false until those gates are completed and reviewed.

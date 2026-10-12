@@ -1,7 +1,7 @@
 # Windows Quick Scan Profile Resolution Design
 
 **Date:** 2026-10-12
-**Status:** Draft; awaiting user review
+**Status:** Service backend implemented; local dashboard bridge and Windows VM validation remain
 **Parent design:** [STAI Custom Windows Endpoint Protection Design](2026-10-12-stai-custom-windows-protection-design.md)
 
 ## Goal
@@ -74,7 +74,7 @@ The design avoids accepting SIDs or filesystem paths in request JSON. It also av
 
 ## Out of scope for this phase
 
-- Recurrence configuration, Windows Task Scheduler registration, missed-run policy, or schedule UI. These use the persisted profile design but require their own reviewed implementation plan.
+- Windows Task Scheduler registration, multiple schedules, System Scan scheduling, and schedule UI. The approved first scheduled Quick Scan phase is specified separately in [Windows Scheduled Quick Scan Design](2026-10-12-windows-scheduled-quick-scan-design.md).
 - Changes to service account, minifilter callback behavior, antivirus provider registration, threat rules, quarantine policy, or Level 2 triage.
 - Claiming production readiness, broad malware-detection coverage, or parity with Bitdefender. Driver signing, allocated altitude, isolated-VM enforcement, and independent security testing remain parent-design release gates.
 
@@ -88,6 +88,10 @@ The design avoids accepting SIDs or filesystem paths in request JSON. It also av
 ## Self-review
 
 - All requirements are concrete, with no unresolved items.
+
+## Implementation status
+
+The service resolves the three fixed folders for the authenticated enrolled SID using a token opened with the rights required by `SHGetKnownFolderPath`, publishes the complete profile atomically, snapshots roots into each Quick Scan job, avoids duplicate work for overlapping roots, and records inaccessible folders as partial coverage. The dashboard bridge and isolated Windows VM validation remain outstanding.
 - Manual Quick Scan and future scheduled scans use the same enrolled profile while keeping schedule recurrence out of this phase.
 - The service never trusts a caller-supplied SID or path and never silently falls back to a different profile or whole-drive scope.
 - Raw path privacy, per-job snapshot consistency, pipe caller authorization, and profile-hive failure behavior are explicit.
