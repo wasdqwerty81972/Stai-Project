@@ -200,6 +200,7 @@ New-Item -ItemType Directory -Path $stageDriver, $stageRules -Force | Out-Null
 Copy-Item -LiteralPath $serviceExe -Destination (Join-Path $stageRoot "STAIProtectionService.exe") -Force
 Copy-Item -LiteralPath (Join-Path $installerRoot "update.ps1") -Destination $stageRoot -Force
 Copy-Item -LiteralPath (Join-Path $installerRoot "InstallRollbackRecovery.ps1") -Destination $stageRoot -Force
+Copy-Item -LiteralPath (Join-Path $installerRoot "Set-ProtectionAiCredential.ps1") -Destination $stageRoot -Force
 Copy-Item -LiteralPath (Join-Path $driverRoot "StaiProtection.inf") -Destination $stageDriver -Force
 Copy-Item -LiteralPath (Join-Path $driverRoot "StaiProtection.sys") -Destination $stageDriver -Force
 Copy-Item -LiteralPath (Join-Path $driverRoot "StaiProtection.cat") -Destination $stageDriver -Force

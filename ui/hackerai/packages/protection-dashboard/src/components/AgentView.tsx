@@ -171,7 +171,7 @@ export function AgentView({
                   </button>
                 </div>
                 {sendError && <div role="alert" className="inline-alert error-alert">{sendError}</div>}
-                <p className="composer-note">Questions use the selected detection context. The agent cannot change the protection verdict or run commands.</p>
+                <p className="composer-note">If cloud triage is enabled by your administrator, Google Gemini receives minimized detection metadata, your question, and bounded chat history. Redaction is best effort; do not type secrets, personal information, or file paths. The agent cannot change verdicts or run commands.</p>
               </form>
             </>
           )}

@@ -78,6 +78,7 @@ export interface AgentReply {
   message: string;
   tool_calls: unknown[];
   response_action: string | null;
+  status?: "queued" | "completed" | "unavailable" | "failed" | "rejected";
 }
 
 export interface QuarantineItem {

@@ -416,6 +416,19 @@ class ProtectionStore:
             )
             return cursor.rowcount > 0
 
+    def fail_pending_triage(self, error: str) -> int:
+        """Mark queued or running analyses retryable after service shutdown."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE protection_triage
+                SET status = 'failed', summary = NULL, error = ?, updated_at = datetime('now')
+                WHERE status IN ('queued', 'running')
+                """,
+                (error[:256],),
+            )
+            return cursor.rowcount
+
     def retry_triage(self, detection_id: str) -> bool:
         """Atomically move one retryable terminal record back to queued."""
         with self._transaction() as conn:

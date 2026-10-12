@@ -20,6 +20,7 @@ hiddenimports = [
     "win32api",
     "win32event",
     "win32file",
+    "win32crypt",
     "win32pipe",
     "win32security",
     "win32service",

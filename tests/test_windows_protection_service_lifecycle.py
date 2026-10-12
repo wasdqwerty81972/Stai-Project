@@ -253,3 +253,38 @@ def test_windows_named_pipe_round_trips_one_bounded_frame():
         if handle is not None:
             win32file.CloseHandle(handle)
         server.close()
+
+
+def test_named_pipe_partial_frame_read_has_a_deadline():
+    class NoDataError(Exception):
+        winerror = 232
+
+    class EmptyPipe:
+        @staticmethod
+        def ReadFile(handle, size):
+            raise NoDataError()
+
+    with pytest.raises(TimeoutError, match="frame deadline"):
+        WindowsNamedPipeServer._read_exact(
+            object(),
+            4,
+            EmptyPipe,
+            time.monotonic() - 0.01,
+        )
+
+
+def test_named_pipe_flush_respects_response_deadline():
+    class BlockingFlush:
+        @staticmethod
+        def FlushFileBuffers(handle):
+            del handle
+            threading.Event().wait(0.2)
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="response deadline"):
+        WindowsNamedPipeServer._flush_with_deadline(
+            object(),
+            BlockingFlush,
+            started + 0.02,
+        )
+    assert time.monotonic() - started < 0.15

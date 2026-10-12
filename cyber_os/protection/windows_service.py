@@ -29,6 +29,8 @@ MAX_FRAME_BYTES = 64 * 1024
 _REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
 _SID_TEXT = re.compile(r"S-1-(?:[0-9]+-)*[0-9]+\Z", re.IGNORECASE)
 _RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+_PIPE_IO_TIMEOUT_SECONDS = 5.0
+_ERROR_NO_DATA = 232
 
 
 class ProtectionServiceUnavailable(RuntimeError):
@@ -276,7 +278,6 @@ class WindowsNamedPipeServer:
         while not self._stop_event.is_set():
             handle = None
             connected = False
-            response_written = False
             descriptor = None
             try:
                 descriptor = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
@@ -315,25 +316,32 @@ class WindowsNamedPipeServer:
                         raise
                 if not connected or self._stop_event.is_set():
                     continue
+                win32pipe.SetNamedPipeHandleState(
+                    handle, win32pipe.PIPE_NOWAIT, None, None
+                )
+                frame_deadline = time.monotonic() + _PIPE_IO_TIMEOUT_SECONDS
                 # Windows binds the client's impersonation token to the last
                 # message read from the pipe. Read the bounded length prefix
                 # first, then verify the client before reading or dispatching
                 # its request body.
-                frame_header = self._read_exact(handle, 4, win32file)
+                frame_header = self._read_exact(handle, 4, win32file, frame_deadline)
                 if not self._authenticated_client(handle):
                     continue
                 body_size = int.from_bytes(frame_header, "little")
                 if body_size <= 0 or body_size > MAX_FRAME_BYTES:
                     response = process_pipe_request(b"", self)
                 else:
-                    body = self._read_exact(handle, body_size, win32file)
+                    body = self._read_exact(handle, body_size, win32file, frame_deadline)
                     response = self._request_handler(body)
+                response_deadline = time.monotonic() + _PIPE_IO_TIMEOUT_SECONDS
                 self._write_all(
                     handle,
                     len(response).to_bytes(4, "little") + response,
                     win32file,
+                    response_deadline,
                 )
-                response_written = True
+                # Preserve queued response bytes until the client consumes them.
+                self._flush_with_deadline(handle, win32file, response_deadline)
             except Exception:
                 if not self._stop_event.is_set():
                     LOGGER.exception("protection named-pipe client failed")
@@ -345,8 +353,6 @@ class WindowsNamedPipeServer:
                 if handle is not None:
                     try:
                         if connected:
-                            if response_written:
-                                win32file.FlushFileBuffers(handle)
                             win32pipe.DisconnectNamedPipe(handle)
                     except Exception:
                         pass
@@ -393,25 +399,94 @@ class WindowsNamedPipeServer:
                 pass
 
     @staticmethod
-    def _read_exact(handle: Any, size: int, win32file: Any) -> bytes:
+    def _read_exact(
+        handle: Any,
+        size: int,
+        win32file: Any,
+        deadline: float | None = None,
+    ) -> bytes:
+        deadline = deadline or (time.monotonic() + _PIPE_IO_TIMEOUT_SECONDS)
         chunks: list[bytes] = []
         remaining = size
         while remaining:
-            _status, data = win32file.ReadFile(handle, remaining)
+            try:
+                _status, data = win32file.ReadFile(handle, remaining)
+            except Exception as exc:
+                if _pipe_error_code(exc) != _ERROR_NO_DATA:
+                    raise
+                _wait_for_pipe_progress(deadline)
+                continue
             if not data:
-                raise EOFError("pipe client closed before sending a complete frame")
+                _wait_for_pipe_progress(deadline)
+                continue
             chunks.append(data)
             remaining -= len(data)
         return b"".join(chunks)
 
     @staticmethod
-    def _write_all(handle: Any, data: bytes, win32file: Any) -> None:
+    def _write_all(
+        handle: Any,
+        data: bytes,
+        win32file: Any,
+        deadline: float | None = None,
+    ) -> None:
+        deadline = deadline or (time.monotonic() + _PIPE_IO_TIMEOUT_SECONDS)
         view = memoryview(data)
         while view:
-            _status, written = win32file.WriteFile(handle, view.tobytes())
+            try:
+                _status, written = win32file.WriteFile(handle, view.tobytes())
+            except Exception as exc:
+                if _pipe_error_code(exc) != _ERROR_NO_DATA:
+                    raise
+                _wait_for_pipe_progress(deadline)
+                continue
             if not written:
-                raise OSError("named-pipe write made no progress")
+                _wait_for_pipe_progress(deadline)
+                continue
             view = view[written:]
+
+    @staticmethod
+    def _flush_with_deadline(
+        handle: Any,
+        win32file: Any,
+        deadline: float,
+    ) -> None:
+        completed = threading.Event()
+        failures: list[BaseException] = []
+
+        def flush() -> None:
+            try:
+                win32file.FlushFileBuffers(handle)
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                completed.set()
+
+        threading.Thread(
+            target=flush,
+            name="stai-pipe-flush",
+            daemon=True,
+        ).start()
+        if not completed.wait(max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("named-pipe response deadline exceeded")
+        if failures:
+            raise failures[0]
+
+
+def _pipe_error_code(error: BaseException) -> int | None:
+    code = getattr(error, "winerror", None)
+    if code is None and getattr(error, "args", None):
+        first = error.args[0]
+        if isinstance(first, int):
+            code = first
+    return code
+
+
+def _wait_for_pipe_progress(deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("named-pipe frame deadline exceeded")
+    time.sleep(min(0.01, remaining))
 
 
 class ProtectionServiceHost:
@@ -548,6 +623,11 @@ class ProtectionServiceHost:
                 self.pipe_server.close()
             except Exception:
                 LOGGER.exception("failed to close protection named pipe")
+        if self.triage is not None:
+            try:
+                self.triage.close()
+            except Exception:
+                LOGGER.exception("failed to close protection triage workers")
         if self.filter_client is not None:
             try:
                 self.filter_client.close()
@@ -717,9 +797,10 @@ def create_default_host() -> ProtectionServiceHost:
         last_error = "trusted rule package is unavailable or invalid"
 
     service = None
+    from .ai_provider import create_default_provider
     from .triage import ProtectionTriage
 
-    triage = ProtectionTriage(store)
+    triage = ProtectionTriage(store, create_default_provider())
     if rules is not None:
         from .service import ProtectionConfig, ProtectionService
 

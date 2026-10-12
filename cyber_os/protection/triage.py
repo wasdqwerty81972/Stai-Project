@@ -21,6 +21,10 @@ _WINDOWS_PATH = re.compile(
     r"(?i)(?:\b[a-z]:[\\/]|\\\\)(?:[^\\/:*?\"<>|\r\n]+[\\/])*?"
     r"[^\\/:*?\"<>|\r\n]*?\.[A-Za-z0-9]{1,16}\b"
 )
+_WINDOWS_ROOTED_PATH = re.compile(
+    r"(?i)(?<![A-Za-z0-9])[a-z]:[\\/](?:[^\\/:*?\"<>|\s]+[\\/])*[^\\/:*?\"<>|\s]+"
+)
+_UNC_PATH = re.compile(r"(?i)(?<![A-Za-z0-9])\\\\[^\\/\s]+(?:\\[^\\/\s]+)+")
 _POSIX_PATH = re.compile(r"(?<!:)\/(?:[A-Za-z0-9_.~-]+\/)+[A-Za-z0-9_.~-]+(?:\.[A-Za-z0-9_.~-]+)?")
 _RELATIVE_PATH = re.compile(
     r"(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9_.~-]+\s+)?[A-Za-z0-9_.~-]+"
@@ -29,6 +33,10 @@ _RELATIVE_PATH = re.compile(
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:password|passphrase|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*[^\s,;]+"
+)
+_SECRET_PHRASE = re.compile(
+    r"(?i)\b(?:my\s+)?(?:password|passphrase|secret|token|api[_-]?key|authorization)\b"
+    r"\s+(?:is|was)\b[^,;.!?]*"
 )
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*")
 _TOKEN_SHAPE = re.compile(
@@ -113,9 +121,25 @@ class ProtectionTriage:
         self.provider = provider or UnavailableTriageProvider()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="stai-triage")
         self._capacity = threading.BoundedSemaphore(max_pending)
+        self._closed = False
+
+    def close(self) -> None:
+        """Stop accepting work, revoke provider access, and drain active jobs."""
+        if self._closed:
+            return
+        self._closed = True
+        close_provider = getattr(self.provider, "close", None)
+        try:
+            if callable(close_provider):
+                close_provider()
+        finally:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self.store.fail_pending_triage("protection service stopped before triage completed")
 
     def request(self, detection_id: str) -> TriageRecord:
         """Enqueue one analysis per detection, returning durable current state."""
+        if self._closed:
+            raise RuntimeError("protection triage is stopping")
         existing = self.store.get_triage(detection_id)
         retryable = {"unavailable", "rejected", "failed"}
         if existing is not None and existing.status not in retryable:
@@ -190,6 +214,8 @@ class ProtectionTriage:
         message: str,
         detection_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._closed:
+            raise RuntimeError("protection triage is stopping")
         session_id = self._validate_session_id(session_id)
         safe_message = self._sanitize_user_message(message)
 
@@ -220,6 +246,31 @@ class ProtectionTriage:
         if not self._provider_available() or not callable(getattr(self.provider, "respond", None)):
             response = "Protection triage provider is unavailable."
             status = "unavailable"
+        elif getattr(self.provider, "async_responses", False):
+            if not self._capacity.acquire(blocking=False):
+                response = "Protection analysis is busy. Try again shortly."
+                status = "rejected"
+            else:
+                try:
+                    self._executor.submit(
+                        self._respond_async,
+                        session_id,
+                        context,
+                        history,
+                        safe_message,
+                    )
+                    return {
+                        "session_id": session_id,
+                        "detection_id": bound_detection,
+                        "message": "Protection analysis is processing your question.",
+                        "tool_calls": [],
+                        "response_action": None,
+                        "status": "queued",
+                    }
+                except Exception:
+                    self._capacity.release()
+                    response = "Protection triage could not queue this response."
+                    status = "failed"
         else:
             try:
                 response = self._provider_text(self.provider.respond(context, history, safe_message))
@@ -236,6 +287,22 @@ class ProtectionTriage:
             "response_action": None,
             "status": status,
         }
+
+    def _respond_async(
+        self,
+        session_id: str,
+        context: dict[str, Any],
+        history: list[dict[str, str]],
+        message: str,
+    ) -> None:
+        try:
+            response = self._provider_text(self.provider.respond(context, history, message))
+        except Exception:
+            response = "Protection triage could not complete this response."
+        try:
+            self.store.record_triage_message(session_id, "assistant", response)
+        finally:
+            self._capacity.release()
 
     def history(self, session_id: str) -> list[dict[str, str]]:
         session_id = self._validate_session_id(session_id)
@@ -321,9 +388,12 @@ class ProtectionTriage:
     @staticmethod
     def _sanitize_for_provider(message: str) -> str:
         text = _WINDOWS_PATH.sub("[redacted path]", message)
+        text = _WINDOWS_ROOTED_PATH.sub("[redacted path]", text)
+        text = _UNC_PATH.sub("[redacted path]", text)
         text = _POSIX_PATH.sub("[redacted path]", text)
         text = _RELATIVE_PATH.sub("[redacted path]", text)
         text = _SECRET_ASSIGNMENT.sub("[redacted secret]", text)
+        text = _SECRET_PHRASE.sub("[redacted secret]", text)
         text = _BEARER.sub("[redacted credential]", text)
         text = _TOKEN_SHAPE.sub("[redacted credential]", text)
         text = _EMAIL.sub("[redacted identity]", text)

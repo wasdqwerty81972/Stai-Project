@@ -1,6 +1,6 @@
 # STAI Windows Protection installer
 
-The installer is a per-machine WiX v4 MSI. It installs the service and signed rule files, records the dashboard user's SID, locks the protection database/quarantine directories to SYSTEM and administrators, configures service recovery restarts, installs the minifilter from its INF, then waits for the local pipe to report a healthy service, driver, and rules package. Before changing service or driver state, it registers a SYSTEM startup rollback task backed by a protected ProgramData marker/helper. If rollback cannot unload/remove the filter safely, the marker and task remain and automatic starts are disabled so cleanup can retry after reboot. A committed install marker prevents recovery from removing a healthy installation. Uninstall stops and unloads the service/filter before removing files; it deliberately leaves `C:\ProgramData\STAI\Protection` and quarantine contents in place.
+The installer is a per-machine WiX v4 MSI. It installs the service and signed rule files, records the dashboard user's SID, locks the protection database/quarantine directories to SYSTEM and administrators, configures service recovery restarts, installs the minifilter from its INF, then waits for the local pipe to report a healthy service, driver, and rules package. Before changing service or driver state, it registers a SYSTEM startup rollback task backed by a protected ProgramData marker/helper. If rollback cannot unload/remove the filter safely, the marker and task remain and automatic starts are disabled so cleanup can retry after reboot. A committed install marker prevents recovery from removing a healthy installation. Uninstall stops and unloads the service/filter before removing files; it preserves the detection database and quarantine contents and removes any optional AI credential and consent marker.
 
 ## Build a test-channel package
 
@@ -41,6 +41,20 @@ powershell -ExecutionPolicy Bypass -File windows_protection/installer/build-inst
 ## Staged update and recovery
 
 Run the installed `update.ps1` from the protected Program Files directory and pass the staged package directory produced by `build-installer.ps1`. It verifies the new rules with both the current and staged service binaries, records last-known-good service/driver/rules backups, and commits only after the named pipe reports healthy. Once the journal is written and before service/filter changes begin, it registers a SYSTEM startup recovery task. If Windows restarts during an update, the task runs the installed updater to restore the recorded baseline. An administrator can also run `update.ps1 -Recover -RecoveryInstallRoot <installed protection directory>` manually. Test-channel updates require `-AllowTestPackage` and a test-signing VM.
+
+## Optional AI protection triage
+
+Level 2 remote analysis is disabled unless an administrator explicitly enables it. On the protected Windows endpoint, run the following from an elevated PowerShell session after installation:
+
+```powershell
+& "$env:ProgramFiles\STAI\Protection\Set-ProtectionAiCredential.ps1"
+```
+
+The script asks for an explicit `ENABLE` consent and a Gemini API key without placing the key in command-line arguments. It stores the key encrypted with Windows LocalMachine DPAPI in `%ProgramData%\STAI\Protection\ai\gemini.key.dpapi`, under an ACL limited to SYSTEM and Administrators, and writes a separate consent marker. Restart `STAIProtection` after configuring. To revoke consent and remove the local encrypted key, run `& "$env:ProgramFiles\STAI\Protection\Set-ProtectionAiCredential.ps1" -Disable` from an elevated shell and restart the service.
+
+When enabled, the service sends coarse allowlisted detection metadata (signed rule ID/version, severity, confidence, action, broad file category, and size band), plus sanitized follow-up questions and up to eight recent, size-bounded chat turns, over HTTPS to Google's Gemini `generateContent` endpoint ([API reference](https://ai.google.dev/api/generate-content), [API key guidance](https://ai.google.dev/gemini-api/docs/api-key)). Detection file contents, paths, hashes, process details, and account/device identifiers are excluded from the event context. Free-text redaction is best effort; do not type secrets, personal information, or paths into the agent. Google processes submitted metadata and text under the API key's project terms and usage limits. Gemini output is analysis text only; it cannot alter Level 1 verdicts, block I/O, quarantine files, execute commands, or change protection settings. Missing consent or key leaves triage unavailable while local protection continues independently.
+
+LocalMachine DPAPI is paired with a strict filesystem ACL because machine-scope encryption alone is not an access-control boundary ([Microsoft DPAPI documentation](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)).
 
 ## Production gate
 

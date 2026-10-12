@@ -30,6 +30,7 @@
       <ComponentRef Id="ServiceExecutable" />
       <ComponentRef Id="UpdateScript" />
       <ComponentRef Id="InstallRollbackRecoveryScript" />
+      <ComponentRef Id="ProtectionAiCredentialScript" />
       <ComponentRef Id="DriverInf" />
       <ComponentRef Id="DriverBinary" />
       <ComponentRef Id="DriverCatalog" />
@@ -72,6 +73,9 @@
       </Component>
       <Component Id="InstallRollbackRecoveryScript" Guid="*">
         <File Id="STAIInstallRollbackRecovery" Source="$(var.StageDir)\InstallRollbackRecovery.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="ProtectionAiCredentialScript" Guid="*">
+        <File Id="STAIProtectionAiCredential" Source="$(var.StageDir)\Set-ProtectionAiCredential.ps1" KeyPath="yes" />
       </Component>
       <Component Id="PackageMetadata" Guid="*">
         <File Id="PackageMetadataFile" Name="package-metadata.json" Source="$(var.StageDir)\package-metadata.json" KeyPath="yes" />

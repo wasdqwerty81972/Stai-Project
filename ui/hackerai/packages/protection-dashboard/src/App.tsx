@@ -139,6 +139,29 @@ export default function App() {
     };
   }, [page, selectedDetectionId]);
 
+  useEffect(() => {
+    if (page !== "AI Agent" || !selectedDetectionId || !triage || !["queued", "running"].includes(triage.state)) return;
+    let stale = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const current = await getProtectionTriage(selectedDetectionId);
+        if (stale) return;
+        setTriage(current);
+        if (current.state === "queued" || current.state === "running") {
+          timer = window.setTimeout(() => void poll(), 1200);
+        }
+      } catch (error) {
+        if (!stale) setTriageError(messageFor(error, "Unable to refresh analysis status"));
+      }
+    };
+    timer = window.setTimeout(() => void poll(), 1200);
+    return () => {
+      stale = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [page, selectedDetectionId, triage?.state]);
+
   const handleStartScan = useCallback(
     async (scope: ScanScope) => {
       if (!status || statusError || status.state === "unavailable") {
@@ -214,9 +237,23 @@ export default function App() {
     async (message: string): Promise<AgentReply> => {
       if (!selectedDetection) throw new Error("Select a detection before asking a question.");
       const sessionId = history?.session_id ?? triage?.triage_id ?? selectedDetection.detection_id;
-      return sendAgentMessage(sessionId, message, selectedDetection.detection_id);
+      const beforeMessageCount = history?.session_id === sessionId ? history.messages.length : 0;
+      const result = await sendAgentMessage(sessionId, message, selectedDetection.detection_id);
+      if (result.status !== "queued") return result;
+
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const current = await getAgentHistory(sessionId);
+        const messages = current.messages;
+        const latest = messages[messages.length - 1];
+        if (messages.length >= beforeMessageCount + 2 && latest?.role === "assistant") {
+          setHistory(current);
+          return { ...result, message: "", status: "completed" };
+        }
+      }
+      throw new Error("The protection agent is still processing this question. Reopen the detection to refresh its history.");
     },
-    [history?.session_id, selectedDetection, triage?.triage_id],
+    [history, selectedDetection, triage?.triage_id],
   );
 
   const openDetection = (detection: DetectionRecord) => {

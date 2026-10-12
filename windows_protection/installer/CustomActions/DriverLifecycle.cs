@@ -296,6 +296,9 @@ namespace StaiProtectionCustomActions
             string installedDriver = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "drivers", DriverName + ".sys");
             TryDeleteDriverImage(session, installedDriver);
 
+            if (!rollback)
+                RemoveCloudTriageCredential();
+
             if (rollback)
                 session.Log("Rollback removed the service and driver registration; ProgramData quarantine was preserved.");
             else
@@ -343,6 +346,16 @@ namespace StaiProtectionCustomActions
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "STAI", "Protection");
+        }
+
+        private static void RemoveCloudTriageCredential()
+        {
+            string aiDirectory = Path.Combine(GetProtectionDataRoot(), "ai");
+            foreach (string name in new[] { "cloud-triage-enabled", "gemini.key.dpapi" })
+            {
+                string path = Path.Combine(aiDirectory, name);
+                if (File.Exists(path)) File.Delete(path);
+            }
         }
 
         private static string GetInstallRollbackRecoveryScriptPath()
@@ -439,6 +452,7 @@ namespace StaiProtectionCustomActions
             Directory.CreateDirectory(root);
             Directory.CreateDirectory(Path.Combine(root, "rules"));
             Directory.CreateDirectory(Path.Combine(root, "quarantine"));
+            Directory.CreateDirectory(Path.Combine(root, "ai"));
 
             var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
             var adminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);

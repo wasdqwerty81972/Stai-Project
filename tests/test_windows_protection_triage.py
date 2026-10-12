@@ -170,6 +170,77 @@ def test_unavailable_provider_returns_honest_state_without_calling_out(tmp_path:
     assert store.count_triage_jobs() == 1
 
 
+def test_remote_provider_follow_up_is_queued_and_persisted_asynchronously(tmp_path: Path) -> None:
+    store = ProtectionStore(tmp_path / "protection.db")
+    detection_id = str(uuid.uuid4())
+    store.record_detection(_record(detection_id))
+    entered = threading.Event()
+    release = threading.Event()
+
+    class AsyncProvider(RecordingProvider):
+        async_responses = True
+
+        def respond(self, context, history, message):
+            entered.set()
+            assert release.wait(2)
+            return super().respond(context, history, message)
+
+    triage = ProtectionTriage(store, AsyncProvider())
+    session_id = str(uuid.uuid4())
+    response = triage.send_message(
+        session_id=session_id,
+        detection_id=detection_id,
+        message="Why was this flagged?",
+    )
+
+    assert response["status"] == "queued"
+    assert entered.wait(1)
+    assert triage.history(session_id)[-1]["role"] == "user"
+    release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        history = triage.history(session_id)
+        if history[-1]["role"] == "assistant":
+            break
+        time.sleep(0.01)
+    assert history[-1]["role"] == "assistant"
+    assert "protection service remains in control" in history[-1]["content"]
+
+
+def test_user_message_scrubs_directory_paths_and_plain_language_secrets() -> None:
+    sanitized = ProtectionTriage._sanitize_user_message(
+        r"My documents are at C:\Users\Alice\Documents. My password is hunter2, should I rotate it?"
+    )
+
+    assert "C:\\Users" not in sanitized
+    assert "Alice" not in sanitized
+    assert "hunter2" not in sanitized
+    assert "should I rotate it?" in sanitized
+
+
+def test_close_cancels_queued_triage_and_marks_it_retryable(tmp_path: Path) -> None:
+    store = ProtectionStore(tmp_path / "protection.db")
+    first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+    store.record_detection(_record(first_id))
+    store.record_detection(_record(second_id))
+    entered = threading.Event()
+    release = threading.Event()
+    provider = RecordingProvider(entered=entered, release=release)
+    triage = ProtectionTriage(store, provider, max_workers=1, max_pending=2)
+
+    triage.request(first_id)
+    assert entered.wait(1)
+    triage.request(second_id)
+    stopper = threading.Thread(target=triage.close)
+    stopper.start()
+    release.set()
+    stopper.join(2)
+
+    assert not stopper.is_alive()
+    assert store.get_triage(first_id).status == "completed"
+    assert store.get_triage(second_id).status == "failed"
+
+
 def test_unavailable_triage_can_be_retried_when_provider_becomes_available(tmp_path: Path) -> None:
     store = ProtectionStore(tmp_path / "protection.db")
     detection_id = str(uuid.uuid4())
