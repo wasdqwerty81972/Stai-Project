@@ -62,9 +62,84 @@ def test_quarantine_count_requires_verified_move(tmp_path: Path) -> None:
     result = svc.quarantine_detection(detection.detection_id)
 
     assert result.success is True
-    assert store.get_status().counts["quarantined"] == 1
+    assert store.get_status().counts == {"detected": 1, "blocked": 0, "quarantined": 1}
     assert not sample.exists()  # moved out of its original location
     assert result.item is not None and Path(result.item.quarantined_path).exists()
+
+
+def test_detection_callback_runs_after_detection_is_durable(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.exe"
+    sample.write_bytes(_MARKER)
+    store = ProtectionStore(tmp_path / "p.db")
+    observed: list[str] = []
+
+    def on_detection(detection_id: str) -> None:
+        assert store.get_detection(detection_id) is not None
+        observed.append(detection_id)
+
+    service = ProtectionService(
+        ProtectionConfig(
+            quarantine_root=tmp_path / "quar",
+            rules=_block_ruleset(_MARKER),
+            store=store,
+        ),
+        on_detection=on_detection,
+    )
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert verdict.status == "detected"
+    assert detection_id is not None
+    assert observed == [detection_id]
+
+
+def test_detection_callback_failure_does_not_change_scan_verdict(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.exe"
+    sample.write_bytes(_MARKER)
+    service, _store = _service(tmp_path, _block_ruleset(_MARKER))
+
+    service._on_detection = lambda _detection_id: (_ for _ in ()).throw(RuntimeError("triage offline"))
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert verdict.status == "detected" and verdict.action == "block"
+    assert detection_id is not None
+
+
+def test_filter_quarantine_reuses_detection_and_verifies_file_hash(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.exe"
+    sample.write_bytes(_MARKER)
+    service, store = _service(tmp_path, _block_ruleset(_MARKER))
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+    assert detection_id is not None
+    result = service.quarantine_scanned_detection(detection_id, sample, verdict)
+
+    assert result.success is True
+    assert store.get_status().counts == {"detected": 1, "blocked": 0, "quarantined": 1}
+    assert store.get_detection(detection_id) is not None
+    assert not sample.exists()
+
+
+def test_filter_quarantine_rejects_verdict_not_bound_to_detection(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.exe"
+    sample.write_bytes(_MARKER)
+    service, store = _service(tmp_path, _block_ruleset(_MARKER))
+    verdict, detection_id = service.scan_file_for_filter(sample)
+    assert detection_id is not None
+    mismatched = ScanVerdict(
+        status=verdict.status,
+        action=verdict.action,
+        rule_id=verdict.rule_id,
+        rule_version=verdict.rule_version,
+        sha256="0" * 64,
+        reason=verdict.reason,
+    )
+
+    result = service.quarantine_scanned_detection(detection_id, sample, mismatched)
+
+    assert result.success is False
+    assert sample.exists()
+    assert store.get_status().counts["quarantined"] == 0
 
 
 def test_failed_move_does_not_count_as_quarantined(

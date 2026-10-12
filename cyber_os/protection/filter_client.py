@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from collections import OrderedDict
+
 import ctypes
+import logging
 import os
 import queue
 import sys
 import threading
-from abc import ABC, abstractmethod
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +41,8 @@ _WAIT_TIMEOUT = 0x102
 _INFINITE = 0xFFFFFFFF
 _RECEIVE_WORKER_COUNT = 2
 _RECEIVE_POLL_TIMEOUT_MS = 250
+_MAX_PENDING_BLOCKS = 1024
+LOGGER = logging.getLogger(__name__)
 
 
 class FilterTransportError(ConnectionError):
@@ -330,12 +336,19 @@ class FilterClient:
         self._native = native_client
         self._connected = False
         self._protection_store: Any = None
+        self._protection_service: Any = None
+        self._completion_session_id = uuid.uuid4().hex
         self._pending_messages: dict[int, NativeFilterMessage] = {}
+        self._pending_blocks: OrderedDict[int, tuple[str, Path, ScanVerdict]] = OrderedDict()
         self._pending_lock = threading.Lock()
 
     def set_protection_store(self, store: Any) -> None:
         """Set the store that records driver-confirmed completions."""
         self._protection_store = store
+
+    def set_protection_service(self, service: Any) -> None:
+        """Set the service used for post-denial quarantine actions."""
+        self._protection_service = service
 
     def connect(self) -> bool:
         if self._connected:
@@ -391,12 +404,23 @@ class FilterClient:
 
     def _scan_request(self, service: Any, request: FilterRequest) -> None:
         try:
-            verdict = service.scan_file(_service_scan_path(request.path))
+            path = _service_scan_path(request.path)
+            detection_id = None
+            if hasattr(service, "scan_file_for_filter"):
+                verdict, detection_id = service.scan_file_for_filter(path)
+            else:
+                verdict = service.scan_file(path)
             if not isinstance(verdict, ScanVerdict):
                 raise TypeError("protection service returned a malformed verdict")
         except Exception as exc:
             self.reply_fail_open(request.request_id, f"scan failed: {exc}")
         else:
+            if verdict.status == "detected" and verdict.action == "block" and detection_id:
+                with self._pending_lock:
+                    self._pending_blocks[request.request_id] = (detection_id, path, verdict)
+                    self._pending_blocks.move_to_end(request.request_id)
+                    while len(self._pending_blocks) > _MAX_PENDING_BLOCKS:
+                        self._pending_blocks.popitem(last=False)
             self.reply(request.request_id, verdict)
 
     def _receive_pump(
@@ -444,6 +468,7 @@ class FilterClient:
         """
         if protection_store is not None:
             self.set_protection_store(protection_store)
+        self.set_protection_service(service)
 
         processed = 0
         retry_delay = max(0.0, retry_delay_seconds)
@@ -538,20 +563,42 @@ class FilterClient:
         self.reply(request_id, fail_open_verdict(reason))
 
     def _record_driver_completion(self, completion: FilterCompletion) -> None:
+        with self._pending_lock:
+            pending = self._pending_blocks.pop(completion.request_id, None)
         if (
             completion.final_io_status == "STATUS_ACCESS_DENIED"
             and self._protection_store
             and hasattr(self._protection_store, "record_filter_completion")
         ):
-            self._protection_store.record_filter_completion(
-                str(completion.request_id), completion.final_io_status
+            recorded = self._protection_store.record_filter_completion(
+                f"{self._completion_session_id}:{completion.request_id}",
+                completion.final_io_status,
             )
+            if recorded is not False and pending and self._protection_service is not None:
+                detection_id, path, verdict = pending
+                try:
+                    result = self._protection_service.quarantine_scanned_detection(
+                        detection_id, path, verdict
+                    )
+                    if not result.success:
+                        LOGGER.warning(
+                            "blocked file could not be quarantined for detection %s: %s",
+                            detection_id,
+                            result.error,
+                        )
+                except Exception:
+                    # A quarantine failure does not change the confirmed denial.
+                    LOGGER.exception(
+                        "quarantine failed after confirmed block for request %s",
+                        completion.request_id,
+                    )
 
     def close(self) -> None:
         if self._native:
             self._native.close()
         with self._pending_lock:
             self._pending_messages.clear()
+            self._pending_blocks.clear()
         self._connected = False
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import uuid
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ SCAN_ROOTS_QUICK = [
 ]
 
 SCAN_ROOTS_SYSTEM = [Path("C:\\")]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -45,8 +47,14 @@ class ProtectionService:
     API handlers, Tauri commands, and the filter client.
     """
 
-    def __init__(self, config: ProtectionConfig) -> None:
+    def __init__(
+        self,
+        config: ProtectionConfig,
+        *,
+        on_detection: Callable[[str], Any] | None = None,
+    ) -> None:
         self._config = config
+        self._on_detection = on_detection
         self._scan_thread: Optional[threading.Thread] = None
         self._cancel_scan = threading.Event()
         self._scan_lock = threading.Lock()
@@ -66,7 +74,13 @@ class ProtectionService:
 
     def scan_file(self, path: Path) -> ScanVerdict:
         """Scan a single file and record detection if found."""
+        verdict, _detection_id = self.scan_file_for_filter(path)
+        return verdict
+
+    def scan_file_for_filter(self, path: Path) -> tuple[ScanVerdict, str | None]:
+        """Scan and return the durable detection ID for filter correlation."""
         verdict = scan_path(path, self._config.rules, yara_timeout_seconds=self._config.yara_timeout_seconds)
+        detection_id: str | None = None
 
         if verdict.status == "detected":
             detection_id = str(uuid.uuid4())
@@ -95,8 +109,48 @@ class ProtectionService:
                 triage_enqueued=False,
             )
             self._config.store.record_detection(record)
+            if self._on_detection is not None:
+                try:
+                    self._on_detection(detection_id)
+                except Exception:
+                    # Level 2 is advisory and must never affect the Level 1 verdict.
+                    LOGGER.exception("failed to enqueue protection detection for triage")
 
-        return verdict
+        return verdict, detection_id
+
+    def quarantine_scanned_detection(
+        self,
+        detection_id: str,
+        file_path: Path,
+        verdict: ScanVerdict,
+    ) -> QuarantineResult:
+        """Quarantine an existing high-confidence block detection without rescanning."""
+        if verdict.status != "detected" or verdict.action != "block" or not verdict.sha256:
+            return QuarantineResult(success=False, error="verdict is not a verified block detection")
+        detection = self._config.store.get_detection(detection_id)
+        if (
+            detection is None
+            or detection.action != "block"
+            or detection.confidence != "high"
+            or not detection.file_path
+            or detection.sha256 != verdict.sha256
+            or detection.rule_id != verdict.rule_id
+            or detection.rule_version != verdict.rule_version
+        ):
+            return QuarantineResult(success=False, error="high-confidence block detection not found")
+        source = Path(file_path)
+        try:
+            if Path(detection.file_path).resolve() != source.resolve():
+                return QuarantineResult(success=False, error="detection path does not match scanned file")
+        except OSError:
+            return QuarantineResult(success=False, error="scanned file path is unavailable")
+        return quarantine_file(
+            self._config.store,
+            detection_id,
+            source,
+            self._config.quarantine_root,
+            verdict,
+        )
 
     def start_scan(self, scope: Literal["quick", "system"]) -> ScanJob:
         """Start a background scan job."""
@@ -241,7 +295,11 @@ class ProtectionService:
             return QuarantineResult(success=False, error="detection has no file path")
 
         # Re-scan to get current verdict
-        verdict = self.scan_file(Path(detection.file_path))
+        verdict = scan_path(
+            Path(detection.file_path),
+            self._config.rules,
+            yara_timeout_seconds=self._config.yara_timeout_seconds,
+        )
         if verdict.status != "detected":
             return QuarantineResult(success=False, error="file no longer matches detection")
 

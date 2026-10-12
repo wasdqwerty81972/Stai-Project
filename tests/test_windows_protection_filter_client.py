@@ -35,6 +35,7 @@ from cyber_os.protection.filter_protocol import (
     encode_filter_request,
 )
 from cyber_os.protection.models import ScanVerdict
+from cyber_os.protection.quarantine import QuarantineResult
 
 
 class _FakeNative(NativeFilterClient):
@@ -313,7 +314,9 @@ def test_driver_completion_message_is_required_to_count_blocked() -> None:
 
     assert client.receive() is None
 
-    assert store.completions == [("12", "STATUS_ACCESS_DENIED")]
+    assert len(store.completions) == 1
+    assert store.completions[0][0].endswith(":12")
+    assert store.completions[0][1] == "STATUS_ACCESS_DENIED"
     assert native.reply_calls == []
 
 
@@ -493,7 +496,9 @@ def test_run_keeps_receive_pending_during_scan_and_captures_completion() -> None
     assert count == 1
     assert scan_saw_pending_receive == [True]
     assert native.pending_at_reply
-    assert store.completions == [("24", "STATUS_ACCESS_DENIED")]
+    assert len(store.completions) == 1
+    assert store.completions[0][0].endswith(":24")
+    assert store.completions[0][1] == "STATUS_ACCESS_DENIED"
 
 
 def test_windows_native_client_uses_filter_get_and_reply_contract() -> None:
@@ -547,7 +552,9 @@ def test_block_counted_only_on_completion_not_reply() -> None:
     assert store.completions == []
     # Only a driver-originated completion records a blocked outcome.
     assert client.receive() is None
-    assert store.completions == [("3", "STATUS_ACCESS_DENIED")]
+    assert len(store.completions) == 1
+    assert store.completions[0][0].endswith(":3")
+    assert store.completions[0][1] == "STATUS_ACCESS_DENIED"
 
 
 def test_completion_non_denied_does_not_record_blocked() -> None:
@@ -560,6 +567,39 @@ def test_completion_non_denied_does_not_record_blocked() -> None:
     client.connect()
     assert client.receive() is None
     assert store.completions == []
+
+
+def test_confirmed_denial_quarantines_matching_detection_once() -> None:
+    native = _FakeNative(incoming=[
+        encode_filter_request(FilterRequest(request_id=31, operation="create", path=r"C:\x.exe")),
+        encode_filter_completion(FilterCompletion(request_id=31, final_io_status="STATUS_ACCESS_DENIED")),
+    ])
+    store = _FakeStore()
+    client = FilterClient(native_client=native)
+    client.set_protection_store(store)
+    quarantined: list[tuple[str, str, ScanVerdict]] = []
+
+    class Service:
+        def scan_file_for_filter(self, _path):
+            return _block_verdict(), "detection-31"
+
+        def quarantine_scanned_detection(self, detection_id, path, verdict):
+            quarantined.append((detection_id, str(path), verdict))
+            return QuarantineResult(success=True)
+
+    service = Service()
+    client.set_protection_service(service)
+    assert client.connect()
+    request = client.receive()
+    assert request is not None
+    client._scan_request(service, request)
+
+    assert quarantined == []
+    assert client.receive() is None
+    assert [entry[0] for entry in quarantined] == ["detection-31"]
+
+    client._record_driver_completion(FilterCompletion(31, "STATUS_ACCESS_DENIED"))
+    assert len(quarantined) == 1
 
 
 # --- factory stays safe offline ----------------------------------------------

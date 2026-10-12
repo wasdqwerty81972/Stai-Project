@@ -56,7 +56,8 @@ Modules a mature consumer AV ships: real-time/on-access ("Shield"), on-demand + 
 
 **Hard blockers (cannot be done on this host):**
 - Kernel minifilter **build/sign/load/VM enforcement** — needs a WDK/MSVC machine + an isolated test-signed Windows VM. Production needs Microsoft Dev-Portal signing + an EV cert + a Microsoft-allocated altitude (320000–329999). None exist yet.
-- **YARA engine** not installed here, so YARA-rule detection is unverified end-to-end; SHA-256 detection is verified. `requirements-windows-protection.txt` pins `yara-python` but its install was not completed/verified.
+
+**YARA verification update (2026-10-12):** The workspace's default Python lacks YARA, but the packaged Windows Test build environment includes YARA 4.5.4. Running `tests/test_windows_protection_scanner.py` and `tests/test_windows_protection_service.py` with that runtime on `PYTHONPATH` produced **13 passed**, including the YARA rule timeout/match paths. This verifies the Python YARA integration; it does not replace an installed-driver VM test.
 
 **Initial review on 2026-10-12 found the Level 2 path unimplemented.** The continuation below supersedes that status: `triage.py` now redacts detection context, uses a bounded worker, and stores triage separately from Level 1 verdicts. The legacy `record_detection` upsert remains a write-integrity risk for any future caller; Level 2 must continue using only `protection_triage` and related tables.
 
@@ -101,3 +102,11 @@ Modules a mature consumer AV ships: real-time/on-access ("Shield"), on-demand + 
 - The AI Agent UI now discloses that opted-in cloud analysis sends minimized metadata, user questions, and up to eight bounded recent turns to Google. The setup instructions document opt-in, revocation, and data handling.
 - Verification on this host: protection core + triage + provider + escalation boundary + API suite: **56 passed, 1 skipped**. Dashboard TypeScript check and production Vite build succeeded; the DTF C# project build succeeded; the setup PowerShell parser check succeeded. No live Gemini key/provider request, MSI install, WDK driver build, or isolated Windows VM test was performed.
 - Research links: Google [generateContent API](https://ai.google.dev/api/generate-content) and [API key guidance](https://ai.google.dev/gemini-api/docs/api-key); Microsoft [CryptProtectData](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata).
+
+## 6. Detection-to-response continuation (2026-10-12)
+
+- The protection service now exposes the durable detection ID alongside the minifilter verdict. After the detection transaction commits, the host enqueues Level 2 triage; callback failures cannot change the Level 1 result.
+- The filter client correlates high-confidence block detections with driver request IDs. It records blocked only on a matching `STATUS_ACCESS_DENIED` completion, then attempts quarantine using the same detection and verdict. Quarantine revalidates the path, rule, version, and SHA-256 before the verified move; it does not rescan and create a duplicate detection row.
+- Pending block correlations are bounded to 1,024 entries and cleared when the filter client closes. Completion database keys include a per-client-session nonce because the driver request counter resets on driver load.
+- Verification with the packaged YARA 4.5.4 runtime: focused protection suite **97 passed** (9 existing FastAPI/Starlette deprecation warnings). Tests cover durable triage callback ordering/failure isolation, denial-only quarantine, completion correlation and duplicate handling, and detection/verdict binding.
+- This remains source-level/user-mode verification. Completion telemetry is best effort in the driver, and no WDK build, signed driver package, or isolated Windows VM enforcement test has been performed. Release gates in §3 remain blocked.

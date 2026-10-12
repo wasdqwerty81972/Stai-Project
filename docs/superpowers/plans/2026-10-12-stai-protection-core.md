@@ -65,7 +65,7 @@
 - [x] **Step 1: Write failing tests** named `test_sha256_block_rule_returns_verified_block_verdict`, `test_observe_match_never_blocks`, `test_clean_file_returns_allow_verdict`, `test_file_mutated_during_scan_returns_unknown`, and `test_yara_timeout_returns_unknown`. Assert respectively: `(status, action, rule_id) == ("detected", "block", "hash-1")`; observe match has `action == "allow"`; clean file has `status == "clean"`; mutation/timeout have `status == "unknown"` and `action == "allow"`.
 - [x] **Step 2: Run tests** with `python -m pytest -q tests/test_windows_protection_scanner.py`; expect scanner imports to fail.
 - [x] **Step 3: Implement** bounded streaming SHA-256, YARA compilation/matching with a timeout, and pre/post file identity and metadata checks. A failed read, timeout, or changed file returns `unknown`/`allow`, never a block verdict.
-- [ ] **Step 4: Run tests** with `python -m pytest -q tests/test_windows_protection_scanner.py`; expect all five tests to pass.
+- [x] **Step 4: Run tests** with `python -m pytest -q tests/test_windows_protection_scanner.py`; expect all five tests to pass. Verified in the packaged Windows test runtime with YARA 4.5.4 available.
 
 ### Task 3: Durable jobs, detections, and quarantine
 
@@ -101,6 +101,14 @@
 ## Handoff
 
 The next plan, `2026-10-12-stai-minifilter.md`, consumes `ScanVerdict` and `ProtectionService.scan_file`; it owns the kernel enforcement and VM-only tests.
+
+### On-access follow-up (2026-10-12)
+
+- [x] Return the committed detection ID from the filter scan path and enqueue optional Level 2 triage after durable detection recording.
+- [x] Quarantine a matching high-confidence block only after the driver reports `STATUS_ACCESS_DENIED`; bind the move to the same detection, rule/version, and SHA-256.
+- [x] Bound pending driver correlations and namespace completion IDs by client session to tolerate driver request-counter resets.
+- [x] Verify the protection suite with the packaged YARA runtime: 97 passed, 9 existing deprecation warnings.
+- [ ] Build and test the minifilter on an isolated Windows VM; this host has no WDK/MSBuild or VM runner.
 
 ## Progress (2026-10-12)
 

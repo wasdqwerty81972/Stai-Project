@@ -809,7 +809,8 @@ def create_default_host() -> ProtectionServiceHost:
                 quarantine_root=data_root / "quarantine",
                 rules=rules,
                 store=store,
-            )
+            ),
+            on_detection=triage.request,
         )
 
     filter_client = None
