@@ -11,6 +11,10 @@ const scriptPath = path.join(
 function createWorkspace({ cliExitCode }) {
   const cwd = mkdtempSync(path.join(tmpdir(), "posthog-sourcemaps-"));
   const binDir = path.join(cwd, "bin");
+  const cliPath = path.join(
+    binDir,
+    process.platform === "win32" ? "posthog-cli.cmd" : "posthog-cli",
+  );
 
   mkdirSync(path.join(cwd, ".next"));
   mkdirSync(binDir);
@@ -19,9 +23,11 @@ function createWorkspace({ cliExitCode }) {
     JSON.stringify({ name: "hackerai-test" }),
   );
   writeFileSync(
-    path.join(binDir, "posthog-cli"),
-    `#!/bin/sh\necho "fake posthog-cli"\nexit ${cliExitCode}\n`,
-    { mode: 0o755 },
+    cliPath,
+    process.platform === "win32"
+      ? `@echo off\r\necho fake posthog-cli\r\nexit /b ${cliExitCode}\r\n`
+      : `#!/bin/sh\necho "fake posthog-cli"\nexit ${cliExitCode}\n`,
+    process.platform === "win32" ? undefined : { mode: 0o755 },
   );
 
   return { cwd, binDir };

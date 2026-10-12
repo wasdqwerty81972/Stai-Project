@@ -6,7 +6,7 @@ Correlates multiple security events into unified incidents
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
@@ -77,6 +77,23 @@ class CorrelationEngine:
         self.auth_attempts: Dict[str, List[Dict]] = {}
         # File modification tracking
         self.file_mods: List[Dict] = []
+
+    @staticmethod
+    def _timestamp_epoch(value: Any) -> float:
+        """Parse numeric or ISO telemetry timestamps consistently."""
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
 
     def add_event(self, event: SecurityEvent) -> List[Dict]:
         """Add an event and return any newly correlated incidents."""
@@ -187,8 +204,16 @@ class CorrelationEngine:
         try:
             remote_ip = getattr(event, 'remote_ip', '') if hasattr(event, 'remote_ip') else event.get('remote_ip', '')
             network_data = getattr(event, 'network', {}) if hasattr(event, 'network') else event.get('network', {})
+            direction = str(network_data.get('direction', '')).casefold() if network_data else ''
+            # The Phase 1 sensor observes outbound connections. The legacy
+            # rule models inbound port scanning, so do not treat ephemeral
+            # outbound source ports as scanned destination ports.
+            if direction == 'outbound':
+                return incidents
             local_port = network_data.get('local_port', '') if network_data else ''
             protocol = network_data.get('protocol', '') if network_data else ''
+            event_timestamp = getattr(event, 'timestamp', '') if hasattr(event, 'timestamp') else event.get('timestamp', '')
+            timestamp = self._timestamp_epoch(event_timestamp)
 
             if remote_ip:
                 if remote_ip not in self.ip_events:
@@ -250,22 +275,19 @@ class CorrelationEngine:
             user = getattr(event, 'user', '') if hasattr(event, 'user') else ''
             if not user:
                 user = getattr(event, 'source', '') if hasattr(event, 'source') else ''
+            event_timestamp = getattr(event, 'timestamp', '') if hasattr(event, 'timestamp') else event.get('timestamp', '')
 
             if user:
                 if user not in self.auth_attempts:
                     self.auth_attempts[user] = []
                 self.auth_attempts[user].append({
                     'event_id': str(event.event_id) if hasattr(event, 'event_id') else str(event.get('event_id', '')),
-                    'timestamp': str(event.timestamp) if hasattr(event, 'timestamp') else str(event.get('timestamp', '')),
+                    'timestamp': str(event_timestamp),
                 })
 
                 # Keep only recent attempts
                 cutoff = datetime.now().timestamp() - 60
-                recent_attempts = [
-                    e for e in self.auth_attempts[user]
-                    if e.get('timestamp', '').replace('.', '').isdigit()
-                    and float(e.get('timestamp', 0)) > cutoff
-                ]
+                recent_attempts = [e for e in self.auth_attempts[user] if self._timestamp_epoch(e.get('timestamp')) > cutoff]
 
                 if len(recent_attempts) >= 5:
                     # Brute force detected
@@ -301,21 +323,21 @@ class CorrelationEngine:
             # Track mass file modifications
             filepath = getattr(event, 'file', {}).get('path', '') if hasattr(event, 'file') else event.get('file', {}).get('path', '')
             filename = getattr(event, 'file', {}).get('filename', '') if hasattr(event, 'file') else event.get('file', {}).get('filename', '')
+            event_timestamp = getattr(event, 'timestamp', '') if hasattr(event, 'timestamp') else event.get('timestamp', '')
 
             if filepath:
                 self.file_mods.append({
                     'event_id': str(event.event_id) if hasattr(event, 'event_id') else str(event.get('event_id', '')),
                     'filepath': filepath,
                     'filename': filename,
-                    'timestamp': str(event.timestamp) if hasattr(event, 'timestamp') else str(event.get('timestamp', '')),
+                    'timestamp': str(event_timestamp),
                 })
 
                 # Keep only recent modifications
                 cutoff = datetime.now().timestamp() - 60
                 recent_mods = [
                     e for e in self.file_mods
-                    if e.get('timestamp', '').replace('.', '').isdigit()
-                    and float(e.get('timestamp', 0)) > cutoff
+                    if self._timestamp_epoch(e.get('timestamp')) > cutoff
                 ]
 
                 # Check for ransomware indicators

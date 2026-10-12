@@ -36,6 +36,7 @@ const exitForResult = (result, action) => {
 const selection = spawnSync(pnpmCommand, selectArgs, {
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
+  shell: process.platform === "win32",
 });
 
 if (selection.error) {
@@ -60,6 +61,7 @@ console.log(
 
 const creation = spawnSync(pnpmCommand, createArgs, {
   stdio: "inherit",
+  shell: process.platform === "win32",
 });
 
 exitForResult(creation, "create the local deployment");

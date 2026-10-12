@@ -1,0 +1,45 @@
+; StaiProtection.inf - Installation file for STAI Minifilter Driver
+; Test-signed package for VM-only development use
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31d-4f78-ab85-0dcc84d6d3d8}
+Provider    = %STAI_PROVIDER%
+DriverVer   = 10/12/2026,1.0.0.0
+CatalogFile = StaiProtection.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+StaiProtection.DriverFiles = 12
+
+[DefaultInstall]
+OptionDesc = %STAI_SERVICE_DESC%
+CopyFiles  = StaiProtection.DriverFiles
+
+[DefaultInstall.Services]
+AddService = %STAI_SERVICE_NAME%,,StaiProtection.Service
+
+[StaiProtection.DriverFiles]
+StaiProtection.sys
+
+[StaiProtection.Service]
+DisplayName    = %STAI_SERVICE_NAME%
+Description    = %STAI_SERVICE_DESC%
+ServiceBinary  = %12%\StaiProtection.sys
+Dependencies   = FltMgr
+ServiceType    = 2
+StartType      = 3
+ErrorControl   = 1
+LoadOrderGroup = "FSFilter Anti-Virus"
+AddReg         = StaiProtection.AddReg
+
+[StaiProtection.AddReg]
+HKR,,"DebugFlags",0x00010001,0x0
+HKR,,"Altitude",0x00000000,"329999"  ; VM-only debug value in Anti-Virus range 320000-329999; replace with Microsoft-allocated altitude before release
+
+[Strings]
+STAI_PROVIDER       = "STAI Project"
+STAI_SERVICE_NAME   = "StaiProtection"
+STAI_SERVICE_DESC   = "STAI File System Minifilter Protection Driver"

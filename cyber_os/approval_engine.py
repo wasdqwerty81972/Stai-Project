@@ -158,17 +158,36 @@ class ApprovalEngine:
                 return True
         return False
 
+    def register_pending_request(self, request_id: str) -> bool:
+        """Register an approval request for an asynchronous UI decision.
+
+        The interactive agent normally calls :meth:`wait_for_human_approval`,
+        which both registers and waits. Services that publish the request over
+        the event bus need to register it first so a UI can safely resolve it
+        without starting a blocking worker.
+        """
+        if not request_id:
+            return False
+        with self._lock:
+            if request_id in self._pending_requests:
+                return False
+            self._pending_requests[request_id] = (threading.Event(), {"approved": False, "timeout": False})
+        return True
+
     def wait_for_human_approval(
         self,
         request_id: str,
         timeout: float = 300.0,
     ) -> Tuple[bool, Dict[str, Any]]:
         """Blocks worker thread until human approval is received via event or timeout fires."""
-        event = threading.Event()
-        result: Dict[str, Any] = {"approved": False, "timeout": False}
-
         with self._lock:
-            self._pending_requests[request_id] = (event, result)
+            pending = self._pending_requests.get(request_id)
+            if pending is None:
+                event = threading.Event()
+                result: Dict[str, Any] = {"approved": False, "timeout": False}
+                self._pending_requests[request_id] = (event, result)
+            else:
+                event, result = pending
 
         finished = event.wait(timeout=timeout)
 

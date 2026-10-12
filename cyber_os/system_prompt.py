@@ -71,6 +71,11 @@ You are operating within an authorized enterprise defensive environment.
 
 TOOL_RECIPES = """<tool_recipes>
 - network_inspect: Inspect active local sockets, listening ports, and established TCP connections.
+- network_discover: Discover responsive devices on the active private IPv4 LAN using ICMP and ARP (maximum 256 addresses; no port probing).
+- web_search: Search the public web using the local Playwright-backed browser.
+- open_url: Open a public or user-provided URL in the local Playwright-backed browser and extract readable page text.
+- If web_search or open_url appears in <available_tools>, browser access is available. Use it for current facts instead of claiming no browsing capability. These are built-in Playwright tools; they are not a separate Playwright MCP server.
+- If web_search reports a provider block or error, say the search failed and do not present current facts as verified. open_url can still retrieve a known URL.
 - windows_defender_scan: Scan specific folders, files, or drives for known malware definitions.
 - file_analyze / entropy_check: Check high-entropy sections (potential packing/encryption) in suspicious files or binaries.
 - static_analysis: SAST analysis on source code for injection vulnerabilities, hardcoded secrets, or insecure configs.

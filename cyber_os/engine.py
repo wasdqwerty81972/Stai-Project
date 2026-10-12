@@ -13,7 +13,8 @@ import hashlib
 import subprocess
 import socket
 import re
-from datetime import datetime, timedelta
+import ipaddress
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
 from collections import deque, defaultdict
 from dataclasses import dataclass, field, asdict
@@ -21,6 +22,8 @@ from enum import Enum
 
 from cyber_os.correlation_engine import CorrelationEngine
 from cyber_os.incident_manager import IncidentManager
+from cyber_os.approval_engine import ApprovalEngine
+from cyber_os.sensors import SensorEvent, WindowsSensorService
 from ui.event_bus import AgentEvent, event_bus
 
 try:
@@ -556,6 +559,16 @@ class CyberOSEngine:
         self.event_index: Dict[str, Any] = {}
         self.correlation = CorrelationEngine(self.event_index)
         self.incident_manager = IncidentManager()
+        self._sensor_event_lock = threading.RLock()
+        self._response_approval_lock = threading.RLock()
+        self._pending_response_approvals: Dict[str, ThreatAlert] = {}
+        self._approved_response_ids: set[str] = set()
+        self.approval_engine = ApprovalEngine()
+        self.sensor_service = WindowsSensorService(
+            callback=self._handle_sensor_event,
+            database_path=os.path.join("cyber_db", "windows_sensor_queue.sqlite3"),
+            privacy=self.config.get("sensor_privacy", {}),
+        )
         
         # Monitors
         self.event_monitor = EventMonitor(self.monitor_queue)
@@ -590,8 +603,15 @@ class CyberOSEngine:
             "auto_response": {
                 "high_threat": True,
                 "critical_threat": True,
-                "require_approval": False,
-            }
+                # Containment actions are always gated by an explicit approval
+                # request, even when an older config says otherwise.
+                "require_approval": True,
+            },
+            "sensor_privacy": {
+                "collect_file_paths": False,
+                "collect_dns_names": False,
+                "collect_command_lines": False,
+            },
         }
         
         if os.path.exists(config_path):
@@ -605,33 +625,35 @@ class CyberOSEngine:
         return default_config
 
     def start(self):
-        """Start all monitoring and detection threads."""
+        """Start endpoint collection and the event/response workers once."""
+        if self.running:
+            return False
         self.running = True
-        
-        # Start monitors
-        self.event_monitor.start()
-        self.network_monitor.start()
-        self.process_monitor.start()
-        self.file_monitor.start()
-        self.powershell_monitor.start()
-        
-        # Start detection thread
-        threading.Thread(target=self._detection_loop, daemon=True).start()
-        
-        # Start response thread
-        threading.Thread(target=self._response_loop, daemon=True).start()
-        
-        print("[+] CyberOS Engine started. All monitors active.")
+        # WindowsSensorService is the sole active collector for the Phase 1
+        # Windows Event Log sources. The older polling monitors remain
+        # constructible for compatibility, but are not started because they
+        # duplicate process, network, file, and Security-log telemetry.
+        self.sensor_service.start()
+        self._detection_thread = threading.Thread(target=self._detection_loop, name="cyberos-detection", daemon=True)
+        self._response_thread = threading.Thread(target=self._response_loop, name="cyberos-response", daemon=True)
+        self._detection_thread.start()
+        self._response_thread.start()
+        self._publish_ui_event("cyberos_engine_status", "CyberOS sensor collection started", "started")
+        return True
 
     def stop(self):
-        """Stop all monitoring."""
+        """Stop endpoint collection and engine workers idempotently."""
+        if not self.running:
+            self.sensor_service.stop()
+            return False
+        self.sensor_service.stop()
         self.running = False
-        self.event_monitor.stop()
-        self.network_monitor.stop()
-        self.process_monitor.stop()
-        self.file_monitor.stop()
-        self.powershell_monitor.stop()
-        print("[+] CyberOS Engine stopped.")
+        for name in ("_detection_thread", "_response_thread"):
+            thread = getattr(self, name, None)
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=2.0)
+        self._publish_ui_event("cyberos_engine_status", "CyberOS sensor collection stopped", "stopped")
+        return True
 
     def _detection_loop(self):
         """Consume monitor events, apply detection rules, emit alerts."""
@@ -673,14 +695,32 @@ class CyberOSEngine:
             }
         else:
             details = getattr(event, "details", {})
+            category = getattr(event, "category", None)
+            if hasattr(category, "value"):
+                category = category.value
+            if not category:
+                category = "process" if event_type == EventType.PROCESS_CREATION.value else "network" if event_type == EventType.NETWORK_CONNECTION.value else "file" if event_type == EventType.FILE_MODIFICATION.value else "auth" if event_type == EventType.FAILED_LOGON.value else "security"
+            file_details = dict(getattr(event, "file", {}) or {})
+            if details.get("filepath"):
+                file_details.setdefault("path", details["filepath"])
+                file_details.setdefault("filename", details.get("filename", ""))
+            elif details.get("path_hash"):
+                file_details.setdefault("path", f"sha256:{details['path_hash']}")
+            if not file_details.get("path") and file_details.get("path_hash"):
+                file_details["path"] = f"sha256:{file_details['path_hash']}"
+            network_details = dict(getattr(event, "network", {}) or {})
             normalized = {
                 "event_id": event_id,
-                "category": "process" if event_type == EventType.PROCESS_CREATION.value else "network" if event_type == EventType.NETWORK_CONNECTION.value else "file" if event_type == EventType.FILE_MODIFICATION.value else "auth" if event_type == EventType.FAILED_LOGON.value else "security",
+                "category": category,
                 "timestamp": getattr(event, "timestamp", ""),
-                "process": details.get("name", ""),
-                "pid": details.get("pid", 0),
-                "parent_pid": details.get("ppid", 0),
-                "command_line": details.get("cmdline", ""),
+                "process": getattr(event, "process", "") or details.get("name", ""),
+                "pid": getattr(event, "pid", 0) or details.get("pid", 0),
+                "parent_pid": getattr(event, "parent_pid", 0) or details.get("ppid", 0),
+                "command_line": getattr(event, "command_line", "") or details.get("cmdline", ""),
+                "user": getattr(event, "user", "") or details.get("target_user_hash", ""),
+                "remote_ip": getattr(event, "remote_ip", "") or details.get("remote_ip", ""),
+                "network": network_details,
+                "file": file_details,
             }
             correlation = None
             findings = self.correlation.add_event(normalized)
@@ -705,6 +745,22 @@ class CyberOSEngine:
     def _publish_ui_event(event_type: str, message: str, status: str = "", **data: Any) -> None:
         event_bus.publish(AgentEvent(type=event_type, source="cyberos_engine", status=status, message=message, data=data))
 
+    def _handle_sensor_event(self, event: SensorEvent) -> None:
+        """Feed one durable sensor event through correlation and SOC triage."""
+        if not self.running:
+            raise RuntimeError("CyberOSEngine is stopped; retain the sensor event for the next start")
+        with self._sensor_event_lock:
+            if event.event_id in self.event_index:
+                return
+            self.events.append(event)
+            self._ingest_telemetry_event(event)
+            alert = self._apply_detection_rules(event)
+            if alert:
+                self.alerts.append(alert)
+                self.alert_queue.put(alert)
+                self.ui_queue.put(alert)
+                self._update_threat_score(alert.threat_score)
+
     def _apply_detection_rules(self, event: SecurityEvent) -> Optional[ThreatAlert]:
         """Apply detection rules to an event."""
         if isinstance(event, ThreatAlert):
@@ -722,19 +778,19 @@ class CyberOSEngine:
         details = event.details
         event_id = details.get("event_id")
         
-        if event_id != 4625:
+        if event_id not in {4625, "4625"} and details.get("windows_event_id") not in {4625, "4625"}:
             return None
         
         # Track failed logons from source IP
         # For demo, we'll use a simplified approach
-        now = datetime.now()
-        cutoff = now - timedelta(seconds=self.config["thresholds"]["failed_logon_window"])
+        now = datetime.now(timezone.utc)
+        now_epoch = now.timestamp()
+        window_seconds = self.config["thresholds"]["failed_logon_window"]
         
         recent_failures = [
             e for e in self.events
-            if (isinstance(e, SecurityEvent) and 
-                e.event_type == EventType.FAILED_LOGON.value and
-                (now - datetime.fromisoformat(e.timestamp)).total_seconds() < self.config["thresholds"]["failed_logon_window"])
+            if (getattr(e, "event_type", "") == EventType.FAILED_LOGON.value and
+                0 <= now_epoch - CorrelationEngine._timestamp_epoch(getattr(e, "timestamp", "")) < window_seconds)
         ]
         
         if len(recent_failures) >= self.config["thresholds"]["failed_logons"]:
@@ -744,13 +800,13 @@ class CyberOSEngine:
                 severity=Severity.HIGH.value,
                 mitre_technique="T1110.001",
                 technique_name="Password Spraying / Brute Force",
-                summary=f"Brute force detected: {len(recent_failures)} failed logons in {self.config['thresholds']['failed_logon_window']}s",
+                summary=f"Brute force detected: {len(recent_failures)} failed logons in {window_seconds}s",
                 evidence=[
                     f"Failed logons: {len(recent_failures)}",
-                    f"Time window: {self.config['thresholds']['failed_logon_window']} seconds",
+                    f"Time window: {window_seconds} seconds",
                     f"Event IDs: {[e.details.get('event_id') for e in recent_failures[:5]]}",
                 ],
-                ai_reasoning=f"System detected {len(recent_failures)} failed logon attempts within {self.config['thresholds']['failed_logon_window']} seconds. This pattern indicates an automated password spraying or brute force attack.",
+                ai_reasoning=f"System detected {len(recent_failures)} failed logon attempts within {window_seconds} seconds. This pattern indicates an automated password spraying or brute force attack.",
                 blast_radius="If successful, attacker gains unauthorized access to the system.",
                 threat_score=8,
                 recommended_actions=["Block source IP", "Lock target account", "Alert SOC"],
@@ -764,21 +820,109 @@ class CyberOSEngine:
         self.threat_score = min(10, max(0, self.threat_score + delta))
 
     def _response_loop(self):
-        """Consume alerts, execute autonomous responses."""
+        """Turn high-risk alerts into approval requests; never auto-contain."""
         while self.running:
             try:
                 alert = self.alert_queue.get(timeout=0.1)
-                
-                if self.config["auto_response"].get("critical_threat") and alert.threat_score >= 8:
-                    actions = self._execute_response(alert)
-                    alert.actions_taken = actions
-                    alert.autonomous_action_taken = True
-                    self.actions_log.append(alert)
+
+                if alert.threat_score >= 8:
+                    self._request_response_approval(alert)
             except queue.Empty:
                 continue
 
-    def _execute_response(self, alert: ThreatAlert) -> List[str]:
-        """Execute autonomous response actions."""
+    def _request_response_approval(self, alert: ThreatAlert) -> str:
+        """Publish a review request without performing containment actions."""
+        request_seed = f"{alert.event_id}:{alert.alert_type}:{time.time_ns()}"
+        approval_id = f"response-{hashlib.sha256(request_seed.encode('utf-8')).hexdigest()[:16]}"
+        if not self.approval_engine.register_pending_request(approval_id):
+            return ""
+        with self._response_approval_lock:
+            self._pending_response_approvals[approval_id] = alert
+        self._publish_ui_event(
+            "response_approval_required",
+            f"Approval required before containment: {alert.summary}",
+            "pending",
+            approval_id=approval_id,
+            request_id=approval_id,
+            tool="cyberos_containment",
+            arguments={
+                "alert_id": alert.event_id,
+                "summary": alert.summary,
+                "proposed_actions": list(alert.recommended_actions),
+            },
+            alert=alert.to_dict(),
+            proposed_actions=list(alert.recommended_actions),
+            disruptive_actions_require_human_approval=True,
+        )
+        return approval_id
+
+    def has_pending_response_approval(self, approval_id: str) -> bool:
+        """Return whether an approval ID belongs to an active sensor response."""
+        if not approval_id:
+            return False
+        with self._response_approval_lock:
+            return approval_id in self._pending_response_approvals
+
+    def get_pending_response_approvals(self) -> List[Dict[str, Any]]:
+        """Return the redacted approval context needed by the local UI."""
+        with self._response_approval_lock:
+            return [
+                {
+                    "approval_id": approval_id,
+                    "alert_id": alert.event_id,
+                    "summary": alert.summary,
+                    "severity": alert.severity,
+                    "proposed_actions": list(alert.recommended_actions),
+                }
+                for approval_id, alert in self._pending_response_approvals.items()
+            ]
+
+    def resolve_response_approval(self, approval_id: str, approved: bool, approved_by: str = "") -> List[str]:
+        """Resolve a human approval and execute only the explicitly approved response."""
+        with self._response_approval_lock:
+            alert = self._pending_response_approvals.pop(approval_id, None)
+        if alert is None:
+            return []
+        requested_decision = bool(approved and approved_by.strip())
+        decision_recorded = self.approval_engine.resolve_approval_request(approval_id, requested_decision)
+        if decision_recorded:
+            resolved_decision, _ = self.approval_engine.wait_for_human_approval(approval_id, timeout=0)
+            decision_recorded = resolved_decision == requested_decision
+        if not decision_recorded or not approved or not approved_by.strip():
+            self._publish_ui_event(
+                "response_approval_resolved",
+                "Containment was not approved",
+                "denied",
+                approval_id=approval_id,
+                approved_by=approved_by,
+            )
+            return []
+        with self._response_approval_lock:
+            self._approved_response_ids.add(approval_id)
+        actions = self._execute_response(alert, approval_id=approval_id)
+        alert.actions_taken = actions
+        alert.autonomous_action_taken = False
+        if actions:
+            self.actions_log.append(alert)
+        self._publish_ui_event(
+            "response_approval_resolved",
+            "Approved containment actions completed" if actions else "Approval recorded; no supported containment target was found",
+            "completed" if actions else "no_action",
+            approval_id=approval_id,
+            approved_by=approved_by,
+            actions=actions,
+        )
+        return actions
+
+    def _execute_response(self, alert: ThreatAlert, *, approval_id: str = "") -> List[str]:
+        """Execute response actions only after a human explicitly approves."""
+        with self._response_approval_lock:
+            approved = bool(approval_id and approval_id in self._approved_response_ids)
+            if approved:
+                self._approved_response_ids.discard(approval_id)
+        if not approved:
+            self._request_response_approval(alert)
+            return []
         actions = []
         
         # Block IP if network-related
@@ -787,9 +931,9 @@ class CyberOSEngine:
             if ip_match:
                 ip = ip_match.group(0)
                 if ip not in self.blocked_ips:
-                    self._block_ip(ip)
-                    actions.append(f"Blocked IP: {ip}")
-                    self.blocked_ips.add(ip)
+                    if self._block_ip(ip, approved=True):
+                        actions.append(f"Blocked IP: {ip}")
+                        self.blocked_ips.add(ip)
         
         # Kill process if process-related
         if "PID" in alert.summary or "process" in alert.summary.lower():
@@ -797,27 +941,47 @@ class CyberOSEngine:
             if pid_match:
                 pid = int(pid_match.group(1))
                 if pid not in self.terminated_pids:
-                    self._terminate_process(pid)
-                    actions.append(f"Terminated process PID: {pid}")
-                    self.terminated_pids.add(pid)
+                    if self._terminate_process(pid, approved=True):
+                        actions.append(f"Terminated process PID: {pid}")
+                        self.terminated_pids.add(pid)
         
         return actions
 
-    def _block_ip(self, ip: str):
-        """Block IP via Windows Firewall."""
+    def _block_ip(self, ip: str, *, approved: bool = False) -> bool:
+        """Block an IP via Windows Firewall after explicit approval."""
+        if not approved:
+            return False
         try:
+            ipaddress.ip_address(ip)
             rule_name = f"CyberOS_Block_{ip.replace('.', '_')}"
-            cmd = f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block remoteip={ip}'
-            subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
+            completed = subprocess.run(
+                ["netsh", "advfirewall", "firewall", "add", "rule", f"name={rule_name}", "dir=in", "action=block", f"remoteip={ip}"],
+                shell=False,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            return completed.returncode == 0
         except Exception as e:
             print(f"[!] Failed to block IP {ip}: {e}")
+            return False
 
-    def _terminate_process(self, pid: int):
-        """Terminate a process by PID."""
+    def _terminate_process(self, pid: int, *, approved: bool = False) -> bool:
+        """Terminate a process only after explicit approval."""
+        if not approved or pid <= 4 or pid == os.getpid():
+            return False
         try:
-            subprocess.run(f"taskkill /F /PID {pid}", shell=True, capture_output=True, timeout=10)
+            completed = subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                shell=False,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            return completed.returncode == 0
         except Exception as e:
             print(f"[!] Failed to terminate PID {pid}: {e}")
+            return False
 
     def get_status(self) -> Dict[str, Any]:
         """Get current system status."""

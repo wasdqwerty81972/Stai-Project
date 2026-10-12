@@ -12,7 +12,12 @@
   "auto_response": {
     "high_threat": true,
     "critical_threat": true,
-    "require_approval": false
+    "require_approval": true
+  },
+  "sensor_privacy": {
+    "collect_file_paths": false,
+    "collect_dns_names": false,
+    "collect_command_lines": false
   },
   "ai": {
     "use_mock": true,

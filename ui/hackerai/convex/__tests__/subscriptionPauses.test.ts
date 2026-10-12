@@ -29,7 +29,7 @@ type Row = Record<string, any>;
 /** Minimal in-memory stand-in for the subscription_pauses table. */
 function buildDb(rows: Row[]) {
   const byId = new Map(rows.map((row) => [row._id, row]));
-  const query = (_table: string) => {
+  const query = (table: string) => {
     let matches = [...rows];
     const builder: any = {
       withIndex: jest.fn((indexName: string, apply?: any) => {
@@ -65,6 +65,9 @@ function buildDb(rows: Row[]) {
         return builder;
       }),
       take: jest.fn(async (limit: number) => matches.slice(0, limit)),
+      first: jest.fn(async () =>
+        table === "user_deletion_fences" ? null : (matches[0] ?? null),
+      ),
     };
     return builder;
   };

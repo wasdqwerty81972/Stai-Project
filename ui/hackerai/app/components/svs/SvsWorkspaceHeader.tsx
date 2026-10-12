@@ -1,12 +1,13 @@
 "use client";
 
-import { PanelLeft, Shield } from "lucide-react";
+import { PanelLeft, Settings2, Shield } from "lucide-react";
 
 interface SvsWorkspaceHeaderProps {
   title: string;
   connection: "idle" | "connecting" | "connected" | "disconnected";
   running: boolean;
   onOpenNavigation: () => void;
+  onOpenSettings: () => void;
 }
 
 const connectionStyles = {
@@ -37,6 +38,7 @@ export function SvsWorkspaceHeader({
   connection,
   running,
   onOpenNavigation,
+  onOpenSettings,
 }: SvsWorkspaceHeaderProps) {
   const status = connectionStyles[connection];
 
@@ -108,6 +110,15 @@ export function SvsWorkspaceHeader({
           </span>
           <span className="sr-only sm:hidden">{status.label}</span>
         </span>
+        <button
+          type="button"
+          aria-label="Communications settings"
+          title="Communications settings"
+          onClick={onOpenSettings}
+          className="flex size-9 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          <Settings2 className="size-4" aria-hidden="true" />
+        </button>
       </div>
     </header>
   );

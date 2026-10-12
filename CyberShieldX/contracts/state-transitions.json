@@ -1,0 +1,31 @@
+{
+  "title": "Cyber Shield X Packet State Transitions",
+  "description": "Deterministic state machine shared by both implementations. Transitions are only valid when all preconditions hold; invalid transitions are rejected WITHOUT modifying state.",
+  "initialState": "CREATED",
+  "states": {
+    "CREATED": "Packet freshly synthesized by the deterministic scenario generator.",
+    "INSPECTING": "Packet reached the inspection gate awaiting the detection engine.",
+    "HOLDING_INTERCEPT": "Packet is suspicious: frozen at the gate until an operator acts.",
+    "ALLOWED": "Terminal. Packet released through the gate.",
+    "DROPPED": "Terminal. Packet discarded at the gate.",
+    "ESCALATED": "Terminal. Packet promoted to a local incident; history preserved."
+  },
+  "transitions": [
+    { "from": "CREATED", "to": "INSPECTING", "trigger": "tick_advance", "preconditions": ["none"], "metric": "inspected" },
+    { "from": "INSPECTING", "to": "ALLOWED", "trigger": "auto_pass_safe", "preconditions": ["score_below_threshold"], "metric": "allowed" },
+    { "from": "INSPECTING", "to": "HOLDING_INTERCEPT", "trigger": "flag_suspicious", "preconditions": ["score_meets_threshold"], "metric": "held" },
+    { "from": "HOLDING_INTERCEPT", "to": "ALLOWED", "trigger": "APPROVE", "preconditions": ["operator_action"], "metric": "allowed" },
+    { "from": "HOLDING_INTERCEPT", "to": "DROPPED", "trigger": "DROP", "preconditions": ["operator_action"], "metric": "dropped" },
+    { "from": "HOLDING_INTERCEPT", "to": "ESCALATED", "trigger": "ESCALATE", "preconditions": ["operator_action"], "metric": "escalated" },
+    { "from": "HOLDING_INTERCEPT", "to": "HOLDING_INTERCEPT", "trigger": "HOLD", "preconditions": ["already_held"], "note": "no-op; state unchanged" },
+    { "from": "ALLOWED", "to": "ALLOWED", "trigger": "any", "note": "terminal; rejected" },
+    { "from": "DROPPED", "to": "DROPPED", "trigger": "any", "note": "terminal; rejected" },
+    { "from": "ESCALATED", "to": "ESCALATED", "trigger": "any", "note": "terminal; rejected" }
+  ],
+  "invariants": [
+    "A HELD packet never moves during pause or resume until a terminal decision (APPROVE/DROP/ESCALATE) is applied.",
+    "Duplicate operator actions on the same packet are rejected (idempotent).",
+    "Terminal packets are removed from active simulation storage while retaining bounded event history.",
+    "Counters are updated exactly once per valid terminal transition."
+  ]
+}

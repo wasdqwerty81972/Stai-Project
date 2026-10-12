@@ -1,0 +1,271 @@
+"""Contract tests for the Windows Protection API routes."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from ui import api_server as server
+
+
+@pytest.fixture
+def mock_protection_service():
+    """Create a mock protection service with predictable responses."""
+    store = MagicMock()
+    store.get_status.return_value = SimpleNamespace(
+        state="active",
+        driver_state="running",
+        service_state="running",
+        rules_version="test-1",
+        last_scan="2026-01-01T00:00:00",
+        counts={"detected": 5, "blocked": 2, "quarantined": 1},
+        windows_security={"registered_av_provider": "Windows Defender", "defender_mode": "enabled", "query_available": True},
+        sensor_coverage={},
+        last_error=None,
+    )
+    store.list_threats.return_value = []
+    store.create_scan_job.return_value = SimpleNamespace(
+        job_id="job-1", scope="quick", state="running", files_scanned=10, files_total=100, detections=1, errors=0, started_at="2026-01-01T00:00:00", completed_at=None, error_message=None
+    )
+    store.get_scan_job.return_value = SimpleNamespace(
+        job_id="job-1", scope="quick", state="completed", files_scanned=100, files_total=100, detections=1, errors=0, started_at="2026-01-01T00:00:00", completed_at="2026-01-01T00:01:00", error_message=None
+    )
+    store.update_scan_job.return_value = True
+
+    service = SimpleNamespace(
+        store=store,
+        scan_file=MagicMock(return_value=SimpleNamespace(
+            status="clean", action="allow", rule_id=None, rule_version="test-1", sha256="a" * 64, reason="no match"
+        )),
+        start_scan=MagicMock(return_value=SimpleNamespace(
+            job_id="job-1", scope="quick", state="running", files_scanned=0, files_total=100, detections=0, errors=0, started_at="2026-01-01T00:00:00", completed_at=None, error_message=None
+        )),
+        cancel_scan=MagicMock(return_value=True),
+        quarantine_detection=MagicMock(return_value=SimpleNamespace(success=True, item=SimpleNamespace(
+            item_id="item-1", original_path="C:\\test.exe", quarantined_path="C:\\quarantine\\item-1.stai_quarantine", sha256="a" * 64, rule_id="hash-1", rule_version="test-1", action_result="moved", detection_id="det-1", created_at="2026-01-01T00:00:00", restored_at=None, restore_result=None
+        ), error=None)),
+        restore_quarantine=MagicMock(return_value=SimpleNamespace(success=True, item=SimpleNamespace(
+            item_id="item-1", original_path="C:\\test.exe", quarantined_path="C:\\quarantine\\item-1.stai_quarantine", sha256="a" * 64, rule_id="hash-1", rule_version="test-1", action_result="moved", detection_id="det-1", created_at="2026-01-01T00:00:00", restored_at="2026-01-01T00:05:00", restore_result="restored"
+        ), error=None)),
+        list_quarantine=MagicMock(return_value=[]),
+        get_status=MagicMock(return_value=SimpleNamespace(
+            state="active", driver_state="running", service_state="running", rules_version="test-1", last_scan="2026-01-01T00:00:00", counts={"detected": 5, "blocked": 2, "quarantined": 1}, windows_security={"registered_av_provider": "Windows Defender", "defender_mode": "enabled", "query_available": True}, sensor_coverage={}, last_error=None
+        )),
+        rules=SimpleNamespace(version="test-1", rules=()),
+    )
+
+    return service
+
+
+@pytest.fixture
+def protection_client(mock_protection_service, monkeypatch):
+    """Create a test client with mocked protection service."""
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+    with TestClient(server.app) as client:
+        yield client
+
+
+def _reset_protection_service_mock():
+    """Helper to clear the protection service singleton."""
+    if hasattr(server, "_protection_service"):
+        delattr(server, "_protection_service")
+
+
+def test_status_reports_degraded_when_driver_or_rules_unhealthy(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.get_status.return_value = SimpleNamespace(
+        state="degraded",
+        driver_state="stopped",
+        service_state="running",
+        rules_version="test-1",
+        last_scan=None,
+        counts={"detected": 0, "blocked": 0, "quarantined": 0},
+        windows_security={"registered_av_provider": None, "defender_mode": None, "query_available": False},
+        sensor_coverage={},
+        last_error="driver not loaded",
+    )
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/status")
+
+    assert reply.status_code == 200
+    data = reply.json()
+    assert data["state"] == "degraded"
+    assert data["driver_state"] == "stopped"
+
+
+def test_status_includes_registered_av_and_defender_mode_when_available(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.get_status.return_value = SimpleNamespace(
+        state="active",
+        driver_state="running",
+        service_state="running",
+        rules_version="test-1",
+        last_scan="2026-01-01T00:00:00",
+        counts={"detected": 1, "blocked": 0, "quarantined": 0},
+        windows_security={"registered_av_provider": "Windows Defender", "defender_mode": "enabled", "query_available": True},
+        sensor_coverage={},
+        last_error=None,
+    )
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/status")
+
+    assert reply.status_code == 200
+    data = reply.json()
+    assert data["windows_security"]["registered_av_provider"] == "Windows Defender"
+    assert data["windows_security"]["defender_mode"] == "enabled"
+    assert data["windows_security"]["query_available"] is True
+
+
+def test_scan_rejects_client_supplied_paths(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.post("/api/protection/scans", json={"scope": "quick", "roots": ["C:/"]})
+
+    assert reply.status_code == 422  # validation error
+
+
+def test_scan_job_routes_report_persisted_progress(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.start_scan.return_value = SimpleNamespace(
+        job_id="job-123", scope="quick", state="running", files_scanned=50, files_total=100, detections=2, errors=0, started_at="2026-01-01T00:00:00", completed_at=None, error_message=None
+    )
+    mock_protection_service.store.get_scan_job.return_value = SimpleNamespace(
+        job_id="job-123", scope="quick", state="completed", files_scanned=100, files_total=100, detections=2, errors=0, started_at="2026-01-01T00:00:00", completed_at="2026-01-01T00:02:00", error_message=None
+    )
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        # Start scan
+        start_reply = client.post("/api/protection/scans", json={"scope": "quick"})
+        assert start_reply.status_code == 200
+        job = start_reply.json()
+        assert job["job_id"] == "job-123"
+        assert job["files_total"] == 100
+
+        # Get scan progress
+        get_reply = client.get("/api/protection/scans/job-123")
+        assert get_reply.status_code == 200
+        progress = get_reply.json()
+        assert progress["files_scanned"] == 100
+        assert progress["state"] == "completed"
+
+
+def test_threats_endpoint_does_not_conflate_detected_and_blocked(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    # Return detections with different actions
+    mock_protection_service.store.list_threats.return_value = [
+        SimpleNamespace(detection_id="det-1", sha256="a" * 64, rule_id="hash-1", rule_version="test-1", action="block", confidence="high", severity="critical", file_type=".exe", size_bytes=1024, file_path="C:\\bad.exe", created_at="2026-01-01T00:00:00", triage_enqueued=False),
+        SimpleNamespace(detection_id="det-2", sha256="b" * 64, rule_id="yara-1", rule_version="test-1", action="allow", confidence="low", severity="medium", file_type=".exe", size_bytes=2048, file_path="C:\\obs.exe", created_at="2026-01-01T00:01:00", triage_enqueued=False),
+    ]
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/threats")
+
+    assert reply.status_code == 200
+    data = reply.json()
+    assert len(data) == 2
+    blocked = [d for d in data if d["action"] == "block"]
+    observed = [d for d in data if d["action"] == "allow"]
+    assert len(blocked) == 1
+    assert len(observed) == 1
+    assert blocked[0]["rule_id"] == "hash-1"
+    assert observed[0]["rule_id"] == "yara-1"
+
+
+def test_restore_requires_existing_quarantine_item(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.restore_quarantine.return_value = SimpleNamespace(success=False, item=None, error="quarantine item not found")
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.post("/api/protection/quarantine/nonexistent/restore")
+
+    assert reply.status_code == 404
+
+
+def test_protection_agent_chat_cannot_execute_tools(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    # Mock the agent chat to return a response without tool calls
+    mock_protection_service.agent_chat = MagicMock(return_value=SimpleNamespace(
+        session_id="sess-1", message="Analysis complete", tool_calls=[], response_action=None
+    ))
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.post("/api/protection/agent/messages", json={
+            "session_id": "sess-1",
+            "message": "Analyze this detection",
+            "detection_id": "det-1"
+        })
+
+    assert reply.status_code == 200
+    data = reply.json()
+    assert data["tool_calls"] == []
+    assert data["response_action"] is None
+    assert "message" in data
+
+
+def test_get_unknown_scan_job_returns_404(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.store.get_scan_job.return_value = None
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/scans/nonexistent-job")
+
+    assert reply.status_code == 404
+
+
+def test_cancel_unknown_scan_job_returns_404(monkeypatch, mock_protection_service):
+    _reset_protection_service_mock()
+    mock_protection_service.cancel_scan.return_value = False
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.delete("/api/protection/scans/nonexistent-job")
+
+    assert reply.status_code == 404
+
+
+def test_unavailable_service_reports_unavailable_without_crashing(monkeypatch):
+    """Real _UnavailableService fallback: honest unavailable + zeroed counts, no 500 crash.
+
+    Forces the lazy ``from cyber_os.protection import ...`` to fail so
+    ``_get_protection_service`` builds its real ``_UnavailableService`` fallback,
+    then asserts the status, threats, and scan-job routes degrade gracefully
+    (the store-scoped routes call ``service.store.<method>`` and must not raise
+    AttributeError -> HTTP 500).
+    """
+    import sys
+
+    # Block the protection package so the except-branch fallback is built.
+    monkeypatch.setitem(sys.modules, "cyber_os.protection", None)
+    monkeypatch.setattr(server, "_protection_service", None, raising=False)
+
+    with TestClient(server.app) as client:
+        status_reply = client.get("/api/protection/status")
+        threats_reply = client.get("/api/protection/threats")
+        scan_reply = client.get("/api/protection/scans/does-not-exist")
+
+    assert status_reply.status_code == 200
+    status = status_reply.json()
+    assert status["state"] == "unavailable"
+    assert status["counts"] == {"detected": 0, "blocked": 0, "quarantined": 0}
+    assert status["last_error"]  # a real error string, not None
+
+    # Store-scoped routes must degrade gracefully, not crash with AttributeError.
+    assert threats_reply.status_code == 200
+    assert threats_reply.json() == []
+    assert scan_reply.status_code == 404

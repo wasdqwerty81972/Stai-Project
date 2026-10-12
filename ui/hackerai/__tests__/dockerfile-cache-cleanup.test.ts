@@ -10,9 +10,11 @@ function parseInstructions(source: string): string[] {
   let current = "";
 
   for (const line of source.split("\n")) {
-    if (/^\s*(?:#.*)?$/.test(line)) {
+    if (/^\s*#/.test(line)) {
       continue;
     }
+
+    if (/^\s*$/.test(line)) continue;
 
     current += `${current ? "\n" : ""}${line}`;
 

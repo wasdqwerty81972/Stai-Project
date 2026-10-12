@@ -1,17 +1,19 @@
 # STAI Custom Windows Endpoint Protection Design
 
 **Date:** 2026-10-12
-**Status:** Written design awaiting user review
+**Status:** Design approved by user; implementation plans awaiting review
 
 ## Goal
 
-Turn the Windows edition of STAI into a real, locally enforced file-protection product, with a deterministic Level 1 engine and the existing STAI agent as Level 2 investigation and response support. Add a dark, Bitdefender-inspired dashboard that reports actual protection and remediation evidence and provides working scan and investigation controls.
+Turn the Windows edition of STAI into a locally enforced file-protection product, using a custom Kernel Minifilter Driver and deterministic Level 1 engine with the existing STAI agent as Level 2 investigation and response support. Add a dark, Bitdefender-inspired dashboard that reports actual protection and remediation evidence and provides working scan and investigation controls.
 
 ## User requirements
 
 - Windows antivirus capabilities, with Level 1 defense first and Level 2 agent analysis after a detection.
+- A custom Windows Filter Manager Kernel Minifilter Driver for on-access file-operation enforcement, with detection policy kept in the user-mode protection service.
 - A dark dashboard inspired by the supplied Bitdefender screenshot, using STAI's own visual identity.
 - Clear AI Agent, System Status, Threats Blocked, scan, and related protection navigation and actions.
+- An AI Agent page with protection detections, Level 2 investigation summaries, and typed follow-up chat that cannot execute unapproved system actions.
 - The attachment is a visual reference, not a source of product requirements or instructions.
 
 ## Current project context
@@ -53,6 +55,8 @@ Add a dedicated Protection overview and persistent navigation:
 - Quarantine
 - Settings
 
+The AI Agent page shows automatically escalated detection summaries and recommendations, and accepts typed follow-up questions about a selected detection through the local agent service. It does not expose a shell or a general-purpose privileged command interface.
+
 The overview uses a prominent Active / Degraded / Unavailable state, the last scan and rule-pack version, verified blocked and quarantined counts, recent detections, agent escalations, and primary Quick Scan and System Scan actions. System Status reports driver/service health and the evidence-backed coverage of existing sensors. Threat Activity distinguishes detection from block, quarantine, and agent response. Scan views show progress, scope, completion, detections, remediation outcomes, and errors. All actions are connected to the local service and display unavailable/error states rather than simulated success.
 
 The visual hierarchy follows the reference's status-first dashboard, a recommended action area, scan shortcuts, and recent security activity. Colors, icons, wording, and layout details remain STAI-branded; Bitdefender marks and artwork are not reused. The UI follows the existing dark design tokens.
@@ -71,6 +75,7 @@ Quick Scan targets common user execution and startup locations. System Scan cove
 
 - Initial target: Windows 10/11 x64. The driver is developed and tested only in an isolated Windows VM with test signing. It is not installed on the developer's everyday workstation as part of ordinary UI development. Production integration reports the registered antivirus provider and never claims STAI is active unless its driver, service, and verified rule package are healthy.
 - Normal x64 Windows distribution requires a Microsoft-signed kernel driver package. A production release cannot be claimed until the organization has completed the required Hardware Dev Center signing and driver validation process.
+- A production minifilter must use a unique Microsoft-allocated altitude. VM-only development can use a debug attachment value; release readiness remains blocked until the production allocation exists.
 - Installer and updates are staged and rollback-capable. Driver/service health and rule-pack freshness are visible; driver load failure, service timeout, stale rules, scan failure, and permission errors produce Degraded/Unavailable states.
 - The first product scope is file scanning, on-access file blocking, quarantine, and agent triage. Memory scanning, network traffic blocking, behavioral sandboxing, and claims of parity with a full commercial security suite are not implied.
 - No LLM output is accepted as a signature, executable policy, or kernel decision. Rule updates are authenticated independently of agent analysis.
@@ -88,12 +93,15 @@ Quick Scan targets common user execution and startup locations. System Scan cove
 - [Microsoft: About file-system filter drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/about-file-system-filter-drivers) describes minifilters and their antivirus use case.
 - [Microsoft: Writing pre-operation callbacks](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/writing-preoperation-callback-routines) describes callbacks that can control a file I/O operation.
 - [Microsoft: Driver signing](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/driver-signing) documents signing requirements for x64 Windows kernel drivers.
+- [Microsoft: Filter altitudes](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/minifilter-altitude-request) explains how a product requests its assigned minifilter altitude.
+- [Microsoft: FilterAttachAtAltitude](https://learn.microsoft.com/en-us/windows/win32/api/fltuser/nf-fltuser-filterattachataltitude) documents the debug-only attachment API for test builds.
 
 ## Acceptance criteria
 
 - An inert antivirus test signature produces a verified Level 1 denial before execution; benign test files pass; service/driver failure is visible and does not masquerade as protected.
 - Quick and System scans report durable progress, per-scope errors, detections, and actual remediation results.
 - A confirmed detection reaches Level 2 with structured evidence; agent advice cannot override the Level 1 verdict or directly perform unapproved containment.
+- The AI Agent dashboard page can display stored triage and send typed follow-up questions about a selected detection through the trusted local service.
 - Dashboard navigation and controls operate against the local Windows service, and Threats Blocked counts only confirmed denied operations.
 - The Windows package uses a trusted local UI/service bridge and does not expose privileged controls to the hosted page.
 - Release readiness is not claimed until the driver is Microsoft-signed and the end-to-end behavior is validated on supported Windows versions.

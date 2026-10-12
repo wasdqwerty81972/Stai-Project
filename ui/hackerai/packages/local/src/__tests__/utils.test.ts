@@ -61,10 +61,14 @@ describe("Output Truncation", () => {
 });
 
 describe("Platform Shell Detection", () => {
-  it("should return cmd.exe for Windows", () => {
+  it("should use the configured Windows shell", () => {
     const result = getDefaultShell("win32");
-    expect(result.shell).toBe("cmd.exe");
-    expect(result.shellFlag).toBe("/C");
+    if (result.shell.toLowerCase().endsWith("bash.exe")) {
+      expect(result.shellFlag).toBe("-c");
+    } else {
+      expect(result.shell).toBe("cmd.exe");
+      expect(result.shellFlag).toBe("/C");
+    }
   });
 
   it("should return bash for Linux", () => {

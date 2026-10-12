@@ -57,6 +57,16 @@ check(
   patternsForFile("ui/hackerai/app/components/SvsCyberModelSelector.tsx"),
   ["SvsCyberComposer"],
 );
+check(
+  "SvsSensorStatus component -> [SvsSensorStatus]",
+  patternsForFile("ui/hackerai/app/components/svs/SvsSensorStatus.tsx"),
+  ["SvsSensorStatus"],
+);
+check(
+  "SvsSensorStatus test file -> [SvsSensorStatus]",
+  patternsForFile("ui/hackerai/app/components/svs/SvsSensorStatus.test.tsx"),
+  ["SvsSensorStatus"],
+);
 
 // --- patternsForFile: shared tier ----------------------------------------
 check(

@@ -1,0 +1,21 @@
+{
+  "description": "Suspicious-traffic scenario. Packets score >= 40 at the inspection gate and are held for operator resolution. Includes repeated connection attempts, unusual frequency, a known-bad destination port, and a threat-indicator match.",
+  "seed": 2002,
+  "maxTick": 40,
+  "packetCount": 8,
+  "packets": [
+    { "tick": 2, "protocol": "TCP", "src": { "ip": "10.0.1.5", "hostId": "h100", "port": 50001 }, "dst": { "ip": "10.0.1.10", "hostId": "h10a", "port": 445 }, "kind": "SUSPICIOUS", "size": 256, "payload": "SMB negotiate" },
+    { "tick": 2, "protocol": "TCP", "src": { "ip": "10.0.1.5", "hostId": "h100", "port": 50002 }, "dst": { "ip": "10.0.1.10", "hostId": "h10a", "port": 445 }, "kind": "SUSPICIOUS", "size": 128, "payload": "SMB negotiate" },
+    { "tick": 2, "protocol": "TCP", "src": { "ip": "10.0.1.5", "hostId": "h100", "port": 50003 }, "dst": { "ip": "10.0.1.10", "hostId": "h10a", "port": 445 }, "kind": "SUSPICIOUS", "size": 128, "payload": "SMB negotiate" },
+    { "tick": 3, "protocol": "TCP", "src": { "ip": "10.0.1.5", "hostId": "h100", "port": 50004 }, "dst": { "ip": "10.0.1.10", "hostId": "h10a", "port": 445 }, "kind": "SUSPICIOUS", "size": 64, "payload": "SMB negotiate" },
+    { "tick": 6, "protocol": "UDP", "src": { "ip": "10.0.1.20", "hostId": "h200", "port": 1337 }, "dst": { "ip": "10.0.1.30", "hostId": "h20a", "port": 443 }, "kind": "SUSPICIOUS", "size": 32, "payload": "beacon" },
+    { "tick": 6, "protocol": "UDP", "src": { "ip": "10.0.1.20", "hostId": "h200", "port": 1338 }, "dst": { "ip": "10.0.1.30", "hostId": "h20a", "port": 443 }, "kind": "SUSPICIOUS", "size": 32, "payload": "beacon" },
+    { "tick": 12, "protocol": "RDP", "src": { "ip": "10.0.1.40", "hostId": "h400", "port": 32800 }, "dst": { "ip": "10.0.1.50", "hostId": "h40a", "port": 3389 }, "kind": "SUSPICIOUS", "size": 1400, "payload": "RDP connection" },
+    { "tick": 14, "protocol": "SSH", "src": { "ip": "10.0.1.60", "hostId": "h600", "port": 2222 }, "dst": { "ip": "10.0.1.70", "hostId": "h60a", "port": 22 }, "kind": "SUSPICIOUS", "size": 400, "payload": "SSH brute-force" }
+  ],
+  "expectations": {
+    "flaggedPackets": 8,
+    "heldAfterInspection": 8,
+    "scores": [75, 75, 75, 75, 60, 60, 60, 70]
+  }
+}

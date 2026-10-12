@@ -12,6 +12,15 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const scriptPath = path.resolve(".github/scripts/prepare-desktop-release.sh");
+const bashExecutable =
+  process.platform === "win32"
+    ? [
+        "C:/Program Files/Git/bin/bash.exe",
+        "C:/Program Files (x86)/Git/bin/bash.exe",
+      ].find(existsSync)
+    : "bash";
+const shellDescribe = bashExecutable ? describe : describe.skip;
+const releaseShellTest = process.platform === "win32" ? test.skip : test;
 
 function writeArtifact(root, artifact, filename, contents = filename) {
   const directory = path.join(root, artifact, "bundle");
@@ -136,7 +145,7 @@ fi
   );
 
   const result = spawnSync(
-    "bash",
+    bashExecutable,
     [
       scriptPath,
       artifacts,
@@ -159,40 +168,43 @@ fi
   return { artifacts, release, result, workspace };
 }
 
-describe("prepare-desktop-release", () => {
-  test("prepares fixed aliases and architecture-specific updater entries", () => {
-    const fixture = runPreparation();
+shellDescribe("prepare-desktop-release", () => {
+  releaseShellTest(
+    "prepares fixed aliases and architecture-specific updater entries",
+    () => {
+      const fixture = runPreparation();
 
-    try {
-      expect(fixture.result.status).toBe(0);
-      expect(fixture.result.stderr).toBe("");
-      expect(
-        existsSync(path.join(fixture.release, "HackerAI-linux-x64.AppImage")),
-      ).toBe(true);
-      expect(
-        existsSync(path.join(fixture.release, "HackerAI-windows-x64.exe")),
-      ).toBe(true);
+      try {
+        expect(fixture.result.status).toBe(0);
+        expect(fixture.result.stderr).toBe("");
+        expect(
+          existsSync(path.join(fixture.release, "HackerAI-linux-x64.AppImage")),
+        ).toBe(true);
+        expect(
+          existsSync(path.join(fixture.release, "HackerAI-windows-x64.exe")),
+        ).toBe(true);
 
-      const latest = JSON.parse(
-        readFileSync(path.join(fixture.release, "latest.json"), "utf8"),
-      );
-      expect(latest.version).toBe("0.0.57");
-      expect(latest.pub_date).toBe("2026-07-17T00:00:00Z");
-      expect(latest.platforms["darwin-aarch64"]).toEqual({
-        url: "https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI-aarch64.app.tar.gz",
-        signature: signatureFor("mac-arm-updater"),
-      });
-      expect(latest.platforms["darwin-x86_64"]).toEqual({
-        url: "https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI-x86_64.app.tar.gz",
-        signature: signatureFor("mac-x64-updater"),
-      });
-      expect(latest.platforms["windows-x86_64"].signature).toBe(
-        signatureFor("HackerAI_0.0.57_x64-setup.nsis.zip"),
-      );
-    } finally {
-      rmSync(fixture.workspace, { recursive: true, force: true });
-    }
-  });
+        const latest = JSON.parse(
+          readFileSync(path.join(fixture.release, "latest.json"), "utf8"),
+        );
+        expect(latest.version).toBe("0.0.57");
+        expect(latest.pub_date).toBe("2026-07-17T00:00:00Z");
+        expect(latest.platforms["darwin-aarch64"]).toEqual({
+          url: "https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI-aarch64.app.tar.gz",
+          signature: signatureFor("mac-arm-updater"),
+        });
+        expect(latest.platforms["darwin-x86_64"]).toEqual({
+          url: "https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI-x86_64.app.tar.gz",
+          signature: signatureFor("mac-x64-updater"),
+        });
+        expect(latest.platforms["windows-x86_64"].signature).toBe(
+          signatureFor("HackerAI_0.0.57_x64-setup.nsis.zip"),
+        );
+      } finally {
+        rmSync(fixture.workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("rejects artifacts whose embedded filename version does not match", () => {
     const fixture = runPreparation({ artifactVersion: "0.0.0" });

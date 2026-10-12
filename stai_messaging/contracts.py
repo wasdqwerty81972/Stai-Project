@@ -8,6 +8,7 @@ adapters (Discord/Telegram/WhatsApp/SMS) are Phase 2.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Protocol, runtime_checkable
 
 
@@ -24,6 +25,11 @@ class InboundMessage:
     text: str
     thread_id: Optional[str] = None
     message_id: Optional[str] = None
+    account_id: str = "default"
+    destination_id: Optional[str] = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    reply_to_id: Optional[str] = None
+    attachments: tuple[dict, ...] = ()
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -64,4 +70,16 @@ class ChannelAdapter(Protocol):
         ...
 
     def send(self, reply: OutboundReply) -> None:
+        ...
+
+
+@runtime_checkable
+class AsyncChannelAdapter(Protocol):
+    """Async platform adapter used by the live gateway."""
+
+    @property
+    def channel_name(self) -> str:
+        ...
+
+    async def send_message(self, reply: OutboundReply) -> None:
         ...

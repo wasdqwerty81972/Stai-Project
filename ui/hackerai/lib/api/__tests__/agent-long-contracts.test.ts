@@ -97,10 +97,12 @@ const agentPartialSaveRouteSrc = fs.readFileSync(
   "utf8",
 );
 
-const chatComponentSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../../app/components/chat.tsx"),
-  "utf8",
-);
+const chatComponentSrc = fs
+  .readFileSync(
+    path.resolve(__dirname, "../../../app/components/chat.tsx"),
+    "utf8",
+  )
+  .replace(/\r\n/g, "\n");
 
 const chatItemSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../app/components/ChatItem.tsx"),
@@ -117,10 +119,12 @@ const convexMessagesSrc = fs.readFileSync(
   "utf8",
 );
 
-const taskSrc = fs.readFileSync(
-  path.resolve(__dirname, "../../../trigger/agent-long.ts"),
-  "utf8",
-);
+const taskSrc = fs
+  .readFileSync(
+    path.resolve(__dirname, "../../../trigger/agent-long.ts"),
+    "utf8",
+  )
+  .replace(/\r\n/g, "\n");
 
 const dbActionsSrc = fs.readFileSync(
   path.resolve(__dirname, "../../db/actions.ts"),

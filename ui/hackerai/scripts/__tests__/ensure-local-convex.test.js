@@ -14,7 +14,10 @@ const scriptPath = path.resolve("scripts/ensure-local-convex.mjs");
 function runInitializer({ selectResult = "success", createExitCode = 0 } = {}) {
   const tempDir = mkdtempSync(path.join(tmpdir(), "ensure-local-convex-"));
   const capturePath = path.join(tempDir, "commands.jsonl");
-  const fakePnpmPath = path.join(tempDir, "pnpm");
+  const fakePnpmPath = path.join(
+    tempDir,
+    process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+  );
 
   try {
     writeFileSync(
@@ -42,11 +45,18 @@ console.log("Created and selected local deployment.");
 process.exit(Number(process.env.CONVEX_CREATE_EXIT_CODE));
 `,
     );
-    writeFileSync(
-      fakePnpmPath,
-      `#!/bin/sh\nexec "${process.execPath}" "${path.join(tempDir, "fake-pnpm.mjs")}" "$@"\n`,
-    );
-    chmodSync(fakePnpmPath, 0o755);
+    if (process.platform === "win32") {
+      writeFileSync(
+        fakePnpmPath,
+        `@echo off\r\n"${process.execPath}" "${path.join(tempDir, "fake-pnpm.mjs")}" %*\r\n`,
+      );
+    } else {
+      writeFileSync(
+        fakePnpmPath,
+        `#!/bin/sh\nexec "${process.execPath}" "${path.join(tempDir, "fake-pnpm.mjs")}" "$@"\n`,
+      );
+      chmodSync(fakePnpmPath, 0o755);
+    }
 
     const result = spawnSync(process.execPath, [scriptPath], {
       cwd: tempDir,

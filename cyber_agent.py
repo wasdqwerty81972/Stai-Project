@@ -1709,6 +1709,96 @@ class CyberAgent:
             )
             return str(summary)
 
+        # An explicit URL assessment takes precedence over incidental local
+        # network wording in the same request (for example, "don't scan my
+        # network; assess https://target.example").
+        web_assessment_request = AgentRuntime._is_web_assessment_request(user_input)
+        if web_assessment_request:
+            if AgentRuntime._derive_web_assessment_scope(user_input) is None:
+                return (
+                    "I couldn't safely bind this web assessment to a valid HTTP(S) target. "
+                    "No request was sent. Provide a URL with a supported scheme, hostname, and port."
+                )
+            return self._run_ai_orchestrated_request(
+                user_input,
+                session_id=session_id,
+                conversation_history=conversation_history,
+            )
+
+        # A local network scan must execute a real discovery tool. Sending this
+        # request to ai_network_defense below only asks a text model to discuss
+        # the network; it does not provide any telemetry or run a scan.
+        network_scan_action = any(
+            word in lower for word in ("scan", "discover", "enumerate", "sweep", "map")
+        )
+        local_network_scope = any(
+            word in lower for word in ("network", "subnet", "lan", "local devices")
+        )
+        if network_scan_action and local_network_scope:
+            if "network_discover" not in self.registry.tools:
+                return (
+                    "Local network discovery is unavailable in this installation: "
+                    "the `network_discover` tool is not registered. No scan was performed."
+                )
+            self._publish_ui_event(
+                "agent_reasoning",
+                "I will discover responsive devices on this machine's active private IPv4 subnet using ICMP and ARP. This does not probe ports.",
+                "running",
+                tool="network_discover",
+            )
+            result = self.execute_tool("network_discover", {})
+            if not result.get("success"):
+                detail = result.get("error") or result.get("output") or "No diagnostic detail returned."
+                return f"Local network discovery failed. No scan results are available.\n\n{detail}"
+            try:
+                discovery = json.loads(result.get("output") or "{}")
+            except (TypeError, ValueError):
+                discovery = {}
+            if not isinstance(discovery, dict) or not discovery.get("success"):
+                detail = discovery.get("error") if isinstance(discovery, dict) else None
+                return f"Local network discovery failed. No scan results are available.\n\n{detail or result.get('output') or 'Invalid tool response.'}"
+
+            lines = [
+                "### Local network discovery",
+                f"- Scope: `{discovery.get('network', 'unknown')}`",
+                f"- Addresses observed: {discovery.get('addresses_observed', 0)} of {discovery.get('hosts_checked', 0)} addresses checked",
+                f"- ICMP responders: {discovery.get('icmp_responders', 0)}",
+                "- Port probing: not performed",
+                "",
+                "| Address | Link-layer address | Response |",
+                "|---|---|---|",
+            ]
+            for host in discovery.get("hosts", []):
+                response = "ICMP reply" if host.get("icmp_responded") else "ARP cache entry (online status unverified)"
+                lines.append(f"| `{host.get('ip', 'unknown')}` | `{host.get('mac') or 'unknown'}` | {response} |")
+            if not discovery.get("hosts"):
+                lines.append("| — | — | No addresses observed |")
+            lines.extend([
+                "",
+                str(discovery.get("limitations") or "Discovery can miss devices that do not answer ICMP or ARP."),
+            ])
+            return "\n".join(lines)
+
+        # Current web questions and browser-capability requests must enter the
+        # tool-aware agent loop. The legacy fallback below calls a role model
+        # directly, without the live tool manifest, and caused false claims
+        # that this deployment had no browser access.
+        browser_tools_available = bool({"web_search", "open_url"} & set(self.registry.tools))
+        browser_request = any(
+            term in lower
+            for term in ("web", "browser", "brows", "playwright", "online search", "search online")
+        )
+        current_info_request = (
+            any(term in lower for term in ("latest", "current", "newest", "release", "version"))
+            and any(term in lower for term in ("python", "software", "package", "model", "cve", "available"))
+        )
+        if browser_tools_available and (browser_request or current_info_request):
+            return self._run_ai_orchestrated_request(
+                user_input,
+                session_id=session_id,
+                conversation_history=conversation_history,
+            )
+
         # Use intent router if available
         try:
             from cyber_os.intent_router import IntentRouter

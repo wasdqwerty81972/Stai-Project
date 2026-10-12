@@ -99,6 +99,11 @@ class AgentEventBus:
         with self._lock:
             self._global_listeners.append(callback)
 
+    def unsubscribe_all(self, callback: Callable[[AgentEvent], None]):
+        """Remove a global subscriber, mainly for managed service shutdown."""
+        with self._lock:
+            self._global_listeners = [cb for cb in self._global_listeners if cb != callback]
+
     def publish(self, event: AgentEvent):
         scoped_session = getattr(self._session_context, "session_id", None)
         if scoped_session and (not event.session_id or event.session_id == "default"):

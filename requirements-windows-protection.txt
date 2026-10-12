@@ -1,0 +1,3 @@
+# Versions with Windows x64 wheels, checked against the official PyPI release files.
+cryptography==50.0.2
+yara-python==4.5.4

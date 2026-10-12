@@ -25,9 +25,20 @@ if (configuredBranch) {
   console.log("[trigger-dev] using default Trigger.dev branch");
 }
 
-const child = spawn("trigger", [...triggerArgs, ...process.argv.slice(2)], {
+const forwardedArgs = [...triggerArgs, ...process.argv.slice(2)];
+const isWindows = process.platform === "win32";
+const command = isWindows ? "cmd.exe" : "trigger";
+const commandArgs = isWindows
+  ? [
+      "/d",
+      "/s",
+      "/c",
+      `trigger ${forwardedArgs.map((argument) => `"${argument.replaceAll('"', '""')}"`).join(" ")}`,
+    ]
+  : forwardedArgs;
+
+const child = spawn(command, commandArgs, {
   stdio: "inherit",
-  shell: process.platform === "win32",
 });
 
 child.on("exit", (code, signal) => {

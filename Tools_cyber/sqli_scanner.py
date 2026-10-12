@@ -14,9 +14,23 @@ class SqliScannerTool(CyberToolPlugin):
         param = arguments.get("param", "id")
         if not url:
             return {"success": False, "output": {}, "error": "Missing 'url' argument."}
+        if not isinstance(param, str) or not param or len(param) > 64 or not all(
+            (char.isascii() and char.isalnum()) or char in "_.-" for char in param
+        ):
+            return {"success": False, "output": {}, "error": "Invalid query parameter name."}
         try:
-            true_resp = requests.get(url, params={param: "1 AND 1=1"}, timeout=10)
-            false_resp = requests.get(url, params={param: "1 AND 1=2"}, timeout=10)
+            true_resp = requests.get(
+                url,
+                params={param: "1 AND 1=1"},
+                timeout=10,
+                allow_redirects=False,
+            )
+            false_resp = requests.get(
+                url,
+                params={param: "1 AND 1=2"},
+                timeout=10,
+                allow_redirects=False,
+            )
             diff = abs(len(true_resp.text) - len(false_resp.text))
             return {
                 "success": True,

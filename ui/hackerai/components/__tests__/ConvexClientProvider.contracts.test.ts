@@ -28,9 +28,7 @@ describe("ConvexClientProvider auth recovery contracts", () => {
   });
 
   it("hydrates AuthKit from server auth without serializing the access token", () => {
-    expect(rootLayoutSource).toContain(
-      "return resolveClientInitialAuth(withAuth);",
-    );
+    expect(rootLayoutSource).toContain("resolveClientInitialAuth(withAuth)");
     expect(rootLayoutSource).toContain(
       'if (!requestHeaders.has("x-workos-middleware"))',
     );

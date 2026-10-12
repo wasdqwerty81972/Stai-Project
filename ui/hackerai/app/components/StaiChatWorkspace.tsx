@@ -47,6 +47,8 @@ import { SvsWorkspaceSidebar } from "./svs/SvsWorkspaceSidebar";
 import { SvsWorkspaceHeader } from "./svs/SvsWorkspaceHeader";
 import { SvsLandingState } from "./svs/SvsLandingState";
 import { SvsTranscript } from "./svs/SvsTranscript";
+import { SvsSensorStatus } from "./svs/SvsSensorStatus";
+import { CommunicationsSettings } from "./svs/CommunicationsSettings";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -629,6 +631,7 @@ function StaiChatWorkspaceContent({
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>("auto");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [communicationsOpen, setCommunicationsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const eventLogRef = useRef(new Map<string, StaiAgentEvent>());
   const loggedSessionRef = useRef(sessionId);
@@ -889,6 +892,7 @@ function StaiChatWorkspaceContent({
   const displayed = sortedEntries(entries);
 
   return (
+    <>
     <div className="flex h-full min-h-0 w-full overflow-hidden bg-background text-foreground">
       <SvsWorkspaceSidebar
         conversations={conversations}
@@ -910,7 +914,9 @@ function StaiChatWorkspaceContent({
           connection={landing ? "idle" : connection}
           running={isStreaming}
           onOpenNavigation={() => setSidebarCollapsed(false)}
+          onOpenSettings={() => setCommunicationsOpen(true)}
         />
+        <SvsSensorStatus />
 
         {/* Activity strip — HackerAI-style agent work header */}
         {activities.length > 0 && (
@@ -983,5 +989,7 @@ function StaiChatWorkspaceContent({
         />
       </main>
     </div>
+    <CommunicationsSettings open={communicationsOpen} onOpenChange={setCommunicationsOpen} />
+    </>
   );
 }

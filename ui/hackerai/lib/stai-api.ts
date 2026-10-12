@@ -43,6 +43,87 @@ export interface StaiCommand {
   argument_hint?: string;
 }
 
+export interface CommunicationsStatus {
+  settings: {
+    enabled: Record<string, boolean>;
+    notifications: { enabled: boolean; event_types: string[]; destinations: string[] };
+  };
+  platforms: Record<string, { account_id: string; status: string; error: string }>;
+}
+
+export interface SensorCapabilityStatus {
+  id: number;
+  registry_id?: number;
+  key: string;
+  name: string;
+  state: string;
+  source: string;
+  permissions?: string[];
+  error?: string | null;
+}
+
+export interface SensorRegistryEntry {
+  id: number;
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  layer: number;
+  kind: string;
+  platform_support: Record<string, string>;
+  host_support: string;
+  telemetry_source: string;
+  shared_collector_id: string;
+  required_permissions: string[];
+  event_schema: {
+    id: string;
+    required_fields: string[];
+    specific_fields: string[];
+    privacy: string;
+  };
+  collection_method: string;
+  operational_status: "implemented" | "partial" | "registered_only";
+  performance_cost: { class: string; measured: boolean };
+  test_refs: string[];
+  coverage_notes: string;
+  derived_from: string[];
+  phase1_requested_id?: number | null;
+  phase1_requested_name?: string | null;
+  runtime_state: string;
+  runtime_error?: string | null;
+}
+
+export interface SensorPendingApproval {
+  approval_id: string;
+  alert_id: string;
+  summary: string;
+  severity: string;
+  proposed_actions: string[];
+}
+
+export interface SensorRuntimeStatus {
+  running: boolean;
+  platform: string;
+  capabilities: SensorCapabilityStatus[];
+  registry_version?: string;
+  registry?: SensorRegistryEntry[];
+  queue: {
+    depth: number;
+    capacity: number;
+    dropped: number;
+    deduplicated: number;
+    backpressure?: number;
+  };
+  last_event_time?: string | null;
+  last_error?: string | null;
+  pending_approvals: SensorPendingApproval[];
+  privacy: {
+    collect_file_paths: boolean;
+    collect_dns_names: boolean;
+    collect_command_lines: boolean;
+  };
+}
+
 export function getBackendOrigin(): string {
   const envOrigin = process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim();
   if (envOrigin) {
@@ -141,6 +222,85 @@ export async function cancelStaiRun(
   }
 }
 
+export function getCommunicationsStatus() {
+  return request<CommunicationsStatus>("/api/communications/status");
+}
+
+export function setCommunicationsEnabled(enabled: Record<string, boolean>) {
+  return request<CommunicationsStatus["settings"]>("/api/communications/settings", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function setCommunicationsCredential(platform: string, token: string) {
+  return request<{ status: string; platform: string; account_id: string }>(
+    `/api/communications/credentials/${encodeURIComponent(platform)}/default`,
+    { method: "POST", body: JSON.stringify({ token }) },
+  );
+}
+
+export function deleteCommunicationsCredential(platform: string) {
+  return request<{ status: string }>(
+    `/api/communications/credentials/${encodeURIComponent(platform)}/default`,
+    { method: "DELETE" },
+  );
+}
+
+export function getCommunicationsPairingRequests() {
+  return request<Array<Record<string, string>>>("/api/communications/pairing-requests");
+}
+
+export function getCommunicationsPairings() {
+  return request<Array<{ key: string; channel: string; account_id: string; sender_id: string; role: string }>>(
+    "/api/communications/pairings",
+  );
+}
+
+export function approveCommunicationsPairing(requestId: string, role: string) {
+  return request<{ status: string; role: string }>(
+    `/api/communications/pairing-requests/${encodeURIComponent(requestId)}/approve`,
+    { method: "POST", body: JSON.stringify({ role }) },
+  );
+}
+
+export function revokeCommunicationsPairing(platform: string, accountId: string, senderId: string) {
+  return request<{ status: string }>(
+    `/api/communications/pairings/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/${encodeURIComponent(senderId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function setCommunicationsNotifications(value: {
+  enabled: boolean;
+  event_types: string[];
+  destinations: string[];
+}) {
+  return request<CommunicationsStatus["settings"]>("/api/communications/notifications", {
+    method: "PUT",
+    body: JSON.stringify(value),
+  });
+}
+
+export function sendCommunicationsTest(destination: string) {
+  return request<{ status: string }>("/api/communications/test", {
+    method: "POST",
+    body: JSON.stringify({ destination }),
+  });
+}
+
+export function disableAllCommunications() {
+  return request<CommunicationsStatus["settings"]>("/api/communications/disable", {
+    method: "POST",
+  });
+}
+
+export function getCommunicationsDeliveries() {
+  return request<Array<{ event_id: string; platform: string; event_type: string; status: string; timestamp: number }>>(
+    "/api/communications/deliveries",
+  );
+}
+
 export interface StaiEventStreamHandle {
   close(): void;
 }
@@ -213,4 +373,16 @@ export function openStaiEvents(
       }
     },
   };
+}
+
+export function getSensorRuntimeStatus(): Promise<SensorRuntimeStatus> {
+  return request<SensorRuntimeStatus>("/api/sensors/status");
+}
+
+export function startSensorMonitoring(): Promise<SensorRuntimeStatus> {
+  return request<SensorRuntimeStatus>("/api/sensors/start", { method: "POST" });
+}
+
+export function stopSensorMonitoring(): Promise<SensorRuntimeStatus> {
+  return request<SensorRuntimeStatus>("/api/sensors/stop", { method: "POST" });
 }

@@ -83,9 +83,12 @@ function uploadSourceMaps() {
     args.push("--build", build);
   }
 
-  const result = spawnSync("posthog-cli", args, {
+  const posthogCommand =
+    process.platform === "win32" ? "posthog-cli.cmd" : "posthog-cli";
+  const result = spawnSync(posthogCommand, args, {
     env: process.env,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
 
   if (result.error) {

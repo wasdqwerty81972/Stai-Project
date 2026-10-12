@@ -17,8 +17,11 @@ Features:
 
 from __future__ import annotations
 
+import ast
 import difflib
+import ipaddress
 import json
+import os
 import re
 import threading
 import time
@@ -26,6 +29,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from cyber_os.approval_engine import ApprovalEngine
 from cyber_os.assets import paths
@@ -49,6 +53,17 @@ STEP_STORE_CHARS = 8000
 
 DEFAULT_MAX_STEPS = 15
 DEFAULT_MAX_ELAPSED_SECONDS = 300.0
+
+WEB_ASSESSMENT_TOOL_ORDER = (
+    "open_url",
+    "web_security_headers",
+    "web_tech_fingerprint",
+    "xss_scanner",
+    "sqli_scanner",
+)
+WEB_ASSESSMENT_TOOLS = frozenset(WEB_ASSESSMENT_TOOL_ORDER)
+WEB_ASSESSMENT_XSS_PAYLOAD = "SVS_XSS_REFLECTION_PROBE"
+_SCOPED_BROWSER_ROUTE_LOCK = threading.RLock()
 
 # A model that has just been handed 160 tools, including shell_exec and
 # pty_run, and then answers "I don't have access to a live terminal" has
@@ -78,7 +93,8 @@ _AGENT_CAPABILITY_VOCAB = re.compile(
     r"\b(?:terminal|shell|command|powershell|bash|cmd|network|networks|"
     r"host|hosts|machine|machines|system|systems|local|port|ports|"
     r"socket|sockets|file|files|process|processes|registry|packet|packets|"
-    r"subnet|firewall|endpoint|device|devices|scan|scanner)\b",
+    r"subnet|firewall|endpoint|device|devices|scan|scanner|browser|browsing|"
+    r"web|website|websites|playwright)\b",
     re.IGNORECASE,
 )
 
@@ -94,6 +110,16 @@ class AgentRunResult:
     finish_reason: str = "complete"
     finish_message: str = ""
     duration_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class WebTargetScope:
+    """One user-supplied HTTP target, bound to scheme, host, and effective port."""
+
+    target_url: str
+    scheme: str
+    host: str
+    port: int
 
 
 @dataclass
@@ -119,6 +145,8 @@ class _RunState:
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     # tool name the model asked for -> how many times it was not registered
     rejected_tools: Dict[str, int] = field(default_factory=dict)
+    web_target_scope: Optional[WebTargetScope] = None
+    web_assessment_unavailable: List[str] = field(default_factory=list)
 
 
 class AgentRuntime:
@@ -187,7 +215,20 @@ class AgentRuntime:
             ),
             doom_loop_detector=DoomLoopDetector(),
             conversation_history=list(conversation_history or []),
+            web_target_scope=self._derive_web_assessment_scope(user_input),
         )
+
+        if state.web_target_scope is not None:
+            registered = set(self._registered_tool_names())
+            state.web_assessment_unavailable = [
+                name for name in WEB_ASSESSMENT_TOOL_ORDER if name not in registered
+            ]
+            if state.web_assessment_unavailable:
+                state.notices.append(
+                    "Scoped web assessment checks unavailable in this installation: "
+                    + ", ".join(state.web_assessment_unavailable)
+                    + "."
+                )
 
         with self._lock:
             self._active_runs[inv_id] = state
@@ -202,14 +243,39 @@ class AgentRuntime:
         notes = self.agent.notes_manager.list_notes() if hasattr(self.agent, "notes_manager") else []
         system_prompt = SystemPromptComposer.build_system_prompt(
             custom_instructions=custom_instructions,
+            include_subagents=state.web_target_scope is None,
+            include_tools=state.web_target_scope is None,
             workspace_path=getattr(self.agent, "workspace_path", "."),
             active_tasks=tasks,
             active_notes=notes,
             available_tools=[
                 tool.to_manifest()
                 for tool in getattr(self.agent.registry, "tools", {}).values()
+                if (
+                    state.web_target_scope is None
+                    or str(getattr(tool, "name", "")) in WEB_ASSESSMENT_TOOLS
+                )
             ],
         )
+        if state.web_target_scope is not None:
+            scoped_manifests = [
+                tool.to_manifest()
+                for tool in getattr(self.agent.registry, "tools", {}).values()
+                if str(getattr(tool, "name", "")) in WEB_ASSESSMENT_TOOLS
+            ]
+            system_prompt += (
+                "\n\n<available_tools>\n"
+                + json.dumps(scoped_manifests, indent=2, default=str)
+                + "\n</available_tools>"
+                + "\n\n<scoped_web_assessment>\n"
+                f"The user supplied the sole assessment target: {state.web_target_scope.target_url}\n"
+                "This run is restricted to this exact scheme, host, and port. Authorized tools are limited "
+                "to open_url, web_security_headers, web_tech_fingerprint, xss_scanner, and sqli_scanner "
+                "when registered. Do not use local system/network tools, shell commands, or subagents. "
+                "Keep every request on the supplied host and port. XSS reflection is only a candidate "
+                "observation; it does not prove executable XSS. Report tool failures and unavailable checks.\n"
+                "</scoped_web_assessment>"
+            )
 
         # 2. Publish lifecycle events
         event_bus.publish(
@@ -261,6 +327,8 @@ class AgentRuntime:
                     conversation_context=conversation_context,
                     step_index=step_idx,
                 )
+                if state.web_target_scope is not None:
+                    step_decision = self._enforce_web_assessment_decision(state, step_decision)
 
                 action_type = step_decision.get("action_type")  # 'tool', 'subagent', 'final_answer'
 
@@ -276,6 +344,16 @@ class AgentRuntime:
                             system_prompt=system_prompt,
                             conversation_context=conversation_context,
                             findings=state.findings,
+                        )
+                    if state.web_target_scope is not None:
+                        final_response = self._constrain_web_assessment_report(
+                            state, final_response
+                        )
+                        final_response = self._append_web_assessment_tool_outcomes(
+                            state, final_response
+                        )
+                        final_response = self._append_web_assessment_pdf_report(
+                            state, final_response
                         )
                     self.publish_activity(session_id, inv_id, "Synthesizing final answer...", "running")
                     state.stop_conditions.record_step(tokens_used=estimate_tokens(final_response))
@@ -360,6 +438,23 @@ class AgentRuntime:
                     tool_args = step_decision.get("arguments", {})
                     brief = step_decision.get("brief", f"Executing {tool_name}")
 
+                    if state.web_target_scope is not None:
+                        scoped_args = self._validate_web_assessment_tool_call(
+                            state, tool_name, tool_args
+                        )
+                        if scoped_args is None:
+                            state.notices.append(
+                                f"The runtime blocked out-of-scope tool action '{tool_name}'. No request was sent."
+                            )
+                            final_response = self._synthesize_final_report(
+                                user_input=user_input,
+                                system_prompt=system_prompt,
+                                conversation_context=self._render_context(state),
+                                findings=state.findings,
+                            )
+                            break
+                        tool_args = scoped_args
+
                     # Check for cancellation before executing
                     if is_cancelled():
                         final_response = self._mark_cancelled(state)
@@ -401,10 +496,19 @@ class AgentRuntime:
                     self.publish_activity(session_id, inv_id, brief or f"Decided to use {tool_name}", "running")
 
                     # Execute tool via CyberAgent (which publishes tool_started/completed/failed/cancelled events)
-                    exec_result = self.agent.execute_tool(tool_name, tool_args)
+                    exec_result = self._execute_scoped_tool(
+                        state, tool_name, tool_args
+                    )
                     tool_success = exec_result.get("success", False)
                     error = exec_result.get("error")
                     raw_out = str(exec_result.get("output") or error or "")
+
+                    if state.web_target_scope is not None and not tool_success:
+                        state.web_assessment_unavailable.append(tool_name)
+                        state.notices.append(
+                            f"Scoped check '{tool_name}' failed and is unavailable for this run: "
+                            f"{str(error or raw_out or 'no diagnostic detail')[:240]}"
+                        )
 
                     screenshot_path = self._capture_browser_screenshot(tool_name, tool_success, step_idx)
 
@@ -508,6 +612,17 @@ class AgentRuntime:
                     findings=state.findings,
                 )
 
+        if state.web_target_scope is not None and not response_published:
+            final_response = self._constrain_web_assessment_report(
+                state, final_response
+            )
+            final_response = self._append_web_assessment_tool_outcomes(
+                state, final_response
+            )
+            final_response = self._append_web_assessment_pdf_report(
+                state, final_response
+            )
+
         duration = time.time() - start_time
         finish_reason_val = (
             state.stop_conditions.finish_reason.value
@@ -566,6 +681,474 @@ class AgentRuntime:
         )
 
     # --- Loop helpers ---------------------------------------------------
+
+    @staticmethod
+    def _is_web_assessment_request(user_input: str) -> bool:
+        """Recognize explicit URL assessments, including standalone target links."""
+        text = str(user_input or "").strip()
+        url_matches = re.findall(r"https?://[^\s<>\"']+", text, flags=re.IGNORECASE)
+        if not url_matches:
+            return False
+        standalone = text.strip("`<> ")
+        if re.fullmatch(r"https?://[^\s<>\"']+", standalone, flags=re.IGNORECASE):
+            return True
+        has_assessment_action = bool(
+            re.search(r"\b(?:assess|audit|check|evaluate|pentest|probe|scan|test)\b", text, re.IGNORECASE)
+        )
+        has_security_context = bool(
+            re.search(
+                r"\b(?:cybersecurity|security|vulnerabil\w*|web|website|application|app|xss|csrf|sqli)\b|"
+                r"sql\s+injection",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        # In the cybersecurity chat, "assess https://..." is itself an
+        # assessment request even when the user omits the word "security".
+        # This also lets an assessment clause win over unrelated/negated local
+        # network wording elsewhere in the same message.
+        explicit_assessment_verb = bool(
+            re.search(r"\b(?:assess|audit|pentest)\b", text, re.IGNORECASE)
+        )
+        return has_assessment_action and (has_security_context or explicit_assessment_verb)
+
+    @staticmethod
+    def _canonical_web_authority(parsed: Any) -> Optional[tuple[str, int, str]]:
+        """Return one unambiguous HTTP authority or reject parser differentials."""
+        scheme = parsed.scheme.lower()
+        authority = parsed.netloc
+        if scheme not in {"http", "https"} or not authority:
+            return None
+        # Backslashes, escaped host bytes, whitespace and controls are treated
+        # differently by URL parsers (notably urllib and browser/HTTP clients).
+        if any(char == "\\" or char.isspace() or ord(char) < 0x20 for char in authority):
+            return None
+        if authority.endswith(":"):
+            return None
+        if "%" in authority or parsed.username is not None or parsed.password is not None:
+            return None
+        hostname = parsed.hostname
+        if not hostname or hostname.endswith("."):
+            return None
+        try:
+            parsed_port = parsed.port
+        except ValueError:
+            return None
+        port = parsed_port if parsed_port is not None else (443 if scheme == "https" else 80)
+        if not 1 <= port <= 65535:
+            return None
+
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            # Reject nonstandard numeric IPv4 forms (for example 127.1), which
+            # browsers may interpret differently from Python's URL parser.
+            final_label = hostname.rsplit(".", 1)[-1]
+            if re.fullmatch(r"(?:0[xX][0-9a-fA-F]*|[0-9]+)", final_label):
+                return None
+            try:
+                host = hostname.encode("idna").decode("ascii").lower()
+            except UnicodeError:
+                return None
+            labels = host.split(".")
+            if (
+                len(host) > 253
+                or any(
+                    not label
+                    or len(label) > 63
+                    or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+                    for label in labels
+                )
+            ):
+                return None
+            authority_host = host
+        else:
+            host = address.compressed.lower()
+            authority_host = f"[{host}]" if address.version == 6 else host
+
+        default_port = 443 if scheme == "https" else 80
+        canonical_authority = authority_host
+        if port != default_port:
+            canonical_authority = f"{canonical_authority}:{port}"
+        return host, port, canonical_authority
+
+    @staticmethod
+    def _derive_web_assessment_scope(user_input: str) -> Optional[WebTargetScope]:
+        """Bind an explicit URL assessment, or a standalone target link, to one origin.
+
+        Conversation history is deliberately excluded: prior local network work
+        must not expand the authority granted by this request.
+        """
+        text = str(user_input or "").strip()
+        url_matches = re.findall(r"https?://[^\s<>\"']+", text, flags=re.IGNORECASE)
+        if not url_matches or not AgentRuntime._is_web_assessment_request(text):
+            return None
+
+        raw_url = url_matches[0].rstrip(".,;:!?)]}")
+        try:
+            parsed = urlsplit(raw_url)
+            scheme = parsed.scheme.lower()
+            canonical = AgentRuntime._canonical_web_authority(parsed)
+            if canonical is None:
+                return None
+            host, port, authority = canonical
+            path = parsed.path or "/"
+            target_url = urlunsplit((scheme, authority, path, parsed.query, ""))
+        except ValueError:
+            return None
+        return WebTargetScope(
+            target_url=target_url,
+            scheme=scheme,
+            host=host,
+            port=port,
+        )
+
+    @staticmethod
+    def _url_matches_web_scope(url: Any, scope: WebTargetScope) -> bool:
+        if not isinstance(url, str) or not url.strip():
+            return False
+        try:
+            parsed = urlsplit(url.strip())
+            scheme = parsed.scheme.lower()
+            canonical = AgentRuntime._canonical_web_authority(parsed)
+            if canonical is None:
+                return False
+            host, port, _authority = canonical
+            return scheme == scope.scheme and host == scope.host and port == scope.port
+        except ValueError:
+            return False
+
+    def _web_assessment_tool_names(self, state: _RunState) -> List[str]:
+        registered = set(self._registered_tool_names())
+        return [name for name in WEB_ASSESSMENT_TOOL_ORDER if name in registered]
+
+    def _next_web_assessment_action(self, state: _RunState) -> Dict[str, Any]:
+        """Return the next registered, not-yet-run check for this target."""
+        completed = {step.get("tool") for step in state.steps_record if step.get("tool")}
+        available = self._web_assessment_tool_names(state)
+        for name in WEB_ASSESSMENT_TOOL_ORDER:
+            if name not in available or name in completed:
+                continue
+            args: Dict[str, Any] = {"url": state.web_target_scope.target_url}
+            if name == "xss_scanner":
+                args.update({
+                    "method": "GET",
+                    "param": "q",
+                    "payload": WEB_ASSESSMENT_XSS_PAYLOAD,
+                })
+            elif name == "sqli_scanner":
+                args["param"] = "id"
+            return {
+                "action_type": "tool",
+                "tool_name": name,
+                "arguments": args,
+                "brief": f"Running the scoped {name} check against {state.web_target_scope.target_url}",
+                "reason": "Continue the bounded web assessment for the user-specified target",
+            }
+
+        if not available:
+            missing = ", ".join(WEB_ASSESSMENT_TOOL_ORDER)
+            return {
+                "action_type": "final_answer",
+                "response": (
+                    "No scoped web assessment tools are registered in this installation. "
+                    f"No request was sent to {state.web_target_scope.target_url}. "
+                    f"Unavailable checks: {missing}."
+                ),
+                "reason": "No in-scope assessment tools are available",
+            }
+        return {
+            "action_type": "final_answer",
+            "response": "",
+            "reason": "All registered scoped web assessment checks have run",
+        }
+
+    def _validate_web_assessment_tool_call(
+        self, state: _RunState, tool_name: str, arguments: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and minimize one tool call at the execution boundary."""
+        scope = state.web_target_scope
+        if scope is None:
+            return dict(arguments) if isinstance(arguments, dict) else {}
+        if tool_name not in WEB_ASSESSMENT_TOOLS or tool_name not in self._registered_tool_names():
+            return None
+        completed = {step.get("tool") for step in state.steps_record if step.get("tool")}
+        if tool_name in completed or not isinstance(arguments, dict):
+            return None
+
+        requested_url = arguments.get("url", scope.target_url)
+        if not self._url_matches_web_scope(requested_url, scope):
+            return None
+
+        # Pass only fields consumed by these tools. All URL-capable calls are
+        # rebound to the canonical request URL after the supplied authority is
+        # checked, preventing model-chosen hosts or ports from being contacted.
+        safe_args: Dict[str, Any] = {"url": scope.target_url}
+        if tool_name == "xss_scanner":
+            param = arguments.get("param", "q")
+            if not isinstance(param, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", param):
+                param = "q"
+            safe_args.update({
+                "method": "GET",
+                "param": param,
+                "payload": WEB_ASSESSMENT_XSS_PAYLOAD,
+            })
+        elif tool_name == "sqli_scanner":
+            param = arguments.get("param", "id")
+            if not isinstance(param, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", param):
+                param = "id"
+            safe_args["param"] = param
+        return safe_args
+
+    def _enforce_web_assessment_decision(
+        self, state: _RunState, decision: Any
+    ) -> Dict[str, Any]:
+        """Keep model, recovery, pending, and heuristic choices inside target scope."""
+        if state.web_target_scope is None:
+            return decision if isinstance(decision, dict) else {"action_type": "final_answer", "response": ""}
+
+        if isinstance(decision, dict) and decision.get("action_type") == "tool":
+            tool_name = str(decision.get("tool_name") or "")
+            safe_args = self._validate_web_assessment_tool_call(
+                state, tool_name, decision.get("arguments", {})
+            )
+            if safe_args is not None:
+                return {**decision, "arguments": safe_args}
+            state.notices.append(
+                f"Blocked out-of-scope, repeated, or malformed tool action '{tool_name}'; "
+                "continuing with the scoped assessment plan."
+            )
+            return self._next_web_assessment_action(state)
+
+        if isinstance(decision, dict) and decision.get("action_type") == "final_answer":
+            next_action = self._next_web_assessment_action(state)
+            if next_action.get("action_type") == "tool":
+                state.notices.append(
+                    "The assessment cannot conclude until each registered scoped check has run; "
+                    "continuing with the next check."
+                )
+                return next_action
+            if next_action.get("response"):
+                return next_action
+            return decision
+
+        # Delegation and all non-tool actions are disabled for URL-scoped runs.
+        state.notices.append(
+            "Blocked a non-tool or delegated action in the URL-scoped assessment; "
+            "continuing with the bounded local assessment tools."
+        )
+        return self._next_web_assessment_action(state)
+
+    @staticmethod
+    def _append_web_assessment_tool_outcomes(state: _RunState, response: str) -> str:
+        """Report the runtime's tool statuses instead of trusting model wording."""
+        steps_by_tool = {
+            step.get("tool"): step
+            for step in state.steps_record
+            if step.get("tool") in WEB_ASSESSMENT_TOOL_ORDER
+        }
+        unavailable = set(state.web_assessment_unavailable)
+        outcomes = []
+        for name in WEB_ASSESSMENT_TOOL_ORDER:
+            step = steps_by_tool.get(name)
+            if step is not None:
+                status = "completed" if step.get("success") else "failed"
+            elif name in unavailable:
+                status = "unavailable"
+            else:
+                status = "not run"
+            outcomes.append(f"- `{name}`: {status}")
+        return (response or "Assessment completed with limitations.") + (
+            "\n\n**Scoped tool outcomes:**\n" + "\n".join(outcomes)
+        )
+
+    def _append_web_assessment_pdf_report(
+        self, state: _RunState, response: str
+    ) -> str:
+        """Create a downloadable PDF from the exact evidence recorded this run."""
+        if state.web_target_scope is None:
+            return response
+        try:
+            from cyber_os.web_assessment_report import write_web_assessment_pdf
+
+            artifact = write_web_assessment_pdf(
+                state.web_target_scope.target_url,
+                state.steps_record,
+            )
+            report_id = artifact.get("report_id") if artifact.get("success") is True else None
+            if not isinstance(report_id, str) or not re.fullmatch(r"[0-9a-f]{32}", report_id):
+                raise RuntimeError("the PDF writer returned no valid report identifier")
+
+            configured_origin = os.environ.get(
+                "NEXT_PUBLIC_BACKEND_ORIGIN", "http://127.0.0.1:6764"
+            )
+            try:
+                configured = urlsplit(configured_origin)
+                port = configured.port or 6764
+            except (TypeError, ValueError):
+                port = 6764
+            # Chat lives on this desktop and the download endpoint is
+            # deliberately loopback-only, regardless of the server bind host.
+            report_url = (
+                f"http://127.0.0.1:{port}/api/reports/web-assessments/{report_id}.pdf"
+            )
+            return response + f"\n\n[Download detailed PDF report]({report_url})"
+        except Exception as exc:
+            return response + (
+                "\n\nPDF report could not be generated. "
+                f"The assessment response is still available ({type(exc).__name__})."
+            )
+
+    def _constrain_web_assessment_report(
+        self, state: _RunState, response: str
+    ) -> str:
+        """Remove unsupported scanner claims and append deterministic evidence scope."""
+        scanner_terms = re.compile(
+            r"\b(?:xss|cross[- ]site scripting|sqli|sql injection|csrf|cross[- ]site request forgery|"
+            r"vulnerabil\w*|exploit\w*|confirm\w*)\b",
+            re.IGNORECASE,
+        )
+        tool_names = re.compile(
+            r"\b(?:" + "|".join(re.escape(name) for name in WEB_ASSESSMENT_TOOL_ORDER) + r")\b",
+            re.IGNORECASE,
+        )
+        raw_paragraphs = [
+            paragraph.strip()
+            for paragraph in re.split(r"\n\s*\n", str(response or ""))
+            if paragraph.strip()
+        ]
+        safe_paragraphs = [
+            paragraph
+            for paragraph in raw_paragraphs
+            if not scanner_terms.search(paragraph)
+            and (not tool_names.search(paragraph) or "No request was sent" in paragraph)
+        ]
+        if not safe_paragraphs:
+            safe_paragraphs = ["Scoped web assessment results are limited to the tool evidence below."]
+
+        by_tool = {
+            step.get("tool"): step
+            for step in state.steps_record
+            if step.get("tool") in {"xss_scanner", "sqli_scanner"}
+        }
+        xss_step = by_tool.get("xss_scanner")
+        sqli_step = by_tool.get("sqli_scanner")
+        xss_output = self._parse_tool_output(xss_step.get("output")) if xss_step else {}
+        sqli_output = self._parse_tool_output(sqli_step.get("output")) if sqli_step else {}
+
+        if not xss_step or not xss_step.get("success"):
+            xss_summary = "XSS probe was unavailable or did not complete."
+        elif xss_output.get("reflected") is True:
+            xss_summary = (
+                "The harmless XSS marker was reflected; this is only a candidate observation, "
+                "not proof of executable XSS."
+            )
+        elif xss_output.get("reflected") is False:
+            xss_summary = "The harmless XSS marker was not reflected in the tested response."
+        else:
+            xss_summary = "The XSS probe returned no interpretable reflection evidence."
+
+        if not sqli_step or not sqli_step.get("success"):
+            sqli_summary = "SQL injection probe was unavailable or did not complete."
+        elif sqli_output.get("possible_sqli") is True:
+            sqli_summary = (
+                "The boolean SQL injection probe produced a possible response-length signal; "
+                "manual validation is required and exploitability is not confirmed."
+            )
+        elif sqli_output.get("possible_sqli") is False:
+            sqli_summary = "The boolean SQL injection probe did not flag a response-length signal."
+        else:
+            sqli_summary = "The SQL injection probe returned no interpretable signal."
+
+        completed = [
+            step.get("tool")
+            for step in state.steps_record
+            if step.get("tool") and step.get("success")
+        ]
+        coverage = ", ".join(completed) if completed else "no checks completed"
+        safe_paragraphs.append(
+            "**Evidence and coverage limits**\n"
+            f"- Checks completed: {coverage}.\n"
+            f"- {xss_summary}\n"
+            "- A harmless XSS reflection marker does not prove executable XSS.\n"
+            f"- {sqli_summary}\n"
+            "- No CSRF-specific check was available.\n"
+            "- These bounded probes do not establish the absence of other vulnerabilities."
+        )
+        return "\n\n".join(safe_paragraphs)
+
+    @staticmethod
+    def _parse_tool_output(output: Any) -> Dict[str, Any]:
+        def parse_dict(value: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str):
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(value)
+                    except (ValueError, SyntaxError, TypeError):
+                        continue
+                    if isinstance(parsed, dict):
+                        return parsed
+            return None
+
+        parsed = parse_dict(output)
+        if parsed is None:
+            return {}
+
+        # CyberAgent serializes the plugin result envelope into the runtime's
+        # `output` string. Unwrap its structured payload so evidence checks see
+        # the plugin fields (for example, `reflected` and `possible_sqli`).
+        for _ in range(3):
+            nested = parsed.get("output")
+            nested_dict = parse_dict(nested)
+            if nested_dict is None or nested_dict is parsed:
+                break
+            parsed = nested_dict
+        return parsed
+
+    def _execute_scoped_tool(
+        self, state: _RunState, tool_name: str, arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Run an approved tool, blocking cross-origin browser redirects/resources."""
+        if state.web_target_scope is None or tool_name != "open_url":
+            return self.agent.execute_tool(tool_name, arguments)
+
+        scope = state.web_target_scope
+        try:
+            from Tools_cyber.browser_manager import BrowserManager
+
+            with _SCOPED_BROWSER_ROUTE_LOCK:
+                manager = BrowserManager.get_instance()
+                context = getattr(manager, "context", None)
+                if context is None or not hasattr(context, "route"):
+                    raise RuntimeError("the browser context cannot enforce target scope")
+                blocked: List[str] = []
+
+                def route_within_scope(route: Any) -> None:
+                    url = getattr(getattr(route, "request", None), "url", "")
+                    if self._url_matches_web_scope(url, scope):
+                        route.continue_()
+                    else:
+                        blocked.append(str(url))
+                        route.abort()
+
+                context.route("**/*", route_within_scope)
+                try:
+                    result = self.agent.execute_tool(tool_name, arguments)
+                finally:
+                    context.unroute("**/*", route_within_scope)
+                if blocked:
+                    state.notices.append(
+                        f"Blocked {len(blocked)} browser request(s) outside the assessment host and port."
+                    )
+                return result
+        except Exception as exc:
+            return {
+                "success": False,
+                "output": "",
+                "error": f"Scoped browser guard could not be enforced; navigation was not started: {exc}",
+            }
 
     def _mark_cancelled(self, state: _RunState) -> str:
         """Record and announce a cancellation.
@@ -701,10 +1284,13 @@ class AgentRuntime:
             )
         )
 
-    def _registered_tool_names(self) -> List[str]:
+    def _registered_tool_names(self, state: Optional[_RunState] = None) -> List[str]:
         """Names the agent will actually accept in ``execute_tool``."""
         try:
-            return sorted(getattr(self.agent.registry, "tools", {}).keys())
+            names = set(getattr(self.agent.registry, "tools", {}).keys())
+            if state is not None and state.web_target_scope is not None:
+                names &= WEB_ASSESSMENT_TOOLS
+            return sorted(names)
         except Exception as exc:
             print(f"[AgentRuntime] Failed to read tool registry: {exc}")
             return []
@@ -764,7 +1350,22 @@ class AgentRuntime:
         step_index: int,
     ) -> Dict[str, Any]:
         """Uses the model to decide the next action."""
-        tool_names = self._registered_tool_names()
+        tool_names = self._registered_tool_names(state)
+        if state.web_target_scope is not None:
+            considerations = (
+                f"This is a URL-scoped web assessment of {state.web_target_scope.target_url}. "
+                "Use only the listed in-scope assessment tools. Do not use local system tools, "
+                "web search, or subagents. Every registered assessment check must run before finalizing."
+            )
+        else:
+            considerations = (
+                "Consider:\n"
+                "- What tools have already been executed and their results\n"
+                "- Whether the user's objective requires web research (use web_search, open_url)\n"
+                "- Whether it requires local system investigation (network_inspect, shell_exec, etc.)\n"
+                "- Whether findings need to be recorded (notes, todo_write)\n"
+                "- Whether a specialist subagent is needed"
+            )
 
         # ``conversation_context`` already carries every prior step, rendered
         # from the pruned record, so no second step summary is appended here.
@@ -780,12 +1381,7 @@ User objective: {state.user_input}
 Based on the conversation history and available tools, decide the next action.
 Use only a tool name from the list above — any other name will be rejected.
 
-Consider:
-- What tools have already been executed and their results
-- Whether the user's objective requires web research (use web_search, open_url)
-- Whether it requires local system investigation (network_inspect, shell_exec, etc.)
-- Whether findings need to be recorded (notes, todo_write)
-- Whether a specialist subagent is needed
+{considerations}
 
 Respond with ONLY a JSON object:
 {{
@@ -881,13 +1477,16 @@ If the investigation is complete and you can provide a final answer:
         if not _AGENT_CAPABILITY_VOCAB.search(claimed_absent):
             # A real limitation of this deployment, not a misreport.
             return None
+        if re.search(r"\b(browser|browsing|web|website|websites|playwright)\b", claimed_absent, re.IGNORECASE):
+            tools = getattr(getattr(self.agent, "registry", None), "tools", {})
+            if not ({"web_search", "open_url"} & set(tools)):
+                return None
         return {
             "matched": f"{denial.group(0).strip()}",
             "notice": (
-                f"A final answer denying access to {claimed_absent!r} was "
-                "discarded: read-only local and network tools are available in "
-                "this deployment. Act on the objective with a tool instead of "
-                "declining it."
+                f"A final answer denying access to {claimed_absent!r} was discarded "
+                "because this deployment has a matching tool available. Use the "
+                "available tool instead of declining the request."
             ),
         }
 
@@ -941,6 +1540,35 @@ If the investigation is complete and you can provide a final answer:
         lower = user_input.lower()
         executed_tools = {s.get("tool") for s in state.steps_record if "tool" in s}
 
+        if state.web_target_scope is not None:
+            return self._next_web_assessment_action(state)
+
+        # Answer browser-capability questions from the actual registry instead
+        # of letting a model improvise about MCP configuration. The app's
+        # Playwright tools are local integrations, not an MCP server.
+        browser_capability_question = (
+            any(word in lower for word in ("browser", "playwright", "web search", "web tools"))
+            and any(word in lower for word in ("access", "available", "configured", "do you have", "can you", "mcp"))
+        )
+        if browser_capability_question:
+            registered = set(getattr(getattr(self.agent, "registry", None), "tools", {}))
+            browser_tools = sorted({"web_search", "open_url"} & registered)
+            if browser_tools:
+                return {
+                    "action_type": "final_answer",
+                    "response": (
+                        "Yes. This deployment has built-in Playwright browser tools: "
+                        f"{', '.join(browser_tools)}. It does not have a separate "
+                        "Playwright MCP server configured."
+                    ),
+                    "reason": "Reported browser capabilities from the registered tool catalog",
+                }
+            return {
+                "action_type": "final_answer",
+                "response": "No browser tools are registered in this deployment, so I cannot browse from this agent.",
+                "reason": "Reported browser capabilities from the registered tool catalog",
+            }
+
         # Web research triggers
         if any(w in lower for w in ("search", "research", "look up", "find", "browse", "web", "documentation", "docs", "latest", "version")):
             if "web_search" not in executed_tools:
@@ -962,6 +1590,28 @@ If the investigation is complete and you can provide a final answer:
                         "arguments": {"url": url},
                         "brief": f"Opening {url} for detailed information",
                     }
+
+        # Local subnet discovery is a distinct operation from inspecting this
+        # host's sockets. Prefer the dedicated bounded tool when the request
+        # explicitly asks to scan or discover devices on the local network.
+        network_scan_action = any(
+            word in lower for word in ("scan", "discover", "enumerate", "sweep", "map")
+        )
+        local_network_scope = any(
+            word in lower for word in ("network", "subnet", "lan", "local devices")
+        )
+        if (
+            network_scan_action
+            and local_network_scope
+            and "network_discover" in self._registered_tool_names()
+            and "network_discover" not in executed_tools
+        ):
+            return {
+                "action_type": "tool",
+                "tool_name": "network_discover",
+                "arguments": {},
+                "brief": "Discovering responsive devices on the active private local subnet",
+            }
 
         # Network investigation
         if any(w in lower for w in ("network", "port", "connection", "listening")) and "network_inspect" not in executed_tools:
@@ -1031,7 +1681,7 @@ Failed tool: {failed_tool}
 Failed arguments: {json.dumps(failed_args)}
 Error/output: {str(failed_output)[:500]}
 
-Available tools: {json.dumps(self._registered_tool_names())}
+Available tools: {json.dumps(self._registered_tool_names(state))}
 
 Suggest an alternative tool or approach. Return JSON:
 {{

@@ -19,13 +19,20 @@ describe("trigger-dev-branch", () => {
     try {
       writeFileSync(
         path.join(tempDir, "capture-trigger.mjs"),
-        `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.TRIGGER_ARGS_CAPTURE, JSON.stringify(process.argv.slice(2)));\n`,
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.TRIGGER_ARGS_CAPTURE, JSON.stringify(process.argv.slice(2).map((argument) => argument.replace(/^"|"$/g, ""))));\n`,
       );
       writeFileSync(
-        path.join(tempDir, "trigger"),
-        `#!/bin/sh\nexec "${process.execPath}" "${path.join(tempDir, "capture-trigger.mjs")}" "$@"\n`,
+        path.join(
+          tempDir,
+          process.platform === "win32" ? "trigger.cmd" : "trigger",
+        ),
+        process.platform === "win32"
+          ? `@echo off\r\n"${process.execPath}" "${path.join(tempDir, "capture-trigger.mjs")}" %*\r\n`
+          : `#!/bin/sh\nexec "${process.execPath}" "${path.join(tempDir, "capture-trigger.mjs")}" "$@"\n`,
       );
-      chmodSync(path.join(tempDir, "trigger"), 0o755);
+      if (process.platform !== "win32") {
+        chmodSync(path.join(tempDir, "trigger"), 0o755);
+      }
 
       const result = spawnSync(
         process.execPath,
@@ -35,7 +42,7 @@ describe("trigger-dev-branch", () => {
           encoding: "utf8",
           env: {
             ...process.env,
-            PATH: `${tempDir}:${process.env.PATH}`,
+            PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
             TRIGGER_ARGS_CAPTURE: capturePath,
             TRIGGER_DEV_BRANCH: undefined,
             ...environment,

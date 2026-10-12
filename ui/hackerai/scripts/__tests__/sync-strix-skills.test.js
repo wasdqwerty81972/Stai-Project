@@ -6,6 +6,7 @@ const {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
@@ -67,13 +68,6 @@ function createFixture({ changeSkill = false } = {}) {
     path.join(repositoryRoot, "third_party/strix-skills/LICENSE"),
     path.join(upstreamRoot, "LICENSE"),
   );
-  if (changeSkill) {
-    appendFileSync(
-      path.join(upstreamRoot, "strix/skills/vulnerabilities/xss.md"),
-      "\n\nRegression material-change marker.\n",
-    );
-  }
-
   run("git", ["init", "-q"], upstreamRoot);
   run("git", ["config", "user.name", "Regression Test"], upstreamRoot);
   run(
@@ -83,6 +77,36 @@ function createFixture({ changeSkill = false } = {}) {
   );
   run("git", ["add", "."], upstreamRoot);
   run("git", ["commit", "-qm", "upstream fixture"], upstreamRoot);
+
+  run(
+    process.execPath,
+    ["scripts/sync-strix-skills.mjs", "--source", upstreamRoot],
+    projectRoot,
+  );
+
+  // Keep the imported snapshot internally consistent while representing an
+  // earlier upstream commit, so the first idempotence check sees no content
+  // changes even when this repository's generated files are stale.
+  const previousCommit = "0000000000000000000000000000000000000000";
+  for (const filename of [
+    "third_party/strix-skills/UPSTREAM.json",
+    "lib/ai/subagents/skills/strix-skill-catalog.generated.json",
+    "lib/ai/subagents/skills/strix-skill-content.generated.json",
+  ]) {
+    const artifactPath = path.join(projectRoot, filename);
+    const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
+    artifact.sourceCommit = previousCommit;
+    writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
+  }
+
+  if (changeSkill) {
+    appendFileSync(
+      path.join(upstreamRoot, "strix/skills/vulnerabilities/xss.md"),
+      "\n\nRegression material-change marker.\n",
+    );
+    run("git", ["add", "."], upstreamRoot);
+    run("git", ["commit", "-qm", "material skill change"], upstreamRoot);
+  }
 
   return {
     projectRoot,

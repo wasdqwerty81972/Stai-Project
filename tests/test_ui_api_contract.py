@@ -185,6 +185,45 @@ def test_gemini_model_catalog_and_selected_model_are_available(monkeypatch, isol
     assert received == [("Question", "alpha", "gemini-3.1-pro-preview")]
 
 
+def test_sensor_status_and_lifecycle_routes_use_the_managed_cyberos_service(monkeypatch):
+    status = {
+        "running": False,
+        "platform": "windows",
+        "capabilities": [],
+        "queue": {"depth": 0, "capacity": 128, "dropped": 0, "deduplicated": 0},
+    }
+    calls = []
+    service = SimpleNamespace(get_status=lambda: dict(status))
+    pending_approval = {"approval_id": "response-1", "summary": "Needs review"}
+    engine = SimpleNamespace(
+        sensor_service=service,
+        get_pending_response_approvals=lambda: [pending_approval],
+    )
+    agent = SimpleNamespace(
+        cyberos_engine=engine,
+        cyberos_available=True,
+        cyberos_start=lambda: calls.append("start") or status.update(running=True),
+        cyberos_stop=lambda: calls.append("stop") or status.update(running=False),
+    )
+    monkeypatch.setattr(server, "_get_agent", lambda: agent)
+
+    with TestClient(server.app) as client:
+        initial = client.get("/api/sensors/status")
+        started = client.post("/api/sensors/start")
+        stopped = client.post("/api/sensors/stop")
+
+    assert initial.status_code == started.status_code == stopped.status_code == 200
+    assert initial.json()["queue"]["capacity"] == 128
+    assert len(initial.json()["registry"]) == 256
+    assert initial.json()["registry_version"] == "1.0.0"
+    assert initial.json()["registry"][16]["name"] == "Process Handle Access"
+    assert initial.json()["registry"][16]["phase1_requested_id"] == 6
+    assert initial.json()["pending_approvals"] == [pending_approval]
+    assert started.json()["running"] is True
+    assert stopped.json()["running"] is False
+    assert calls == ["start", "stop"]
+
+
 def test_approval_response_is_recorded_in_requested_session(isolated_history):
     with TestClient(server.app) as client:
         reply = client.post(
@@ -202,7 +241,49 @@ def test_approval_response_is_recorded_in_requested_session(isolated_history):
     assert default_history == []
 
 
+def test_sensor_response_approval_routes_to_cyberos_and_requires_a_pending_id(monkeypatch, isolated_history):
+    calls = []
+    pending = {"response-live"}
+
+    def resolve(approval_id, approved, approved_by=""):
+        calls.append((approval_id, approved, approved_by))
+        pending.discard(approval_id)
+        return ["Blocked IP: 203.0.113.5"] if approved else []
+
+    engine = SimpleNamespace(
+        has_pending_response_approval=lambda approval_id: approval_id in pending,
+        resolve_response_approval=resolve,
+    )
+    monkeypatch.setattr(server, "_get_agent", lambda: SimpleNamespace(cyberos_engine=engine))
+    monkeypatch.setattr(server, "_is_loopback_request", lambda request: True)
+
+    with TestClient(server.app) as client:
+        blocked_origin = client.post(
+            "/api/approval/response-live/respond",
+            params={"approved": "true", "session_id": "alpha", "approved_by": "analyst"},
+            headers={"origin": "https://attacker.example"},
+        )
+        response = client.post(
+            "/api/approval/response-live/respond",
+            params={"approved": "true", "session_id": "alpha", "approved_by": "analyst"},
+            headers={"origin": "http://localhost:6763"},
+        )
+        unknown = client.post(
+            "/api/agent/approve",
+            json={"request_id": "response-expired", "approved": True},
+            headers={"origin": "http://localhost:6763"},
+        )
+
+    assert blocked_origin.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["actions"] == ["Blocked IP: 203.0.113.5"]
+    assert calls == [("response-live", True, "analyst")]
+    assert unknown.status_code == 404
+
+
 def test_command_catalog_exposes_safe_composer_metadata(monkeypatch):
+    from cyber_os import assets
+
     registry = SimpleNamespace(
         index=lambda: [
             {
@@ -215,7 +296,7 @@ def test_command_catalog_exposes_safe_composer_metadata(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(server, "get_command_registry", lambda: registry)
+    monkeypatch.setattr(assets, "get_command_registry", lambda: registry)
 
     with TestClient(server.app) as client:
         reply = client.get("/api/commands")

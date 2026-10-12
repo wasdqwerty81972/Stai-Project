@@ -16,7 +16,12 @@
       "Bash(grep -a -o \"gpu architectures in the range[ -~]\\\\{0,80\\\\}\" torch_cuda.dll)",
       "Bash(grep -a -o \"sm[0-9][0-9] to sm[0-9][0-9][ -~]\\\\{0,60\\\\}\" torch_cuda.dll)",
       "Bash(rm -rf __pycache__)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(grep -v \"^.stai$\")",
+      "Bash(python -m pytest -q --no-header -p no:cacheprovider)",
+      "Bash(node -e \"const p=require\\('./ui/hackerai/package.json'\\); console.log\\('jest dep:', \\(p.devDependencies&&p.devDependencies.jest\\)||\\(p.dependencies&&p.dependencies.jest\\)||'NOT FOUND'\\); console.log\\('test script:', \\(p.scripts&&p.scripts.test\\)||'none'\\)\")",
+      "Bash(grep -iE \"\\\\.tmp\\\\.|gatecheck|\\\\.bak$|disposable\")",
+      "Bash(python -m pytest tests/test_messaging_bridge.py tests/test_messaging_gateway.py tests/test_messaging_service.py tests/test_messaging_api.py -q)"
     ]
   }
 }

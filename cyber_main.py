@@ -26,23 +26,14 @@ import urllib.error
 import urllib.request
 
 
-def _http_responded(url: str, timeout: float = 1.0) -> bool:
-    """Return True once ``url`` gets any HTTP response at all.
-
-    Readiness here means "this process is listening and serving", not "this
-    route returned 200". ``urllib.request.urlopen`` raises ``HTTPError`` for
-    every status >= 400, and ``HTTPError`` subclasses ``URLError``, so a 404
-    used to land in the same ``except`` clause as a refused connection. The
-    previous ``200 <= status < 500`` check could therefore never see a 4xx: it
-    was dead code, and a Next.js dev server that was up and answering 404 was
-    reported as not running until the launch timed out.
-    """
+def _http_ready(url: str, timeout: float = 1.0) -> bool:
+    """Return True when the requested route succeeds, not just its server."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout):
-            return True
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return 200 <= response.status < 400
     except urllib.error.HTTPError:
-        # The server answered; the status is not what this probe measures.
-        return True
+        # A listening server with a missing/broken readiness route is not ready.
+        return False
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
         return False
 
@@ -159,14 +150,14 @@ def main() -> int:
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError(f"Process exited with code {process.returncode}: {url}")
-                if _http_responded(url):
+                if _http_ready(url):
                     return
                 last_error = "no response"
                 time.sleep(0.25)
             raise TimeoutError(f"Timed out waiting for {url}: {last_error}")
 
         def is_ready(url: str) -> bool:
-            return _http_responded(url)
+            return _http_ready(url)
 
         def stop_children() -> None:
             for process in reversed(children):

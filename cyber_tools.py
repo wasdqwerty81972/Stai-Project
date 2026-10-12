@@ -18,9 +18,11 @@ import string
 import threading
 import contextlib
 import importlib.util
+import requests
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Iterator, List, Optional, Callable, Type
 from enum import Enum
+from urllib.parse import urlparse
 
 # Cross-process file locking for the audit log. Only one of these exists on any
 # given platform; if neither imports, auditing still works but concurrent
@@ -1514,6 +1516,184 @@ class SystemMonitor:
         return connections
 
     @staticmethod
+    def discover_local_hosts(subnet: str = "") -> Dict[str, Any]:
+        """Discover responsive hosts on the active private IPv4 LAN.
+
+        The default scope is the interface selected by the host's default
+        route. Explicit scopes must contain that interface address, be private
+        IPv4, and contain no more than 256 addresses. Discovery uses ICMP and
+        the local ARP neighbor table; it does not probe ports or public IPs.
+        """
+        import concurrent.futures
+        import ipaddress
+        import json
+        import platform
+        import re
+        import shutil
+        import subprocess
+
+        def run_command(argv: List[str], timeout: int = 12) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+
+        source_ip = ""
+        interface = ""
+        prefix_length = 0
+        system = platform.system().lower()
+
+        if system == "windows":
+            powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+            if not powershell:
+                return {"success": False, "error": "PowerShell is required to identify the active local subnet."}
+            script = (
+                "$ErrorActionPreference='Stop'; "
+                "$route=Get-NetRoute -DestinationPrefix '0.0.0.0/0' | "
+                "Sort-Object RouteMetric | Select-Object -First 1; "
+                "if(-not $route){throw 'No IPv4 default route found'}; "
+                "$addr=Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 | "
+                "Where-Object {$_.AddressState -eq 'Preferred' -and $_.IPAddress -notlike '169.254.*'} | "
+                "Select-Object -First 1; "
+                "if(-not $addr){throw 'No usable IPv4 address on the default route interface'}; "
+                "[pscustomobject]@{ip=$addr.IPAddress;prefix=$addr.PrefixLength;interface=$route.InterfaceIndex} | "
+                "ConvertTo-Json -Compress"
+            )
+            try:
+                result = run_command([powershell, "-NoProfile", "-NonInteractive", "-Command", script])
+                if result.returncode != 0:
+                    return {"success": False, "error": (result.stderr or result.stdout).strip() or "Unable to identify the active IPv4 subnet."}
+                route_data = json.loads(result.stdout)
+                source_ip = str(route_data["ip"])
+                prefix_length = int(route_data["prefix"])
+                interface = str(route_data["interface"])
+            except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+                return {"success": False, "error": f"Unable to identify the active IPv4 subnet: {type(exc).__name__}: {exc}"}
+        elif system == "linux":
+            ip_cmd = shutil.which("ip")
+            if not ip_cmd:
+                return {"success": False, "error": "The `ip` command is required to identify the active local subnet."}
+            try:
+                route_result = run_command([ip_cmd, "-j", "route", "show", "default"])
+                routes = json.loads(route_result.stdout)
+                if route_result.returncode != 0 or not routes:
+                    return {"success": False, "error": "No IPv4 default route found."}
+                route = routes[0]
+                interface = str(route.get("dev") or "")
+                source_ip = str(route.get("prefsrc") or route.get("src") or "")
+                if not source_ip or not interface:
+                    return {"success": False, "error": "The active route did not report its interface address."}
+                address_result = run_command([ip_cmd, "-j", "-4", "addr", "show", "dev", interface])
+                addresses = json.loads(address_result.stdout)
+                address_info = next(
+                    (item for device in addresses for item in device.get("addr_info", []) if item.get("local") == source_ip),
+                    None,
+                )
+                if not address_info:
+                    return {"success": False, "error": "The active route address has no matching interface prefix."}
+                prefix_length = int(address_info["prefixlen"])
+            except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+                return {"success": False, "error": f"Unable to identify the active IPv4 subnet: {type(exc).__name__}: {exc}"}
+        else:
+            return {"success": False, "error": f"Local host discovery is not supported on {platform.system()}."}
+
+        try:
+            local_address = ipaddress.ip_address(source_ip)
+            if not isinstance(local_address, ipaddress.IPv4Address) or not local_address.is_private:
+                return {"success": False, "error": "The default route is not on a private IPv4 network; public network scans are not allowed."}
+            local_network = ipaddress.ip_network(f"{source_ip}/{prefix_length}", strict=False)
+            target_network = ipaddress.ip_network(subnet, strict=False) if subnet else local_network
+        except ValueError as exc:
+            return {"success": False, "error": f"Invalid IPv4 subnet: {exc}"}
+
+        if not isinstance(target_network, ipaddress.IPv4Network):
+            return {"success": False, "error": "Only IPv4 local network discovery is supported."}
+        if not target_network.is_private or not target_network.overlaps(local_network) or local_address not in target_network:
+            return {"success": False, "error": "The requested scope must be a private IPv4 subnet containing this machine's active interface."}
+        if target_network.num_addresses > 256:
+            return {"success": False, "error": f"Scope {target_network} contains {target_network.num_addresses} addresses; the built-in discovery limit is 256."}
+
+        targets = [str(address) for address in target_network.hosts() if address != local_address]
+        ping_command = shutil.which("ping")
+        ping_hits: set[str] = set()
+
+        def probe(address: str) -> Optional[str]:
+            if not ping_command:
+                return None
+            argv = [ping_command, "-n", "1", "-w", "400", address] if system == "windows" else [ping_command, "-c", "1", "-W", "1", address]
+            try:
+                response = run_command(argv, timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            return address if response.returncode == 0 else None
+
+        if ping_command:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(48, max(1, len(targets)))) as pool:
+                ping_hits.update(address for address in pool.map(probe, targets) if address)
+
+        arp_hits: Dict[str, str] = {}
+        if system == "windows":
+            arp_command = shutil.which("arp.exe") or shutil.which("arp")
+            if arp_command:
+                try:
+                    arp_result = run_command([arp_command, "-a", "-N", source_ip])
+                    for address, mac in re.findall(
+                        r"(?im)^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\s+(?:dynamic|static)\b",
+                        arp_result.stdout,
+                    ):
+                        parsed_address = ipaddress.ip_address(address)
+                        if (
+                            isinstance(parsed_address, ipaddress.IPv4Address)
+                            and parsed_address in target_network
+                            and parsed_address not in (target_network.network_address, target_network.broadcast_address)
+                            and address != source_ip
+                        ):
+                            arp_hits[address] = mac.upper().replace("-", ":")
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        elif system == "linux":
+            ip_cmd = shutil.which("ip")
+            if ip_cmd:
+                try:
+                    neighbor_result = run_command([ip_cmd, "neigh", "show", "dev", interface])
+                    for line in neighbor_result.stdout.splitlines():
+                        parts = line.split()
+                        if not parts or any(state in parts for state in ("FAILED", "INCOMPLETE")):
+                            continue
+                        address = parts[0]
+                        parsed_address = ipaddress.ip_address(address)
+                        if (
+                            isinstance(parsed_address, ipaddress.IPv4Address)
+                            and parsed_address in target_network
+                            and parsed_address not in (target_network.network_address, target_network.broadcast_address)
+                            and "lladdr" in parts
+                        ):
+                            arp_hits[address] = parts[parts.index("lladdr") + 1].upper()
+                except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+                    pass
+
+        found = sorted(set(ping_hits) | set(arp_hits), key=ipaddress.ip_address)
+        hosts = [
+            {"ip": address, "mac": arp_hits.get(address), "icmp_responded": address in ping_hits}
+            for address in found
+        ]
+        return {
+            "success": True,
+            "network": str(target_network),
+            "interface_ip": source_ip,
+            "hosts_checked": len(targets),
+            "addresses_observed": len(hosts),
+            "icmp_responders": len(ping_hits),
+            "hosts": hosts,
+            "method": "ICMP echo plus local ARP neighbor cache",
+            "limitations": "Devices that block ICMP and do not appear in the ARP cache may be missed; an existing ARP cache entry alone does not prove a device is online. No ports were scanned.",
+        }
+
+    @staticmethod
     def calculate_file_hash(filepath: str) -> Optional[str]:
         if not os.path.exists(filepath):
             return None
@@ -1881,7 +2061,7 @@ class WebRecon:
         try:
             if not url.startswith(("http://", "https://")):
                 url = f"https://{url}"
-            resp = requests.get(url, timeout=timeout, allow_redirects=True, verify=False)
+            resp = requests.get(url, timeout=timeout, allow_redirects=False, verify=True)
             headers = dict(resp.headers)
             security_headers = {
                 "Strict-Transport-Security": headers.get("Strict-Transport-Security", "MISSING"),
@@ -1898,12 +2078,15 @@ class WebRecon:
                 "status_code": resp.status_code,
                 "final_url": resp.url,
                 "server": server,
+                "tls_verification": (
+                    "verified" if urlparse(url).scheme.lower() == "https" else "not_applicable"
+                ),
                 "security_headers": security_headers,
                 "missing_security_headers": missing,
                 "score": max(0, 5 - len(missing))
             }
         except Exception as e:
-            return {"url": url, "error": str(e)}
+            return {"success": False, "url": url, "error": str(e)}
     
     @staticmethod
     def robots_txt(url: str, timeout: int = 10) -> Dict[str, Any]:
@@ -1913,7 +2096,7 @@ class WebRecon:
                 url = f"https://{url}"
             parsed = urlparse(url)
             robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-            resp = requests.get(robots_url, timeout=timeout)
+            resp = requests.get(robots_url, timeout=timeout, allow_redirects=False)
             if resp.status_code == 200:
                 disallow = re.findall(r"Disallow:\s*(.+)", resp.text, re.IGNORECASE)
                 allow = re.findall(r"Allow:\s*(.+)", resp.text, re.IGNORECASE)
@@ -1927,7 +2110,7 @@ class WebRecon:
                 }
             return {"url": robots_url, "found": False, "status": resp.status_code}
         except Exception as e:
-            return {"url": url, "error": str(e)}
+            return {"success": False, "url": url, "error": str(e)}
     
     @staticmethod
     def tech_fingerprint(url: str, timeout: int = 10) -> Dict[str, Any]:
@@ -1935,7 +2118,7 @@ class WebRecon:
         try:
             if not url.startswith(("http://", "https://")):
                 url = f"https://{url}"
-            resp = requests.get(url, timeout=timeout, allow_redirects=True, verify=False)
+            resp = requests.get(url, timeout=timeout, allow_redirects=False, verify=True)
             headers = {k.lower(): v for k, v in resp.headers.items()}
             tech = []
             if "x-powered-by" in headers:
@@ -1956,9 +2139,16 @@ class WebRecon:
                 tech.append({"name": "WordPress", "category": "cms"})
             if "joomla" in resp.text.lower():
                 tech.append({"name": "Joomla", "category": "cms"})
-            return {"url": url, "technologies": tech, "detected": len(tech) > 0}
+            return {
+                "url": url,
+                "technologies": tech,
+                "detected": len(tech) > 0,
+                "tls_verification": (
+                    "verified" if urlparse(url).scheme.lower() == "https" else "not_applicable"
+                ),
+            }
         except Exception as e:
-            return {"url": url, "error": str(e)}
+            return {"success": False, "url": url, "error": str(e)}
     
     @staticmethod
     def directory_listing_check(url: str, paths: Optional[List[str]] = None, timeout: int = 5) -> Dict[str, Any]:
@@ -1968,14 +2158,24 @@ class WebRecon:
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
         found = []
+        errors = []
         for path in paths:
             try:
                 resp = requests.get(f"{url}{path}", timeout=timeout, allow_redirects=False, verify=False)
                 if resp.status_code in [200, 301, 302, 403]:
                     found.append({"path": path, "status": resp.status_code, "accessible": resp.status_code == 200})
-            except Exception:
-                pass
-        return {"url": url, "sensitive_paths": found, "count": len(found)}
+            except Exception as e:
+                errors.append({"path": path, "error": str(e)})
+        result = {"url": url, "sensitive_paths": found, "count": len(found)}
+        if errors:
+            result.update(
+                {
+                    "success": False,
+                    "error": f"Failed to check {len(errors)} path(s).",
+                    "errors": errors,
+                }
+            )
+        return result
 
 
 class EmailSecurityAnalyzer:
@@ -2340,6 +2540,18 @@ def register_all_default_tools(registry: ToolRegistry):
         command_template="",
         risk_level=RiskLevel.READ_ONLY,
         python_func=SystemMonitor.inspect_active_connections
+    ))
+    registry.register_tool(ToolDefinition(
+        name="network_discover",
+        environments=["cross_platform"],
+        command_template="",
+        risk_level=RiskLevel.READ_ONLY,
+        description=(
+            "Discover responsive devices on this host's active private IPv4 LAN "
+            "using ICMP and ARP. Scans at most 256 local addresses, never public "
+            "networks, and does not probe ports."
+        ),
+        python_func=SystemMonitor.discover_local_hosts,
     ))
 
     # NOTE: 55 CLI-wrapper tools (nmap_scan, clamav_scan, windows_defender_scan,

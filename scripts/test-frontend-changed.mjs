@@ -35,15 +35,21 @@ const REPO_ROOT = path.resolve(
 const UI_DIR = path.join(REPO_ROOT, "ui", "hackerai");
 const UI_PREFIX = "ui/hackerai/";
 
-// The three Jest path-patterns that together cover every SVS/Stai test suite
+// The Jest path-patterns that together cover every SVS/Stai test suite
 // (patterns are matched as substrings against each test file's path by Jest):
 //   StaiChatWorkspace -> StaiChatWorkspace.connection.test.tsx, StaiChatWorkspace.events.test.ts
 //   SvsCyberComposer  -> SvsCyberComposer.commands.test.tsx
 //   stai-api          -> stai-api.approval.test.ts, stai-api.commands.test.ts
+//   SvsSensorStatus   -> SvsSensorStatus.test.tsx
+// IMPORTANT: this set IS the widen-tier target, so EVERY SVS/Stai suite must be
+// listed here. A suite missing from this list is silently skipped on a
+// widen-tier change (regression fixed 2026-10-11: SvsSensorStatus.test.tsx had
+// been added by the owner but no pattern matched it, so the gate never ran it).
 export const ALL_SVS_PATTERNS = Object.freeze([
   "StaiChatWorkspace",
   "SvsCyberComposer",
   "stai-api",
+  "SvsSensorStatus",
 ]);
 
 function normalize(p) {
@@ -69,6 +75,8 @@ export function patternsForFile(relPath) {
   // precise tier
   if (/StaiChatWorkspace/.test(base)) return ["StaiChatWorkspace"];
   if (/SvsCyberComposer/.test(base)) return ["SvsCyberComposer"];
+  // SvsSensorStatus has its own dedicated suite (SvsSensorStatus.test.tsx).
+  if (/SvsSensorStatus/.test(base)) return ["SvsSensorStatus"];
   // SvsCyberModelSelector has no own test; its only tested consumer is the composer.
   if (/SvsCyberModelSelector/.test(base)) return ["SvsCyberComposer"];
   // stai-api has its own suites AND is consumed by the workspace.

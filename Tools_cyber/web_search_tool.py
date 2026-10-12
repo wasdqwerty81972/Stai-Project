@@ -21,25 +21,56 @@ class WebSearchTool(CyberToolPlugin):
             search_url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
             browser.navigate(search_url)
             
-            # Extract search results links and snippets
-            results = browser.page.evaluate('''() => {
+            # Extract search results links and snippets. Search providers can
+            # return a human-verification page to automated browsers; never
+            # report that as a successful empty search, since that invites the
+            # agent to answer current questions without evidence.
+            search_page = browser.page.evaluate('''() => {
+                const bodyText = document.body?.innerText || '';
                 const results = [];
                 document.querySelectorAll('.result').forEach(el => {
                     const titleEl = el.querySelector('.result__title .result__a');
                     const snippetEl = el.querySelector('.result__snippet');
                     if (titleEl) {
                         results.push({
-                            title: titleEl.innerText,
+                            title: titleEl.innerText.trim(),
                             url: titleEl.href,
-                            snippet: snippetEl ? snippetEl.innerText : ''
+                            snippet: snippetEl ? snippetEl.innerText.trim() : ''
                         });
                     }
                 });
-                return results;
+                return {title: document.title, bodyText, results};
             }''')
+
+            results = search_page.get("results") or []
+            body_text = search_page.get("bodyText", "")
+            blocked_markers = (
+                "Unfortunately, bots use DuckDuckGo",
+                "Please complete the following challenge",
+                "select all squares containing a duck",
+            )
+            if any(marker.casefold() in body_text.casefold() for marker in blocked_markers):
+                return {
+                    "success": False,
+                    "provider": "DuckDuckGo",
+                    "blocked": True,
+                    "results": [],
+                    "error": (
+                        "DuckDuckGo requires human verification for this search, so no results were retrieved. "
+                        "Do not answer the search query as if it were verified."
+                    ),
+                }
+            if not results:
+                return {
+                    "success": False,
+                    "provider": "DuckDuckGo",
+                    "results": [],
+                    "error": "DuckDuckGo returned no parseable search results.",
+                }
             
             return {
                 "success": True,
+                "provider": "DuckDuckGo",
                 "results": results
             }
         except Exception as e:

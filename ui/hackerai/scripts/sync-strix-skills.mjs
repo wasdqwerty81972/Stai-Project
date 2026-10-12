@@ -54,6 +54,9 @@ if (sourceArgIndex >= 0 && !sourceArg) {
 }
 
 const sha256 = (content) => createHash("sha256").update(content).digest("hex");
+const readCanonicalText = async (path) =>
+  (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
+const sha256TextFile = async (path) => sha256(await readCanonicalText(path));
 
 const run = (command, commandArgs, cwd) => {
   const result = spawnSync(command, commandArgs, {
@@ -145,7 +148,10 @@ const buildArtifacts = async ({ skillsRoot, sourceCommit }) => {
 
   for (const absolute of markdownFiles) {
     const sourcePath = toPosix(relative(skillsRoot, absolute));
-    const content = await readFile(absolute);
+    // Git may check these Markdown files out with CRLF on Windows. Hash and
+    // size the canonical LF form so generated artifacts remain portable.
+    const sourceContent = await readFile(absolute, "utf8");
+    const content = Buffer.from(sourceContent.replaceAll("\r\n", "\n"), "utf8");
     fileHashes[sourcePath] = sha256(content);
     totalBytes += content.byteLength;
     if (content.byteLength > MAX_SKILL_BYTES) {
@@ -230,8 +236,8 @@ const findMatchingVendoredSourceCommit = async (artifacts) => {
       skillsRoot: vendorSkillsRoot,
       sourceCommit,
     });
-    vendored.manifest.licenseSha256 = sha256(
-      await readFile(join(vendorRoot, "LICENSE")),
+    vendored.manifest.licenseSha256 = await sha256TextFile(
+      join(vendorRoot, "LICENSE"),
     );
 
     if (stableJson(expected.manifest) !== stableJson(vendored.manifest)) {
@@ -242,13 +248,13 @@ const findMatchingVendoredSourceCommit = async (artifacts) => {
     }
     if (
       stableJson(expected.generatedCatalog) !==
-      (await readFile(generatedCatalogPath, "utf8"))
+      (await readCanonicalText(generatedCatalogPath))
     ) {
       return undefined;
     }
     if (
       stableJson(expected.generatedContent) !==
-      (await readFile(generatedContentPath, "utf8"))
+      (await readCanonicalText(generatedContentPath))
     ) {
       return undefined;
     }
@@ -265,11 +271,11 @@ const checkArtifacts = async () => {
     skillsRoot: vendorSkillsRoot,
     sourceCommit: manifest.sourceCommit,
   });
-  expected.manifest.licenseSha256 = sha256(
-    await readFile(join(vendorRoot, "LICENSE")),
+  expected.manifest.licenseSha256 = await sha256TextFile(
+    join(vendorRoot, "LICENSE"),
   );
-  const actualGeneratedCatalog = await readFile(generatedCatalogPath, "utf8");
-  const actualGeneratedContent = await readFile(generatedContentPath, "utf8");
+  const actualGeneratedCatalog = await readCanonicalText(generatedCatalogPath);
+  const actualGeneratedContent = await readCanonicalText(generatedContentPath);
   if (stableJson(expected.manifest) !== stableJson(manifest)) {
     throw new Error("Strix skill manifest is out of sync with vendored files");
   }
@@ -312,7 +318,7 @@ const updateArtifacts = async () => {
       skillsRoot: sourceSkillsRoot,
       sourceCommit,
     });
-    artifacts.manifest.licenseSha256 = sha256(await readFile(sourceLicense));
+    artifacts.manifest.licenseSha256 = await sha256TextFile(sourceLicense);
 
     const matchingSourceCommit =
       await findMatchingVendoredSourceCommit(artifacts);

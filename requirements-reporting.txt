@@ -1,0 +1,2 @@
+# PDF generation for URL-scoped web assessment reports.
+fpdf2>=2.8,<3

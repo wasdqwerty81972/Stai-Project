@@ -1,0 +1,79 @@
+{
+  "title": "Cyber Shield X Metric Definitions",
+  "description": "All metrics are defined mathematically and computed identically in Swift and TypeScript. Integer simulation ticks, not wall-clock time, drive the simulation. Rounding follows IEEE 754 round-half-to-even, applied after clamping.",
+  "metrics": {
+    "generated_packets": {
+      "description": "Count of packets created by the scenario generator.",
+      "type": "counter",
+      "initial": 0
+    },
+    "inspected_packets": {
+      "description": "Count of packets that entered INSPECTING.",
+      "type": "counter",
+      "initial": 0
+    },
+    "allowed_packets": {
+      "description": "Count of packets reaching ALLOWED.",
+      "type": "counter",
+      "initial": 0
+    },
+    "dropped_packets": {
+      "description": "Count of packets reaching DROPPED.",
+      "type": "counter",
+      "initial": 0
+    },
+    "held_packets": {
+      "description": "Count of packets currently in HOLDING_INTERCEPT.",
+      "type": "gauge",
+      "initial": 0
+    },
+    "escalated_incidents": {
+      "description": "Count of packets reaching ESCALATED (each creates one incident).",
+      "type": "counter",
+      "initial": 0
+    },
+    "detection_events": {
+      "description": "Count of packets flagged as suspicious (score meets threshold).",
+      "type": "counter",
+      "initial": 0
+    },
+    "resolved_packets": {
+      "description": "allowed + dropped",
+      "type": "derived",
+      "formula": "allowed_packets + dropped_packets"
+    },
+    "pass_percentage": {
+      "description": "Allowed / Resolved * 100",
+      "type": "derived",
+      "formula": "Resolved == 0 ? 0.0 : round(Allowed / Resolved * 100, 2)"
+    },
+    "simulation_throughput": {
+      "description": "Packets processed per tick: resolved_packets / elapsed_ticks.",
+      "type": "derived",
+      "formula": "elapsed_ticks == 0 ? 0.0 : round(resolved_packets / elapsed_ticks, 4)"
+    },
+    "simulated_inspection_latency": {
+      "description": "Ticks spent in INSPECTING before resolution. Average as round(sum / count, 4); 0 when count == 0.",
+      "type": "derived"
+    },
+    "queue_depth": {
+      "description": "Count of packets currently in INSPECTING or HOLDING_INTERCEPT.",
+      "type": "gauge"
+    }
+  },
+  "threat_score": {
+    "formula": "score = min(100, sum of applicable rule weights)",
+    "rounding": "round_half_to_even to 2 decimal places",
+    "label": "This is a simulation heuristic, not a probability of compromise."
+  },
+  "severity_thresholds": {
+    "SAFE": "score < 40",
+    "SUSPICIOUS": "40 <= score < 75",
+    "HIGH": "75 <= score < 90",
+    "CRITICAL": "score >= 90"
+  },
+  "detection_threshold": {
+    "flag_suspicious_at": 40,
+    "note": "Packets scoring >= 40 at the inspection gate are flagged SUSPICIOUS and held for operator resolution."
+  }
+}

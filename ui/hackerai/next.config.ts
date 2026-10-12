@@ -21,6 +21,9 @@ if (
 }
 
 const nextConfig: NextConfig = {
+  // The desktop launcher opens the UI on 127.0.0.1 while Next binds to
+  // localhost. Permit that loopback origin for development HMR and fonts.
+  allowedDevOrigins: ["127.0.0.1"],
   devIndicators: false,
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {
