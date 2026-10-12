@@ -4,23 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import stat
 import threading
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Optional
 
-from .models import DetectionRule, RuleSet, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanProfile, ScanVerdict
 from .quarantine import QuarantineItem, QuarantineResult, list_quarantine_items, quarantine_file, restore_quarantine
 from .scanner import scan_path
 from .store import DetectionRecord, ProtectionStatus, ProtectionStore, ScanJob, WindowsSecurityStatus
+from .windows_profile import KnownFolderResolver, KNOWN_FOLDER_IDS
 
-
-SCAN_ROOTS_QUICK = [
-    Path.home() / "Downloads",
-    Path.home() / "Desktop",
-    Path(Path.home(), "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup"),
-]
 
 SCAN_ROOTS_SYSTEM = [Path("C:\\")]
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +30,7 @@ class ProtectionConfig:
     rules: RuleSet
     store: ProtectionStore
     yara_timeout_seconds: int = 5
+    profile_resolver: Any | None = None
 
 
 class ScanScope:
@@ -59,6 +58,7 @@ class ProtectionService:
         self._cancel_scan = threading.Event()
         self._scan_lock = threading.Lock()
         self._current_job_id: Optional[str] = None
+        self._profile_resolver = self._config.profile_resolver or KnownFolderResolver()
 
     @property
     def rules(self) -> RuleSet:
@@ -152,14 +152,41 @@ class ProtectionService:
             verdict,
         )
 
-    def start_scan(self, scope: Literal["quick", "system"]) -> ScanJob:
+    def refresh_scan_profile(self, owner_sid: str, token_handle: object) -> ScanProfile:
+        """Resolve all enrolled known folders, then atomically publish them."""
+        roots = self._profile_resolver.resolve(token_handle)
+        if tuple(folder_id for folder_id, _path in roots) != KNOWN_FOLDER_IDS:
+            raise RuntimeError("known-folder resolver returned an incomplete profile")
+        return self._config.store.replace_scan_profile(
+            owner_sid,
+            roots,
+            datetime.now().astimezone().isoformat(),
+        )
+
+    def start_scan(
+        self,
+        scope: Literal["quick", "system"],
+        *,
+        roots: tuple[tuple[str, str], ...] | None = None,
+        source: Literal["interactive", "schedule"] = "interactive",
+    ) -> ScanJob:
         """Start a background scan job."""
+        if scope == "quick" and roots is None:
+            raise RuntimeError("Quick Scan requires a successfully resolved user profile")
+        if scope == "quick" and roots is not None:
+            if tuple(folder_id for folder_id, _path in roots) != KNOWN_FOLDER_IDS:
+                raise RuntimeError("Quick Scan roots must come from the enrolled user profile")
         with self._scan_lock:
             if self._scan_thread and self._scan_thread.is_alive():
                 raise RuntimeError("scan already in progress")
 
             job_id = str(uuid.uuid4())
-            job = self._config.store.create_scan_job(job_id, scope)
+            job = self._config.store.create_scan_job_with_roots(
+                job_id,
+                scope,
+                roots or (),
+                source=source,
+            )
             self._config.store.update_scan_job(job_id, state="running")
 
             self._cancel_scan.clear()
@@ -186,18 +213,43 @@ class ProtectionService:
 
     def _run_scan(self, job_id: str, scope: Literal["quick", "system"]) -> None:
         try:
-            roots = SCAN_ROOTS_QUICK if scope == "quick" else SCAN_ROOTS_SYSTEM
-            accessible_roots = [r for r in roots if r.exists()]
+            if scope == "quick":
+                root_specs = self._config.store.get_scan_job_roots(job_id)
+            else:
+                root_specs = tuple((f"system-{index}", str(root)) for index, root in enumerate(SCAN_ROOTS_SYSTEM))
+
+            accessible_roots: list[tuple[str, Path]] = []
+            errors = 0
+            for folder_id, raw_root in root_specs:
+                root = Path(raw_root)
+                try:
+                    usable = root.exists() and root.is_dir()
+                except OSError:
+                    usable = False
+                if usable:
+                    accessible_roots.append((folder_id, root))
+                    self._config.store.update_scan_job_root(job_id, folder_id, "pending")
+                else:
+                    errors += 1
+                    self._config.store.update_scan_job_root(
+                        job_id,
+                        folder_id,
+                        "skipped",
+                        error="scan folder is missing or inaccessible",
+                    )
 
             if not accessible_roots:
                 self._config.store.update_scan_job(
-                    job_id, state="failed", error_message="no accessible scan roots"
+                    job_id,
+                    state="failed",
+                    errors=errors,
+                    error_message="no usable scan roots; profile folders are inaccessible",
                 )
                 return
 
             # Count total files first (for progress)
             total_files = 0
-            for root in accessible_roots:
+            for _folder_id, root in accessible_roots:
                 try:
                     for _ in self._iter_files(root):
                         total_files += 1
@@ -208,13 +260,13 @@ class ProtectionService:
 
             files_scanned = 0
             detections = 0
-            errors = 0
 
-            for root in accessible_roots:
+            for folder_id, root in accessible_roots:
                 if self._cancel_scan.is_set():
                     self._config.store.update_scan_job(job_id, state="cancelled")
                     return
 
+                self._config.store.update_scan_job_root(job_id, folder_id, "scanning")
                 try:
                     for file_path in self._iter_files(root):
                         if self._cancel_scan.is_set():
@@ -237,6 +289,11 @@ class ProtectionService:
                             )
                 except OSError:
                     errors += 1
+                    self._config.store.update_scan_job_root(
+                        job_id, folder_id, "skipped", error="scan folder became inaccessible"
+                    )
+                else:
+                    self._config.store.update_scan_job_root(job_id, folder_id, "scanned")
 
             final_state = "cancelled" if self._cancel_scan.is_set() else "completed"
             self._config.store.update_scan_job(
@@ -255,23 +312,34 @@ class ProtectionService:
 
     def _iter_files(self, root: Path) -> Iterator[Path]:
         """Iterate files under root, skipping reparse points and quarantine dir."""
+        def is_reparse_point(path: Path) -> bool:
+            try:
+                details = path.lstat()
+            except OSError:
+                return True
+            return path.is_symlink() or bool(getattr(details, "st_file_attributes", 0) & 0x400)
+
+        def on_walk_error(error: OSError) -> None:
+            LOGGER.debug("skipping inaccessible scan path %s", error.filename or "unknown")
+
         try:
-            for entry in root.rglob("*"):
+            for current, directories, files in os.walk(root, topdown=True, followlinks=False, onerror=on_walk_error):
                 if self._cancel_scan.is_set():
                     return
-                if not entry.is_file():
-                    continue
-                # Skip quarantine directory
-                if self._is_under_quarantine(entry):
-                    continue
-                # Skip reparse points (symlinks, junctions)
-                try:
-                    st = entry.stat()
-                    if hasattr(st, "st_file_attributes") and st.st_file_attributes & 0x400:
+                current_path = Path(current)
+                directories[:] = [
+                    name for name in directories
+                    if not is_reparse_point(current_path / name)
+                    and not self._is_under_quarantine(current_path / name)
+                ]
+                for name in files:
+                    entry = current_path / name
+                    if self._cancel_scan.is_set():
+                        return
+                    if is_reparse_point(entry) or self._is_under_quarantine(entry):
                         continue
-                except OSError:
-                    continue
-                yield entry
+                    if entry.is_file():
+                        yield entry
         except OSError:
             return
 
@@ -341,4 +409,3 @@ class ProtectionService:
         )
 
 
-from datetime import datetime

@@ -675,6 +675,35 @@ class ProtectionStore:
             for row in rows
         )
 
+    def update_scan_job_root(
+        self,
+        job_id: str,
+        folder_id: str,
+        status: Literal["pending", "scanning", "scanned", "skipped"],
+        *,
+        error: str | None = None,
+    ) -> bool:
+        if status not in ("pending", "scanning", "scanned", "skipped"):
+            raise ValueError("invalid scan root status")
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE scan_job_roots SET status = ?, error = ? WHERE job_id = ? AND folder_id = ?",
+                (status, (error or "")[:256] or None, job_id, folder_id),
+            )
+            return cursor.rowcount == 1
+
+    def get_scan_job_root_coverage(self, job_id: str) -> tuple[dict[str, str | None], ...]:
+        """Return folder labels/status without disclosing their stored paths."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT folder_id, status, error FROM scan_job_roots WHERE job_id = ? ORDER BY rowid",
+                (job_id,),
+            ).fetchall()
+        return tuple(
+            {"folder_id": str(row["folder_id"]), "status": str(row["status"]), "error": row["error"]}
+            for row in rows
+        )
+
     def update_scan_job(
         self,
         job_id: str,

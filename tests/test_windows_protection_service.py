@@ -222,6 +222,74 @@ def test_scan_does_not_follow_symlink_outside_scope(tmp_path: Path) -> None:
     assert secret.resolve() not in found, "scan followed a symlink outside the scope"
 
 
+def test_quick_scan_requires_explicit_enrolled_roots(tmp_path: Path) -> None:
+    svc, _store = _service(tmp_path, RuleSet("test-1", ()))
+
+    with pytest.raises(RuntimeError, match="profile"):
+        svc.start_scan("quick")
+
+
+def test_quick_scan_worker_uses_job_snapshot_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "enrolled" / "Desktop"
+    root.mkdir(parents=True)
+    sample = root / "user.txt"
+    sample.write_text("in scope", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("out of scope", encoding="utf-8")
+    roots = (
+        ("desktop", str(root)),
+        ("downloads", str(tmp_path / "missing-downloads")),
+        ("startup", str(tmp_path / "missing-startup")),
+    )
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    scanned: list[Path] = []
+    monkeypatch.setattr(svc, "scan_file", lambda path: scanned.append(path) or ScanVerdict(
+        status="clean", action="allow", rule_id=None, rule_version="test-1", sha256=None, reason="clean"
+    ))
+
+    job = svc.start_scan("quick", roots=roots)
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+
+    final = store.get_scan_job(job.job_id)
+    assert final is not None and final.state == "completed"
+    assert final.errors == 2
+    assert scanned == [sample]
+
+
+def test_quick_scan_fails_when_no_snapshot_root_is_usable(tmp_path: Path) -> None:
+    roots = (
+        ("desktop", str(tmp_path / "missing-desktop")),
+        ("downloads", str(tmp_path / "missing-downloads")),
+        ("startup", str(tmp_path / "missing-startup")),
+    )
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+
+    job = svc.start_scan("quick", roots=roots)
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+
+    final = store.get_scan_job(job.job_id)
+    assert final is not None and final.state == "failed"
+    assert final.errors == 3
+    assert "usable" in (final.error_message or "")
+
+
+def test_refresh_scan_profile_persists_only_resolved_known_folders(tmp_path: Path) -> None:
+    roots = (
+        ("desktop", r"D:\Redirected\Desktop"),
+        ("downloads", r"D:\Redirected\Downloads"),
+        ("startup", r"C:\Users\Alice\Startup"),
+    )
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    svc._profile_resolver = type("Resolver", (), {"resolve": lambda _self, _token: roots})()
+
+    profile = svc.refresh_scan_profile("S-1-5-21-1-2-3-1001", object())
+
+    assert profile.roots == roots
+    assert store.get_scan_profile(profile.owner_sid) == profile
+
+
 def test_running_scan_can_be_cancelled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,7 +300,11 @@ def test_running_scan_can_be_cancelled(
         f.write_bytes(b"x")
 
     svc, store = _service(tmp_path, RuleSet("test-1", ()))
-    monkeypatch.setattr(service_mod, "SCAN_ROOTS_QUICK", [scan_root])
+    roots = (
+        ("desktop", str(scan_root)),
+        ("downloads", str(tmp_path / "downloads")),
+        ("startup", str(tmp_path / "startup")),
+    )
 
     def _fake_iter(self, root):  # noqa: ANN001 - test stub
         yield from files
@@ -248,7 +320,7 @@ def test_running_scan_can_be_cancelled(
     monkeypatch.setattr(ProtectionService, "_iter_files", _fake_iter)
     monkeypatch.setattr(ProtectionService, "scan_file", _cancel_on_scan)
 
-    job = svc.start_scan("quick")
+    job = svc.start_scan("quick", roots=roots)
     assert svc._scan_thread is not None
     svc._scan_thread.join(timeout=5)
 
