@@ -21,7 +21,7 @@ export function SettingsView({ status }: { status: ProtectionStatus | null }) {
           <SettingRow icon={Info} title="Agent permissions" value="Investigation only" detail="The agent can explain detections and answer questions. It cannot run commands or change protection verdicts." />
         </div>
       </section>
-      <div className="settings-note"><Info size={16} aria-hidden="true" /><p>Driver, service, and rule updates are managed by the signed installer and local policy. STAI does not change Microsoft Defender settings.</p></div>
+      <div className="settings-note"><Info size={16} aria-hidden="true" /><p>Driver, service, and rule updates are managed by the signed installer and local policy. SVS Cyber does not change Microsoft Defender settings.</p></div>
     </>
   );
 }

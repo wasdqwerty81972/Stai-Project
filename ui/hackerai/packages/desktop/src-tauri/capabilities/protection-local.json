@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2/capability",
   "identifier": "protection-local",
-  "description": "Protection dashboard IPC for the bundled STAI local UI only.",
+  "description": "Protection dashboard IPC for the bundled SVS Cyber local UI only.",
   "windows": ["main"],
   "local": true,
   "platforms": ["windows"],

@@ -58,7 +58,7 @@ export function SystemStatus({
               <div><span>Defender mode</span><strong>{status.windows_security?.defender_mode ?? "Not reported by Windows"}</strong></div>
               <div><span>Windows query</span><strong>{status.windows_security?.query_available ? "Available" : "Unavailable"}</strong></div>
             </div>
-            <p className="helper-note">STAI reports the Windows security provider and does not change Defender settings.</p>
+            <p className="helper-note">SVS Cyber reports the Windows security provider and does not change Defender settings.</p>
           </section>
 
           <section className="panel health-detail-panel">

@@ -14,7 +14,7 @@ const result = spawnSync(packageManager, args, {
 });
 
 if (result.error) {
-  console.error(`Unable to build the local STAI protection dashboard: ${result.error.message}`);
+  console.error(`Unable to build the local SVS Cyber protection dashboard: ${result.error.message}`);
   process.exit(1);
 }
 

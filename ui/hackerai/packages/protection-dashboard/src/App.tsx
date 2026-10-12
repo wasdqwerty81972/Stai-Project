@@ -345,7 +345,7 @@ export default function App() {
             )}
             {page === "Settings" && <SettingsView status={status} />}
           </div>
-          <footer className="page-footer">STAI Protection · Local Windows dashboard · Status reflects service-reported evidence</footer>
+          <footer className="page-footer">SVS Cyber · Local Windows dashboard · Status reflects service-reported evidence</footer>
         </div>
       </main>
     </div>

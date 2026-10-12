@@ -252,7 +252,7 @@ fn ensure_local_dashboard_url(url: &Url) -> Result<(), String> {
     if is_bundle || is_dev {
         Ok(())
     } else {
-        Err("protection commands are restricted to the local STAI dashboard".to_string())
+        Err("protection commands are restricted to the local SVS Cyber dashboard".to_string())
     }
 }
 

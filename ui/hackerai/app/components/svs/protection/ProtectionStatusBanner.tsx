@@ -98,7 +98,7 @@ function resolve(
       label: "Unavailable",
       description:
         status.last_error ||
-        "The protection driver or service is not healthy. STAI is not currently protecting this device.",
+        "The protection driver or service is not healthy. SVS Cyber is not currently protecting this device.",
     };
   }
   return {
@@ -135,7 +135,7 @@ export function ProtectionStatusBanner({ status, loading, error }: Props) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            STAI protection status
+            SVS Cyber protection status
           </p>
           <h2 className="mt-0.5 text-2xl font-semibold tracking-tight text-foreground">
             {label}

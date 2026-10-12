@@ -176,9 +176,9 @@ export function SvsProtectionDashboard() {
           </span>
           <div className="leading-tight">
             <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-              STAI
+              SVS
             </p>
-            <p className="text-sm font-semibold text-foreground">Protection</p>
+            <p className="text-sm font-semibold text-foreground">Cyber</p>
           </div>
         </div>
         {NAV.map((item) => {
@@ -211,7 +211,7 @@ export function SvsProtectionDashboard() {
                 {NAV.find((n) => n.id === view)?.label}
               </h1>
               <p className="text-xs text-muted-foreground">
-                STAI local Windows protection
+                SVS Cyber local Windows protection
               </p>
             </div>
           </header>
@@ -321,7 +321,7 @@ function buildRecommendation(
 ): { text: string; cta: string; target: View | null; cls: string } {
   if (statusError) {
     return {
-      text: "Protection status is unreachable. STAI is not confirmed active on this device.",
+      text: "Protection status is unreachable. SVS Cyber is not confirmed active on this device.",
       cta: "Open System Status",
       target: "system",
       cls: "border-destructive/40 bg-destructive/5",
@@ -418,7 +418,7 @@ function ProtectionSettingsView({
         <Lock className="mt-0.5 size-3.5 shrink-0 text-cyan-300" aria-hidden="true" />
         <span>
           Protection lifecycle — driver and service installation, rule-pack
-          updates, and quarantine policy — is owned by the elevated local STAI
+          updates, and quarantine policy — is owned by the elevated local SVS Cyber
           installer and service. It cannot be changed from this page, and the
           hosted web app is never granted privileged protection controls.
         </span>

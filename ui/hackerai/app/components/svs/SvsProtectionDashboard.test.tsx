@@ -39,7 +39,7 @@ const activeStatus: ProtectionStatus = {
   // The three counts MUST stay distinct — never summed or conflated.
   counts: { detected: 4, blocked: 2, quarantined: 1 },
   windows_security: {
-    registered_av_provider: "STAI Protection",
+    registered_av_provider: "SVS Cyber",
     defender_mode: "passive",
   },
   sensor_coverage: { phase1_mappings: 7, sources_readable: 3 },

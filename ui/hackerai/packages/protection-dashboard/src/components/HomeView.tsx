@@ -58,7 +58,7 @@ export function HomeView({
     <div className="home-view">
       <header className="home-welcome">
         <div>
-          <h1>Welcome to STAI</h1>
+          <h1>Welcome to SVS Cyber</h1>
           <p>Your security tools and AI assistant, together in one place.</p>
         </div>
         {status && <StatusPill state={state} />}
@@ -86,7 +86,7 @@ export function HomeView({
         </button>
       </section>
 
-      <section className="home-modules" aria-label="Choose a STAI tool">
+      <section className="home-modules" aria-label="Choose an SVS Cyber tool">
         <article className="home-module home-module-antivirus">
           <div className="home-module-top">
             <span className="home-module-icon" aria-hidden="true"><Shield size={23} /></span>

@@ -130,7 +130,7 @@ export function isTrustedProtectionContext(context: ProtectionContext): boolean 
 
 function invokeProtection<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (typeof window === "undefined") {
-    return Promise.reject(new Error("protection bridge is available only in the local STAI app"));
+    return Promise.reject(new Error("protection bridge is available only in the local SVS Cyber app"));
   }
 
   const context: ProtectionContext = {
@@ -141,7 +141,7 @@ function invokeProtection<T>(command: string, args?: Record<string, unknown>): P
   };
 
   if (!isTrustedProtectionContext(context)) {
-    return Promise.reject(new Error("protection bridge is restricted to the local STAI app"));
+    return Promise.reject(new Error("protection bridge is restricted to the local SVS Cyber app"));
   }
 
   return invoke<T>(command, args);

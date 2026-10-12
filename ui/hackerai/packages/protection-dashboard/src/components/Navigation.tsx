@@ -39,19 +39,19 @@ export function Navigation({
   onNavigate: (page: DashboardPage) => void;
 }) {
   return (
-    <aside className="sidebar" aria-label="STAI Protection">
+    <aside className="sidebar" aria-label="SVS Cyber">
       <div className="brand-lockup">
         <div className="brand-mark" aria-hidden="true">
           <Shield size={21} strokeWidth={2.2} />
           <span />
         </div>
         <div className="brand-copy">
-          <span className="brand-name">STAI</span>
-          <span className="brand-product">PROTECTION</span>
+          <span className="brand-name">SVS</span>
+          <span className="brand-product">CYBER</span>
         </div>
       </div>
 
-      <div className="sidebar-section-label">STAI SECURITY</div>
+      <div className="sidebar-section-label">SVS CYBER</div>
       <nav className="primary-nav" aria-label="Main navigation">
         {pages.map(({ label, icon: Icon }) => (
           <button
@@ -79,7 +79,7 @@ export function Navigation({
           <span>Device data stays here</span>
         </div>
       </div>
-      <div className="sidebar-version">STAI · WINDOWS</div>
+      <div className="sidebar-version">SVS CYBER · WINDOWS</div>
     </aside>
   );
 }

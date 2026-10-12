@@ -5,7 +5,7 @@ import { SvsProtectionDashboard } from "@/app/components/svs/SvsProtectionDashbo
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/protection"),
-  title: "STAI Protection - Windows Endpoint Dashboard",
+  title: "SVS Cyber - Windows Endpoint Dashboard",
 };
 
 export default function Page() {
