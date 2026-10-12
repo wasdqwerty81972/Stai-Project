@@ -36,3 +36,21 @@ class ScanVerdict:
     rule_version: str
     sha256: str | None
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScanProfile:
+    """Resolved, allowlisted scan roots belonging to the enrolled Windows user."""
+
+    owner_sid: str
+    roots: tuple[tuple[str, str], ...]
+    refreshed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScanRootSnapshot:
+    """One root captured immutably when a scan job is created."""
+
+    job_id: str
+    folder_id: str
+    path: str

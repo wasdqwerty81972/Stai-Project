@@ -12,6 +12,7 @@ These pin the spec invariants that the ``ProtectionStore`` must uphold:
 from __future__ import annotations
 
 import inspect
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -106,6 +107,68 @@ def test_scan_cancellation_is_durable(tmp_path: Path) -> None:
     assert job.state == "cancelled"
     assert job.completed_at is not None
     assert job.files_scanned == 7  # progress at cancellation is preserved
+
+
+def test_scan_profile_is_per_sid_and_replaces_only_complete_profiles(tmp_path: Path) -> None:
+    store = ProtectionStore(tmp_path / "profiles.db")
+    sid = "S-1-5-21-1-2-3-1001"
+    roots = (("desktop", r"C:\Users\alice\Desktop"),
+             ("downloads", r"C:\Users\alice\Downloads"),
+             ("startup", r"C:\Users\alice\Startup"))
+
+    profile = store.replace_scan_profile(sid, roots, "2026-10-12T10:00:00")
+
+    assert profile.owner_sid == sid
+    assert profile.roots == roots
+    assert store.get_scan_profile("S-1-5-21-1-2-3-1002") is None
+    with pytest.raises(ValueError, match="three known folders"):
+        store.replace_scan_profile(sid, roots[:2], "2026-10-12T11:00:00")
+    assert store.get_scan_profile(sid) == profile
+
+
+def test_scan_job_roots_are_an_immutable_snapshot(tmp_path: Path) -> None:
+    store = ProtectionStore(tmp_path / "snapshots.db")
+    roots = (("desktop", r"C:\Users\alice\Desktop"),
+             ("downloads", r"C:\Users\alice\Downloads"),
+             ("startup", r"C:\Users\alice\Startup"))
+
+    job = store.create_scan_job_with_roots("job-profile", "quick", roots)
+    store.replace_scan_profile(
+        "S-1-5-21-1-2-3-1001",
+        (("desktop", r"D:\Redirected\Desktop"),
+         ("downloads", r"D:\Redirected\Downloads"),
+         ("startup", r"D:\Redirected\Startup")),
+        "2026-10-12T12:00:00",
+    )
+
+    assert job.source == "interactive"
+    assert store.get_scan_job_roots("job-profile") == roots
+
+
+def test_scan_profile_schema_migration_preserves_existing_jobs(tmp_path: Path) -> None:
+    db = tmp_path / "schema-v2.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version VALUES (2);
+        CREATE TABLE scan_jobs (
+            job_id TEXT PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL,
+            files_scanned INTEGER NOT NULL DEFAULT 0, files_total INTEGER NOT NULL DEFAULT 0,
+            detections INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT
+        );
+        INSERT INTO scan_jobs (job_id, scope, state, started_at)
+        VALUES ('legacy-job', 'quick', 'completed', '2026-10-11T10:00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = ProtectionStore(db)
+
+    assert store.get_scan_job("legacy-job").state == "completed"
+    assert store.get_scan_job_roots("legacy-job") == ()
 
 
 def test_windows_security_status_is_read_only_and_optional(

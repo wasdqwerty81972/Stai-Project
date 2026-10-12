@@ -12,10 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Literal, Optional
 
-from .models import DetectionRule, RuleSet, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanProfile, ScanRootSnapshot, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
+KNOWN_SCAN_FOLDER_IDS = ("desktop", "downloads", "startup")
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -65,10 +66,50 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     errors INTEGER NOT NULL DEFAULT 0,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
-    error_message TEXT
+    error_message TEXT,
+    source TEXT NOT NULL DEFAULT 'interactive' CHECK(source IN ('interactive', 'schedule'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_jobs_state ON scan_jobs(state);
+
+CREATE TABLE IF NOT EXISTS scan_profiles (
+    owner_sid TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 1,
+    roots_json TEXT NOT NULL,
+    refreshed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_job_roots (
+    job_id TEXT NOT NULL REFERENCES scan_jobs(job_id) ON DELETE CASCADE,
+    folder_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'scanning', 'scanned', 'skipped')),
+    error TEXT,
+    PRIMARY KEY (job_id, folder_id)
+);
+
+CREATE TABLE IF NOT EXISTS scan_schedules (
+    owner_sid TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+    cadence TEXT NOT NULL CHECK(cadence IN ('daily', 'weekly')),
+    local_time TEXT NOT NULL,
+    days_json TEXT NOT NULL DEFAULT '[]',
+    last_run_date TEXT,
+    last_job_id TEXT,
+    last_result TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS scan_schedule_runs (
+    run_id TEXT PRIMARY KEY,
+    owner_sid TEXT NOT NULL REFERENCES scan_schedules(owner_sid) ON DELETE CASCADE,
+    occurrence_date TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('claimed', 'completed', 'failed', 'skipped')),
+    job_id TEXT REFERENCES scan_jobs(job_id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (owner_sid, occurrence_date)
+);
 
 CREATE TABLE IF NOT EXISTS quarantine_items (
     item_id TEXT PRIMARY KEY,
@@ -149,6 +190,7 @@ class ScanJob:
     started_at: str
     completed_at: Optional[str]
     error_message: Optional[str]
+    source: Literal["interactive", "schedule"] = "interactive"
 
 
 @dataclass(slots=True)
@@ -219,6 +261,11 @@ class ProtectionStore:
         conn = self._get_conn()
         try:
             conn.executescript(CREATE_TABLES_SQL)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(scan_jobs)")}
+            if "source" not in columns:
+                conn.execute(
+                    "ALTER TABLE scan_jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'interactive'"
+                )
             cursor = conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row is None:
@@ -508,6 +555,30 @@ class ProtectionStore:
             return [dict(row) for row in reversed(rows)]
 
     def create_scan_job(self, job_id: str, scope: Literal["quick", "system"]) -> ScanJob:
+        return self.create_scan_job_with_roots(job_id, scope, ())
+
+    def create_scan_job_with_roots(
+        self,
+        job_id: str,
+        scope: Literal["quick", "system"],
+        roots: tuple[tuple[str, str], ...],
+        *,
+        source: Literal["interactive", "schedule"] = "interactive",
+    ) -> ScanJob:
+        """Create a scan job and its immutable root snapshot atomically."""
+        if scope not in ("quick", "system"):
+            raise ValueError("invalid scan scope")
+        if source not in ("interactive", "schedule"):
+            raise ValueError("invalid scan source")
+        normalized = tuple((str(folder_id), str(path)) for folder_id, path in roots)
+        if scope == "quick" and normalized:
+            if tuple(folder_id for folder_id, _path in normalized) != KNOWN_SCAN_FOLDER_IDS:
+                raise ValueError("quick scan roots must contain the three known folders")
+            if any(not path or "\x00" in path for _folder_id, path in normalized):
+                raise ValueError("scan root path is invalid")
+        elif scope == "quick" and source == "schedule":
+            raise ValueError("scheduled quick scans require a root snapshot")
+
         job = ScanJob(
             job_id=job_id,
             scope=scope,
@@ -519,18 +590,90 @@ class ProtectionStore:
             started_at=datetime.now().isoformat(),
             completed_at=None,
             error_message=None,
+            source=source,
         )
         with self._transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO scan_jobs
-                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (job.job_id, job.scope, job.state, job.files_scanned, job.files_total,
-                 job.detections, job.errors, job.started_at),
+                 job.detections, job.errors, job.started_at, job.source),
+            )
+            conn.executemany(
+                "INSERT INTO scan_job_roots (job_id, folder_id, path) VALUES (?, ?, ?)",
+                ((job_id, folder_id, path) for folder_id, path in normalized),
             )
         return job
+
+    def replace_scan_profile(
+        self,
+        owner_sid: str,
+        roots: tuple[tuple[str, str], ...],
+        refreshed_at: str,
+    ) -> ScanProfile:
+        """Atomically publish all three fixed known-folder roots for one SID."""
+        normalized = tuple((str(folder_id), str(path)) for folder_id, path in roots)
+        if tuple(folder_id for folder_id, _path in normalized) != KNOWN_SCAN_FOLDER_IDS:
+            raise ValueError("scan profile requires the three known folders")
+        if not owner_sid or "\x00" in owner_sid:
+            raise ValueError("scan profile SID is invalid")
+        if any(not path or "\x00" in path for _folder_id, path in normalized):
+            raise ValueError("scan profile root path is invalid")
+        if not refreshed_at:
+            raise ValueError("scan profile refresh timestamp is required")
+        profile = ScanProfile(owner_sid, normalized, refreshed_at)
+        roots_json = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_profiles (owner_sid, version, roots_json, refreshed_at)
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(owner_sid) DO UPDATE SET
+                    version = scan_profiles.version + 1,
+                    roots_json = excluded.roots_json,
+                    refreshed_at = excluded.refreshed_at
+                """,
+                (owner_sid, roots_json, refreshed_at),
+            )
+        return profile
+
+    def get_scan_profile(self, owner_sid: str) -> ScanProfile | None:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT owner_sid, roots_json, refreshed_at FROM scan_profiles WHERE owner_sid = ?",
+                (owner_sid,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            roots = tuple((str(folder_id), str(path)) for folder_id, path in json.loads(row["roots_json"]))
+        except (TypeError, ValueError):
+            return None
+        if tuple(folder_id for folder_id, _path in roots) != KNOWN_SCAN_FOLDER_IDS:
+            return None
+        return ScanProfile(str(row["owner_sid"]), roots, str(row["refreshed_at"]))
+
+    def get_scan_job_roots(self, job_id: str) -> tuple[tuple[str, str], ...]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT folder_id, path FROM scan_job_roots WHERE job_id = ? ORDER BY rowid",
+                (job_id,),
+            ).fetchall()
+        return tuple((str(row["folder_id"]), str(row["path"])) for row in rows)
+
+    def list_scan_job_root_status(self, job_id: str) -> tuple[ScanRootSnapshot, ...]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT job_id, folder_id, path FROM scan_job_roots WHERE job_id = ? ORDER BY rowid",
+                (job_id,),
+            ).fetchall()
+        return tuple(
+            ScanRootSnapshot(str(row["job_id"]), str(row["folder_id"]), str(row["path"]))
+            for row in rows
+        )
 
     def update_scan_job(
         self,
@@ -592,6 +735,7 @@ class ProtectionStore:
                 started_at=row["started_at"],
                 completed_at=row["completed_at"],
                 error_message=row["error_message"],
+                source=row["source"] if "source" in row.keys() else "interactive",
             )
 
     def record_filter_completion(self, request_id: str, final_io_status: str) -> bool:
