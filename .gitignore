@@ -9,6 +9,10 @@ node_modules/
 .pnpm/
 dist/
 build/
+windows_protection/installer/bin/
+windows_protection/installer/obj/
+windows_protection/installer/CustomActions/bin/
+windows_protection/installer/CustomActions/obj/
 *.log
 *.tsbuildinfo
 tsconfig.tsbuildinfo

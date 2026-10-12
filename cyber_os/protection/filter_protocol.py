@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -13,6 +14,9 @@ PROTOCOL_VERSION = 1
 MAX_PAYLOAD_SIZE = 64 * 1024
 MAX_PATH_UTF16_CHARS = 32767
 MAX_RULE_ID_UTF16_CHARS = 255
+MAX_RULE_VERSION_UTF16_CHARS = 63
+REQUEST_HEADER_SIZE = 24
+REPLY_HEADER_SIZE = 26
 
 class Operation:
     CREATE = 1
@@ -49,7 +53,11 @@ class FilterCompletion:
 
 
 def _operation_to_int(op: OperationLiteral) -> int:
-    return Operation.CREATE if op == "create" else Operation.IMAGE_MAPPING
+    if op == "create":
+        return Operation.CREATE
+    if op == "image_mapping":
+        return Operation.IMAGE_MAPPING
+    raise ProtocolError(f"invalid operation: {op!r}")
 
 
 def _int_to_operation(value: int) -> OperationLiteral:
@@ -62,7 +70,20 @@ def _int_to_operation(value: int) -> OperationLiteral:
 
 def _verdict_to_int(verdict: ScanVerdict) -> int:
     if verdict.action == "block":
-        return VERDICT_BLOCK
+        # The scanner can only emit a block after loading a verified package.
+        # Preserve that trust boundary over IPC by requiring the identifying
+        # evidence; malformed or hand-built block-shaped verdicts fail open.
+        if (
+            verdict.status == "detected"
+            and isinstance(verdict.rule_id, str)
+            and verdict.rule_id
+            and isinstance(verdict.rule_version, str)
+            and verdict.rule_version not in ("", "unknown")
+            and isinstance(verdict.sha256, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", verdict.sha256)
+        ):
+            return VERDICT_BLOCK
+        return VERDICT_UNKNOWN
     if verdict.status == "unknown":
         return VERDICT_UNKNOWN
     return VERDICT_ALLOW
@@ -98,13 +119,19 @@ def _int_to_verdict(value: int, rule_id: str | None, rule_version: str) -> ScanV
 
 
 def encode_filter_request(request: FilterRequest) -> bytes:
+    if not isinstance(request.request_id, int) or not 1 <= request.request_id < 2**64:
+        raise ProtocolError("request_id must be a nonzero unsigned 64-bit integer")
+    if "\x00" in request.path:
+        raise ProtocolError("path contains a NUL character")
     path_utf16 = request.path.encode("utf-16-le")
     path_len = len(path_utf16) // 2
     if path_len > MAX_PATH_UTF16_CHARS:
         raise ProtocolError("path exceeds maximum length")
     
-    header = struct.pack("<IQII", PROTOCOL_VERSION, request.request_id,
-                         _operation_to_int(request.operation), path_len)
+    header = struct.pack(
+        "<IQII", PROTOCOL_VERSION, request.request_id,
+        _operation_to_int(request.operation), path_len,
+    )
     payload = header + path_utf16
     size = len(payload) + 4
     
@@ -122,11 +149,17 @@ def encode_filter_reply(reply: FilterReply) -> bytes:
     rule_version_len = len(rule_version_utf16) // 2
     if rule_id_len > MAX_RULE_ID_UTF16_CHARS:
         raise ProtocolError("rule_id exceeds maximum length")
-    if rule_version_len > 63:
+    if rule_version_len > MAX_RULE_VERSION_UTF16_CHARS:
         raise ProtocolError("rule_version exceeds maximum length")
+    if "\x00" in (reply.verdict.rule_id or "") or "\x00" in reply.verdict.rule_version:
+        raise ProtocolError("reply identity contains a NUL character")
+    if not isinstance(reply.request_id, int) or not 1 <= reply.request_id < 2**64:
+        raise ProtocolError("request_id must be a nonzero unsigned 64-bit integer")
     
-    header = struct.pack("<IQIIH", PROTOCOL_VERSION, reply.request_id,
-                         verdict_int, rule_id_len, rule_version_len)
+    header = struct.pack(
+        "<IQIIH", PROTOCOL_VERSION, reply.request_id, verdict_int,
+        rule_id_len, rule_version_len,
+    )
     payload = header + rule_id_utf16 + rule_version_utf16
     size = len(payload) + 4
     
@@ -137,6 +170,8 @@ def encode_filter_reply(reply: FilterReply) -> bytes:
 
 
 def encode_filter_completion(completion: FilterCompletion) -> bytes:
+    if not isinstance(completion.request_id, int) or not 1 <= completion.request_id < 2**64:
+        raise ProtocolError("request_id must be a nonzero unsigned 64-bit integer")
     payload = struct.pack("<IQI", PROTOCOL_VERSION,
                           completion.request_id, _io_status_to_int(completion.final_io_status))
     size = len(payload) + 4
@@ -153,26 +188,30 @@ def decode_filter_request(payload: bytes) -> FilterRequest:
     if size > MAX_PAYLOAD_SIZE:
         raise ProtocolError("payload exceeds 64 KiB")
     
-    if len(payload) < 24:
+    if len(payload) < REQUEST_HEADER_SIZE:
         raise ProtocolError("payload too small for request header")
     
     version, request_id, operation, path_len = struct.unpack("<IQII", payload[4:24])
     if version != PROTOCOL_VERSION:
         raise ProtocolError(f"unsupported protocol version: {version}")
+    if request_id == 0:
+        raise ProtocolError("request_id must not be zero")
     if operation not in (Operation.CREATE, Operation.IMAGE_MAPPING):
         raise ProtocolError(f"invalid operation: {operation}")
     if path_len > MAX_PATH_UTF16_CHARS:
         raise ProtocolError("path length exceeds maximum")
     
-    expected_min = 24 + path_len * 2
-    if len(payload) < expected_min:
-        raise ProtocolError("payload truncated")
+    expected_size = REQUEST_HEADER_SIZE + path_len * 2
+    if len(payload) != expected_size:
+        raise ProtocolError(f"request body length mismatch: need {expected_size}, got {len(payload)}")
     
-    path_utf16 = payload[24:24 + path_len * 2]
+    path_utf16 = payload[REQUEST_HEADER_SIZE:expected_size]
     try:
         path = path_utf16.decode("utf-16-le")
     except UnicodeDecodeError as exc:
         raise ProtocolError(f"invalid UTF-16 in path: {exc}") from exc
+    if "\x00" in path:
+        raise ProtocolError("path contains a NUL character")
     
     return FilterRequest(
         request_id=request_id,
@@ -191,26 +230,32 @@ def decode_filter_reply(payload: bytes) -> FilterReply:
     if size > MAX_PAYLOAD_SIZE:
         raise ProtocolError("payload exceeds 64 KiB")
     
-    if len(payload) < 26:  # 4 (size) + 22 (header with rule_version_len)
+    if len(payload) < REPLY_HEADER_SIZE:
         raise ProtocolError("payload too small for reply header")
     
-    version, request_id, verdict, rule_id_len, rule_version_len = struct.unpack("<IQIIH", payload[4:26])
+    version, request_id, verdict, rule_id_len, rule_version_len = struct.unpack(
+        "<IQIIH", payload[4:REPLY_HEADER_SIZE]
+    )
     if version != PROTOCOL_VERSION:
         raise ProtocolError(f"unsupported protocol version: {version}")
+    if request_id == 0:
+        raise ProtocolError("request_id must not be zero")
     if verdict > VERDICT_UNKNOWN:
         raise ProtocolError(f"invalid verdict: {verdict}")
     if rule_id_len > MAX_RULE_ID_UTF16_CHARS:
         raise ProtocolError("rule_id length exceeds maximum")
-    if rule_version_len > 63:
+    if rule_version_len > MAX_RULE_VERSION_UTF16_CHARS:
         raise ProtocolError("rule_version length exceeds maximum")
+    if verdict == VERDICT_BLOCK and (rule_id_len == 0 or rule_version_len == 0):
+        raise ProtocolError("block reply lacks verified rule identity")
     
-    expected_len = 26 + rule_id_len * 2 + rule_version_len * 2
+    expected_len = REPLY_HEADER_SIZE + rule_id_len * 2 + rule_version_len * 2
     if len(payload) != expected_len:
         raise ProtocolError(
             f"reply body length mismatch: need {expected_len}, got {len(payload)}"
         )
 
-    offset = 26
+    offset = REPLY_HEADER_SIZE
     rule_id_utf16 = payload[offset:offset + rule_id_len * 2]
     offset += rule_id_len * 2
     rule_version_utf16 = payload[offset:offset + rule_version_len * 2]
@@ -220,6 +265,8 @@ def decode_filter_reply(payload: bytes) -> FilterReply:
         rule_version = rule_version_utf16.decode("utf-16-le") if rule_version_len > 0 else "unknown"
     except UnicodeDecodeError as exc:
         raise ProtocolError(f"invalid UTF-16 in reply strings: {exc}") from exc
+    if "\x00" in (rule_id or "") or "\x00" in rule_version:
+        raise ProtocolError("reply identity contains a NUL character")
     
     verdict_obj = _int_to_verdict(verdict, rule_id, rule_version)
     return FilterReply(request_id=request_id, verdict=verdict_obj)
@@ -236,6 +283,8 @@ def decode_filter_completion(payload: bytes) -> FilterCompletion:
     version, request_id, final_io_status = struct.unpack("<IQI", payload[4:20])
     if version != PROTOCOL_VERSION:
         raise ProtocolError(f"unsupported protocol version: {version}")
+    if request_id == 0:
+        raise ProtocolError("request_id must not be zero")
     
     return FilterCompletion(
         request_id=request_id,

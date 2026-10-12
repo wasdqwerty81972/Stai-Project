@@ -1,79 +1,31 @@
-# VM Integration Tests for STAI Minifilter
+# STAI Minifilter VM Integration Gate
 
-## Overview
+This directory contains a harmless executable fixture and a preflight gate. It does **not** yet contain a runnable end-to-end minifilter test suite. The Windows service host and installer source now exist, but no WDK-built driver package, signed test rules, or VM test host is available. The preflight does not install anything or claim enforcement results.
 
-This directory contains the isolated Windows VM integration tests for the STAI Minifilter Driver. Tests are run in a disposable Windows 10/11 x64 VM with test signing enabled.
+## Current status
 
-## Prerequisites
+`Invoke-ProtectionMinifilterTests.ps1` checks for a built driver package, service package, signed test-rule package, test host, and benign fixture. It always exits with status `2` and reports **BLOCKED** until all artifacts and a real VM harness are supplied. It performs no VM actions and does not report passes.
 
-1. **Hyper-V VM** named `STAI-AV-Test` with:
-   - Windows 10/11 x64 (build 19041+)
-   - Test signing enabled: `bcdedit /set testsigning on` (reboot required)
-   - Visual Studio 2022 Build Tools or Community with C++ workload
-   - PowerShell Remoting enabled: `Enable-PSRemoting -Force`
-   - CredSSP authentication configured for remote commands
+## Existing fixture
 
-2. **Host Machine**:
-   - Elevated PowerShell
-   - Hyper-V module available
-   - Built driver package (`StaiProtection.sys`, `StaiProtection.inf`)
-
-## Test Package Preparation
-
-Build the driver first:
-
-```cmd
-msbuild windows_protection\driver\StaiProtection.vcxproj /p:Configuration=Debug /p:Platform=x64
-```
-
-Build the benign test fixture:
+Build the inert executable from an x64 Native Tools Command Prompt for Visual Studio:
 
 ```cmd
 cd windows_protection\tests\vm
 build-benign-marker.bat
 ```
 
-## Running Tests
+The output is `benign-marker.exe` in this directory. Do not use it to claim a block test; a verified signed test rule package and a service that loads it are also required.
 
-From an elevated PowerShell on the host:
+## Driver build and release gates
 
-```powershell
-powershell -ExecutionPolicy Bypass -File windows_protection\tests\vm\Invoke-ProtectionMinifilterTests.ps1 -VmName STAI-AV-Test
-```
+The driver requires the Windows Driver Kit and an isolated Windows 10/11 x64 VM with test signing enabled. Neither a WDK build nor a driver load has been verified in this development environment. The INF uses the unallocated development altitude `329999`; a production release needs a Microsoft-allocated altitude and a properly signed driver package.
 
-## Test Assertions
+Before implementing the real VM suite, provide:
 
-| Test | Description |
-|------|-------------|
-| `test_signed_block_rule_prevents_image_mapping` | Verified block rule with high confidence denies image mapping |
-| `test_benign_fixture_starts` | Benign executable not in block list launches successfully |
-| `test_observe_rule_allows_image_mapping` | Observe rule matches but allows execution |
-| `test_service_timeout_passes_through_and_marks_degraded` | Service unavailable = fail-open, UI reports degraded |
-| `test_service_process_does_not_recurse` | Service PID excluded from scanning, not filename |
-| `test_unload_with_pending_request_completes_cleanly` | Filter unload drains/cancels outstanding requests safely |
+- A built and test-signed driver package (`.sys`, `.inf`, and `.cat`).
+- A Windows protection service executable built with the public key for the supplied signed rules package.
+- A signed test rule package containing a harmless fixture hash with an explicit high-confidence `block` rule, plus any observe rule used in tests.
+- A VM test host that installs/uninstalls the package, launches and monitors the service, runs each assertion, and verifies driver completion evidence for denied operations.
 
-## Expected Results
-
-All six assertions must pass. The VM should return to its clean snapshot after tests complete.
-
-## Reporting
-
-Record in test report:
-- WDK version used for build
-- Windows build number in VM
-- Test signing state
-- Debug attachment value (altitude 370000)
-- Test log path
-- Production signing and altitude allocation: **PENDING**
-
-## Cleanup
-
-Tests automatically unload filter and uninstall driver. Use `-SkipCleanup` to preserve state for debugging.
-
-## Troubleshooting
-
-- **VM not found**: Verify VM name matches exactly
-- **Access denied**: Run PowerShell as Administrator
-- **CredSSP errors**: Run `Enable-WSManCredSSP -Role Client -DelegateComputer "*"` on host
-- **Driver load fails**: Verify test signing is enabled in VM (`bcdedit`)
-- **Port connection fails**: Verify service is running and port ACL allows service SID
+The intended acceptance tests—signed block, benign allow, observe allow, service unavailable fail-open, service-process recursion prevention, and unload during outstanding I/O—remain unexecuted until those components exist.

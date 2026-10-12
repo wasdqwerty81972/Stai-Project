@@ -32,6 +32,8 @@ from ui.event_bus import AgentEvent, event_bus
 # Protection service imports (lazy-loaded)
 _protection_service: Any | None = None
 _protection_service_lock = threading.Lock()
+_protection_triage: Any | None = None
+_protection_triage_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Lazy agent singleton — created on first request so the server can start
@@ -99,6 +101,10 @@ def _get_protection_service() -> Any:
                         yara_timeout_seconds=5,
                     )
                     _protection_service = ProtectionService(config)
+                    # The current loader reads public.key beside the editable
+                    # manifest/signature. A valid signature against that key
+                    # does not establish a pinned trust chain.
+                    _protection_service.rules_trust_established = False
                 except Exception as e:
                     # Return a mock service that reports unavailable. Capture the
                     # error text now: the ``except`` name ``e`` is cleared when this
@@ -107,6 +113,8 @@ def _get_protection_service() -> Any:
                     err_text = str(e)
 
                     class _UnavailableService:
+                        rules_trust_established = False
+
                         @property
                         def store(self):
                             # Store-scoped routes (threats, scan-job lookup) call
@@ -128,6 +136,14 @@ def _get_protection_service() -> Any:
                                 last_error=err_text,
                             )
                         def list_threats(self, limit=100):
+                            return []
+                        def get_triage(self, detection_id):
+                            return None
+                        def get_triage_source(self, detection_id):
+                            return None
+                        def get_triage_session_detection(self, session_id):
+                            return None
+                        def list_triage_messages(self, session_id, limit=40):
                             return []
                         def create_scan_job(self, job_id, scope):
                             from types import SimpleNamespace
@@ -154,6 +170,22 @@ def _get_protection_service() -> Any:
                     _protection_service = _UnavailableService()
 
     return _protection_service
+
+
+def _get_protection_triage() -> Any:
+    """Return the bounded triage manager with an injected provider if configured."""
+    global _protection_triage
+    service = _get_protection_service()
+    if _protection_triage is None:
+        with _protection_triage_lock:
+            if _protection_triage is None:
+                from cyber_os.protection.triage import ProtectionTriage, UnavailableTriageProvider
+
+                provider = getattr(app.state, "protection_triage_provider", None)
+                if provider is None:
+                    provider = UnavailableTriageProvider()
+                _protection_triage = ProtectionTriage(service.store, provider)
+    return _protection_triage
 
 
 def _session_conversation_history(session_id: str) -> list[dict[str, str]]:
@@ -1304,16 +1336,19 @@ class QuarantineResponse(BaseModel):
 
 
 class AgentMessageRequest(BaseModel):
-    session_id: str
-    message: str
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(..., min_length=1, max_length=128)
+    message: str = Field(..., min_length=1, max_length=2000)
     detection_id: str | None = None
 
 
 class AgentMessageResponse(BaseModel):
     session_id: str
+    detection_id: str | None = None
     message: str
-    tool_calls: list = []
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     response_action: str | None = None
+    status: str = "completed"
 
 
 class ProtectionStatusResponse(BaseModel):
@@ -1321,6 +1356,7 @@ class ProtectionStatusResponse(BaseModel):
     driver_state: str
     service_state: str
     rules_version: str
+    rules_trust_established: bool
     last_scan: str | None = None
     counts: dict[str, int]
     windows_security: dict[str, Any]
@@ -1328,21 +1364,47 @@ class ProtectionStatusResponse(BaseModel):
     last_error: str | None = None
 
 
+def _triage_record_response(result: Any) -> dict[str, Any]:
+    """Map durable Level 2 state to the dashboard's TriageRecord contract."""
+    return {
+        "triage_id": result.detection_id,
+        "detection_id": result.detection_id,
+        "summary": result.summary,
+        "recommendations": [],
+        "state": result.status,
+        "error": result.error,
+        "created_at": result.created_at,
+        "updated_at": result.updated_at,
+    }
+
+
 @app.get("/api/protection/status", response_model=ProtectionStatusResponse)
 def protection_status() -> dict[str, Any]:
     """Get current protection status including driver, service, rules, and counts."""
     service = _get_protection_service()
     status = service.get_status()
+    trust_established = bool(getattr(service, "rules_trust_established", False))
+    state = status.state
+    last_error = status.last_error
+    if state != "unavailable" and status.rules_version == "dev-empty":
+        state = "degraded"
+        last_error = last_error or "verified rule package is empty"
+    elif state != "unavailable" and (
+        not trust_established or status.rules_version in {"unknown", ""}
+    ):
+        state = "degraded"
+        last_error = last_error or "verified rule trust chain is unavailable"
     return {
-        "state": status.state,
+        "state": state,
         "driver_state": status.driver_state,
         "service_state": status.service_state,
         "rules_version": status.rules_version,
+        "rules_trust_established": trust_established,
         "last_scan": status.last_scan,
         "counts": status.counts,
         "windows_security": status.windows_security,
         "sensor_coverage": status.sensor_coverage,
-        "last_error": status.last_error,
+        "last_error": last_error,
     }
 
 
@@ -1425,33 +1487,65 @@ def list_protection_threats(limit: int = 100) -> list[dict[str, Any]]:
 @app.get("/api/protection/triage")
 def get_protection_triage(detection_id: str) -> dict[str, Any]:
     """Get triage info for a detection."""
-    # For now, return not implemented - triage is stored separately
-    raise HTTPException(status_code=501, detail="triage endpoint not yet implemented")
+    triage = _get_protection_triage()
+    result = triage.get(detection_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="triage result not found")
+    return _triage_record_response(result)
 
 
 @app.post("/api/protection/triage/{detection_id}")
 def request_protection_triage(detection_id: str) -> dict[str, Any]:
     """Request agent triage for a detection."""
-    raise HTTPException(status_code=501, detail="triage endpoint not yet implemented")
+    from cyber_os.protection.triage import DetectionNotFound
+
+    try:
+        result = _get_protection_triage().request(detection_id)
+    except DetectionNotFound as exc:
+        raise HTTPException(status_code=404, detail="detection not found") from exc
+    return _triage_record_response(result)
 
 
 @app.get("/api/protection/agent/conversations/{session_id}")
 def get_protection_agent_history(session_id: str) -> dict[str, Any]:
     """Get agent conversation history for a detection."""
-    raise HTTPException(status_code=501, detail="agent history endpoint not yet implemented")
+    from cyber_os.protection.triage import InvalidAgentMessage, SessionNotFound
+
+    triage = _get_protection_triage()
+    try:
+        detection_id = triage.session_detection(session_id)
+        messages = triage.history(session_id)
+    except SessionNotFound as exc:
+        raise HTTPException(status_code=404, detail="investigation session not found") from exc
+    except InvalidAgentMessage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"session_id": session_id, "detection_id": detection_id, "messages": messages}
 
 
 @app.post("/api/protection/agent/messages", response_model=AgentMessageResponse)
 def send_protection_agent_message(request: AgentMessageRequest) -> dict[str, Any]:
     """Send message to protection agent (investigation-scoped, no tools)."""
-    # Agent chat is handled by the main agent but scoped to detection
-    # For now, return a placeholder response
-    return {
-        "session_id": request.session_id,
-        "message": "Protection agent analysis not yet implemented",
-        "tool_calls": [],
-        "response_action": None,
-    }
+    from cyber_os.protection.triage import (
+        DetectionNotFound,
+        InvalidAgentMessage,
+        SessionConflict,
+        SessionNotFound,
+    )
+
+    try:
+        return _get_protection_triage().send_message(
+            session_id=request.session_id,
+            message=request.message,
+            detection_id=request.detection_id,
+        )
+    except DetectionNotFound as exc:
+        raise HTTPException(status_code=404, detail="detection not found") from exc
+    except SessionNotFound as exc:
+        raise HTTPException(status_code=404, detail="investigation session not found") from exc
+    except SessionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidAgentMessage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/protection/quarantine", response_model=list[QuarantineItemResponse])

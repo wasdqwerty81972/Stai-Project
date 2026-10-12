@@ -1,0 +1,16 @@
+[[permission]]
+identifier = "allow-protection-bridge"
+description = "Allows the bundled local protection dashboard to call typed protection commands."
+commands.allow = [
+  "get_protection_status",
+  "start_protection_scan",
+  "get_protection_scan",
+  "cancel_protection_scan",
+  "list_protection_threats",
+  "get_protection_triage",
+  "request_protection_triage",
+  "get_protection_agent_history",
+  "send_protection_agent_message",
+  "list_quarantine_items",
+  "restore_quarantine_item",
+]

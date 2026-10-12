@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "approved_service_publisher_thumbprints": [],
+  "approved_microsoft_driver_signer_thumbprints": [],
+  "note": "Keep blocked until the release owner pins the production service publisher and the Microsoft hardware signer thumbprint observed in the approved Hardware Dev Center package."
+}

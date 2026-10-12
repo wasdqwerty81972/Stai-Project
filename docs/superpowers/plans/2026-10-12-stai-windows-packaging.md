@@ -27,6 +27,14 @@
 - Unsigned test package: permit only VM test mode and label the package non-production; test in Task 1.
 - Uninstall with pending quarantine data: preserve user data unless the user explicitly selects removal; test in Task 2.
 
+## Progress (2026-10-12 follow-up)
+
+- Task 1 is implemented. The Windows service host and local dashboard bundle were built and smoke-checked in the prior work session; the test build has no trusted rules key and therefore truthfully remains unavailable.
+- Task 2 implementation source is present: WiX v4 MSI, DTF lifecycle custom actions, interactive dashboard SID capture, SYSTEM/admin-only ProgramData ACLs, signed rule package staging, service-first driver activation, bounded health handshake, rollback, and data-preserving uninstall. A SYSTEM startup task consumes the protected ProgramData rollback marker; incomplete rollback retains the task/marker and disables auto-start while recovery retries. The managed custom-action assembly builds successfully.
+- Task 2 MSI build and VM assertions remain blocked: this environment has no WDK-built `.sys`/`.cat` package, no isolated STAI test VM, and no supplied signed test rules package. Do not count the preflight gate as a passing VM suite.
+- Task 3 staged updater, SYSTEM startup recovery task, uninstall/update exclusion, and blocked release policy/readiness manifests are implemented. Production signing checks pin a publisher, validate required EKUs and driver kernel-signing policy, normalize altitude comparisons, and require reviewed Microsoft allocation evidence. Update and rollback execution have not been run against a Windows VM.
+- Full-stack acceptance and production readiness remain incomplete. The release gate must stay blocked until the actual driver package, allocated production altitude, Microsoft signing evidence, and end-to-end VM results exist.
+
 ---
 
 ### Task 1: Service executable and local dashboard bundle
@@ -42,12 +50,12 @@
 **Interfaces:**
 - Service owns the named pipe `\\.\pipe\STAI.Protection.v1` and minifilter port `\STAIProtectionPort`.
 - `get_protection_status` reports driver, service, rule package, and database health independently.
-- Service configuration and rule-signing public key are read-only at runtime; signing private keys are not shipped.
+- Service configuration and rule-signing public key are read-only at runtime; the build accepts an Ed25519 public-key PEM and embeds only its raw public bytes. Signing private keys are not shipped.
 
-- [ ] **Step 1: Write failing lifecycle tests** named `test_service_status_is_unavailable_before_driver_and_rules_are_ready`, `test_service_startup_does_not_claim_active_on_filter_failure`, and `test_pipe_acl_rejects_untrusted_client`. Assert no `Active` state unless the driver, service, and signed rule package are all healthy; a pipe client outside the installed service SID/current-user policy cannot read or issue requests.
-- [ ] **Step 2: Run** `python -m pytest -q tests/test_windows_protection_service_lifecycle.py`; expect missing Windows service adapter.
-- [ ] **Step 3: Implement** Windows service entry/stop handlers, startup health gating, restrictive named-pipe ACLs, and a repeatable PyInstaller build that excludes development keys.
-- [ ] **Step 4: Build** with `powershell -ExecutionPolicy Bypass -File windows_protection/installer/build-service.ps1 -Configuration Test`; expect an executable and a dependency manifest with no private key material.
+- [x] **Step 1: Write failing lifecycle tests** named `test_service_status_is_unavailable_before_driver_and_rules_are_ready`, `test_service_startup_does_not_claim_active_on_filter_failure`, and `test_pipe_acl_rejects_untrusted_client`. Assert no `Active` state unless the driver, service, and signed rule package are all healthy; a pipe client outside the installed service SID/current-user policy cannot read or issue requests.
+- [x] **Step 2: Run** `python -m pytest -q tests/test_windows_protection_service_lifecycle.py`; initial failures exposed missing service host and pipe behavior, then passed after implementation.
+- [x] **Step 3: Implement** Windows service entry/stop handlers, startup health gating, restrictive named-pipe ACLs, and a repeatable PyInstaller build that excludes development keys.
+- [x] **Step 4: Build** with `powershell -ExecutionPolicy Bypass -File windows_protection/installer/build-service.ps1 -Configuration Test`; Test executable and valid dependency manifest built and smoke-checked. No public key was supplied, so the executable truthfully reports protection unavailable.
 
 ### Task 2: Elevated installer and uninstall
 
@@ -58,7 +66,7 @@
 - Create: `windows_protection/installer/tests/Invoke-InstallerVmTests.ps1`
 
 - [ ] **Step 1: Add VM assertions** named `test_install_requires_elevation`, `test_install_registers_service_and_filter`, `test_failed_driver_start_rolls_back_service`, `test_uninstall_preserves_quarantine`, and `test_test_signed_build_is_marked_nonproduction`.
-- [ ] **Step 2: Implement** an elevated MSI that stages service and signed driver files, starts the service before attaching the filter, validates all health checks, and rolls back on failure. Uninstall preserves quarantine unless an explicit removal option is selected.
+- [x] **Step 2: Implement** an elevated MSI that stages service and signed driver files, starts the service before attaching the filter, validates all health checks, and rolls back on failure. Uninstall preserves quarantine unless an explicit removal option is selected.
 - [ ] **Step 3: Build** with `dotnet build windows_protection/installer/StaiProtection.wixproj -c Release`; expect an MSI and no signing secrets in generated artifacts.
 - [ ] **Step 4: Run** `powershell -ExecutionPolicy Bypass -File windows_protection/installer/tests/Invoke-InstallerVmTests.ps1 -VmName STAI-AV-Test`; expect all five VM assertions to pass.
 
@@ -70,7 +78,7 @@
 - Create: `windows_protection/installer/tests/Invoke-UpdateRollbackVmTests.ps1`
 
 - [ ] **Step 1: Write failing VM assertions** named `test_interrupted_update_keeps_prior_version`, `test_invalid_rule_signature_rolls_back_package`, `test_new_driver_health_failure_restores_previous_driver`, and `test_release_gate_rejects_test_signature`.
-- [ ] **Step 2: Implement** staged version directories, health-checked activation, rollback metadata, and a release gate requiring Microsoft signing evidence, supported Windows VM results, and clean installer tests.
+- [x] **Step 2: Implement** staged update payloads, health-checked activation, rollback metadata, and a release gate requiring Microsoft signing evidence, supported Windows VM results, and clean installer tests.
 - [ ] **Step 3: Run** `powershell -ExecutionPolicy Bypass -File windows_protection/installer/tests/Invoke-UpdateRollbackVmTests.ps1 -VmName STAI-AV-Test`; expect all four assertions to pass.
 - [ ] **Step 4: Report** production signing and altitude allocation as pending unless the organization has supplied both; do not label the test package production-ready.
 

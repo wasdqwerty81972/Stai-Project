@@ -15,7 +15,7 @@ from typing import Any, Iterator, Literal, Optional
 from .models import DetectionRule, RuleSet, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -86,6 +86,36 @@ CREATE TABLE IF NOT EXISTS quarantine_items (
 
 CREATE INDEX IF NOT EXISTS idx_quarantine_detection ON quarantine_items(detection_id);
 
+-- Level 2 triage output is isolated from Level 1 detection verdicts.
+CREATE TABLE IF NOT EXISTS protection_triage (
+    detection_id TEXT PRIMARY KEY REFERENCES detections(detection_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'unavailable', 'failed', 'rejected')),
+    summary TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS protection_triage_sessions (
+    session_id TEXT PRIMARY KEY,
+    detection_id TEXT NOT NULL REFERENCES detections(detection_id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_protection_triage_sessions_detection
+    ON protection_triage_sessions(detection_id);
+
+CREATE TABLE IF NOT EXISTS protection_triage_messages (
+    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES protection_triage_sessions(session_id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL CHECK(length(content) <= 4000),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_protection_triage_messages_session
+    ON protection_triage_messages(session_id, message_id);
+
 CREATE TABLE IF NOT EXISTS filter_completions (
     request_id TEXT PRIMARY KEY,
     final_io_status TEXT NOT NULL,
@@ -138,6 +168,16 @@ class DetectionRecord:
 
 
 @dataclass(slots=True)
+class TriageRecord:
+    detection_id: str
+    status: Literal["queued", "running", "completed", "unavailable", "failed", "rejected"]
+    summary: Optional[str]
+    error: Optional[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
 class QuarantineItem:
     item_id: str
     original_path: str
@@ -182,6 +222,9 @@ class ProtectionStore:
             cursor = conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row is None:
+                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (DB_SCHEMA_VERSION,))
+            elif row[0] < DB_SCHEMA_VERSION:
+                conn.execute("DELETE FROM schema_version")
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (DB_SCHEMA_VERSION,))
             conn.commit()
         except sqlite3.Error:
@@ -300,6 +343,157 @@ class ProtectionStore:
             )
             return [self._row_to_detection(row) for row in cursor.fetchall()]
 
+    def get_detection(self, detection_id: str) -> Optional[DetectionRecord]:
+        """Read a Level 1 detection without allowing triage to mutate it."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM detections WHERE detection_id = ?", (detection_id,)
+            ).fetchone()
+            return self._row_to_detection(row) if row else None
+
+    def get_triage_source(self, detection_id: str) -> Optional[dict[str, Any]]:
+        """Select only the narrow fields eligible for a triage context."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT rule_id, rule_version, action, confidence, severity, file_type, size_bytes
+                FROM detections WHERE detection_id = ?
+                """,
+                (detection_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def create_triage(
+        self,
+        detection_id: str,
+        *,
+        status: Literal["queued", "unavailable", "rejected"],
+        error: Optional[str] = None,
+    ) -> tuple[TriageRecord, bool]:
+        """Create at most one triage record for a detection; never touch verdicts."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO protection_triage (detection_id, status, error)
+                VALUES (?, ?, ?)
+                """,
+                (detection_id, status, error),
+            )
+            row = conn.execute(
+                "SELECT * FROM protection_triage WHERE detection_id = ?", (detection_id,)
+            ).fetchone()
+            if row is None:
+                raise LookupError("detection not found")
+            return self._row_to_triage(row), cursor.rowcount == 1
+
+    def get_triage(self, detection_id: str) -> Optional[TriageRecord]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM protection_triage WHERE detection_id = ?", (detection_id,)
+            ).fetchone()
+            return self._row_to_triage(row) if row else None
+
+    def count_triage_jobs(self) -> int:
+        with self._get_conn() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM protection_triage").fetchone()[0])
+
+    def update_triage(
+        self,
+        detection_id: str,
+        *,
+        status: Literal["queued", "running", "completed", "unavailable", "failed", "rejected"],
+        summary: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE protection_triage
+                SET status = ?, summary = ?, error = ?, updated_at = datetime('now')
+                WHERE detection_id = ?
+                """,
+                (status, summary, error, detection_id),
+            )
+            return cursor.rowcount > 0
+
+    def retry_triage(self, detection_id: str) -> bool:
+        """Atomically move one retryable terminal record back to queued."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE protection_triage
+                SET status = 'queued', summary = NULL, error = NULL, updated_at = datetime('now')
+                WHERE detection_id = ? AND status IN ('unavailable', 'rejected', 'failed')
+                """,
+                (detection_id,),
+            )
+            return cursor.rowcount == 1
+
+    def defer_triage_retry(
+        self,
+        detection_id: str,
+        *,
+        status: Literal["unavailable", "rejected"],
+        error: str,
+    ) -> bool:
+        """Update only a terminal retryable record, safe against concurrent work."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE protection_triage
+                SET status = ?, summary = NULL, error = ?, updated_at = datetime('now')
+                WHERE detection_id = ? AND status IN ('unavailable', 'rejected', 'failed')
+                """,
+                (status, error, detection_id),
+            )
+            return cursor.rowcount == 1
+
+    def create_triage_session(self, session_id: str, detection_id: str) -> bool:
+        """Create a session and bind it permanently to one detection."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO protection_triage_sessions (session_id, detection_id)
+                VALUES (?, ?)
+                """,
+                (session_id, detection_id),
+            )
+            return cursor.rowcount == 1
+
+    def get_triage_session_detection(self, session_id: str) -> Optional[str]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT detection_id FROM protection_triage_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+    def record_triage_message(self, session_id: str, role: Literal["user", "assistant"], content: str) -> None:
+        if role not in ("user", "assistant"):
+            raise ValueError("invalid triage message role")
+        if not isinstance(content, str) or len(content) > 4000:
+            raise ValueError("triage message exceeds the size limit")
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO protection_triage_messages (session_id, role, content)
+                VALUES (?, ?, ?)
+                """,
+                (session_id, role, content),
+            )
+
+    def list_triage_messages(self, session_id: str, limit: int = 40) -> list[dict[str, str]]:
+        bounded_limit = max(1, min(int(limit), 100))
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT role, content FROM protection_triage_messages
+                WHERE session_id = ? ORDER BY message_id DESC LIMIT ?
+                """,
+                (session_id, bounded_limit),
+            ).fetchall()
+            return [dict(row) for row in reversed(rows)]
+
     def create_scan_job(self, job_id: str, scope: Literal["quick", "system"]) -> ScanJob:
         job = ScanJob(
             job_id=job_id,
@@ -414,4 +608,15 @@ class ProtectionStore:
             file_path=row["file_path"],
             created_at=row["created_at"],
             triage_enqueued=bool(row["triage_enqueued"]),
+        )
+
+    @staticmethod
+    def _row_to_triage(row: sqlite3.Row) -> TriageRecord:
+        return TriageRecord(
+            detection_id=row["detection_id"],
+            status=row["status"],
+            summary=row["summary"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )

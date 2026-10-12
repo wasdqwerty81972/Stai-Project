@@ -39,6 +39,22 @@ def test_sha256_block_rule_returns_verified_block_verdict(tmp_path: Path) -> Non
     assert verdict.sha256 == hashlib.sha256(content).hexdigest()
 
 
+def test_executable_extension_is_scanned_without_stat_mode_mismatch(
+    tmp_path: Path,
+) -> None:
+    content = b"STAI inert executable-extension regression marker"
+    sample = tmp_path / "sample.exe"
+    sample.write_bytes(content)
+
+    verdict = scan_path(sample, _rule_set(_hash_rule(content)))
+
+    assert (verdict.status, verdict.action, verdict.rule_id) == (
+        "detected",
+        "block",
+        "hash-1",
+    )
+
+
 def test_observe_match_never_blocks(tmp_path: Path) -> None:
     content = b"benign but observable test marker"
     sample = tmp_path / "sample.bin"

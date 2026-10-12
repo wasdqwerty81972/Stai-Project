@@ -1,0 +1,105 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="STAI Windows Protection ($(var.BuildFlavor))"
+           Manufacturer="STAI Project"
+           Version="1.0.0.0"
+           UpgradeCode="6D0CB85E-F56E-4214-9919-8B38FEACDA2A"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="DASHBOARDSID" Secure="yes" Hidden="yes" />
+    <Property Id="ARPPRODUCTNAME" Value="STAI Windows Protection ($(var.BuildFlavor))" />
+    <Launch Condition="Privileged" Message="STAI Windows Protection requires an elevated administrator install." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="STAIINSTALLROOT" Name="STAI">
+        <Directory Id="PROTECTIONFOLDER" Name="Protection">
+          <Directory Id="DRIVERFOLDER" Name="driver" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="STAIAPPDATA" Name="STAI">
+        <Directory Id="PROTECTIONDATA" Name="Protection">
+          <Directory Id="RULESDATA" Name="rules" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="STAI Windows Protection" Level="1">
+      <ComponentRef Id="ServiceExecutable" />
+      <ComponentRef Id="UpdateScript" />
+      <ComponentRef Id="InstallRollbackRecoveryScript" />
+      <ComponentRef Id="DriverInf" />
+      <ComponentRef Id="DriverBinary" />
+      <ComponentRef Id="DriverCatalog" />
+      <ComponentRef Id="RulesManifest" />
+      <ComponentRef Id="RulesSignature" />
+      <ComponentRef Id="PackageMetadata" />
+      <ComponentRef Id="DashboardClientRegistry" />
+    </Feature>
+
+    <Binary Id="ProtectionCustomActions" SourceFile="$(var.CustomActionPackage)" />
+    <CustomAction Id="CaptureDashboardSid" BinaryRef="ProtectionCustomActions" DllEntry="CaptureDashboardSid" Execute="immediate" Return="check" />
+    <CustomAction Id="SetInstallProtectionData" Property="InstallProtection" Value="ProtectionDir=[PROTECTIONFOLDER];DashboardSid=[DASHBOARDSID]" />
+    <CustomAction Id="SetRollbackProtectionData" Property="RollbackProtection" Value="ProtectionDir=[PROTECTIONFOLDER]" />
+    <CustomAction Id="SetUninstallProtectionData" Property="UninstallProtection" Value="ProtectionDir=[PROTECTIONFOLDER]" />
+    <CustomAction Id="SetCommitProtectionData" Property="CommitProtection" Value="ProtectionDir=[PROTECTIONFOLDER]" />
+    <CustomAction Id="RollbackProtection" BinaryRef="ProtectionCustomActions" DllEntry="RollbackProtection" Execute="rollback" Impersonate="no" Return="ignore" />
+    <CustomAction Id="InstallProtection" BinaryRef="ProtectionCustomActions" DllEntry="InstallProtection" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="UninstallProtection" BinaryRef="ProtectionCustomActions" DllEntry="UninstallProtection" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="CommitProtection" BinaryRef="ProtectionCustomActions" DllEntry="CommitProtection" Execute="commit" Impersonate="no" Return="ignore" HideTarget="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CaptureDashboardSid" Before="InstallFiles" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="SetInstallProtectionData" Before="RollbackProtection" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="SetRollbackProtectionData" Before="RollbackProtection" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="RollbackProtection" Before="InstallProtection" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="SetCommitProtectionData" Before="InstallProtection" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="InstallProtection" After="InstallFiles" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="CommitProtection" After="InstallProtection" Condition="NOT Installed AND NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="SetUninstallProtectionData" Before="UninstallProtection" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="UninstallProtection" Before="RemoveFiles" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+  <Fragment>
+    <DirectoryRef Id="PROTECTIONFOLDER">
+      <Component Id="ServiceExecutable" Guid="*">
+        <File Id="STAIProtectionServiceExe" Source="$(var.StageDir)\STAIProtectionService.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="UpdateScript" Guid="*">
+        <File Id="STAIProtectionUpdater" Source="$(var.StageDir)\update.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="InstallRollbackRecoveryScript" Guid="*">
+        <File Id="STAIInstallRollbackRecovery" Source="$(var.StageDir)\InstallRollbackRecovery.ps1" KeyPath="yes" />
+      </Component>
+      <Component Id="PackageMetadata" Guid="*">
+        <File Id="PackageMetadataFile" Name="package-metadata.json" Source="$(var.StageDir)\package-metadata.json" KeyPath="yes" />
+      </Component>
+      <Component Id="DashboardClientRegistry" Guid="*">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\STAI\Protection">
+          <RegistryValue Name="DashboardClientSid" Type="string" Value="[DASHBOARDSID]" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="DRIVERFOLDER">
+      <Component Id="DriverInf" Guid="*">
+        <File Id="StaiProtectionInf" Source="$(var.StageDir)\driver\StaiProtection.inf" KeyPath="yes" />
+      </Component>
+      <Component Id="DriverBinary" Guid="*">
+        <File Id="StaiProtectionSys" Source="$(var.StageDir)\driver\StaiProtection.sys" KeyPath="yes" />
+      </Component>
+      <Component Id="DriverCatalog" Guid="*">
+        <File Id="StaiProtectionCat" Source="$(var.StageDir)\driver\StaiProtection.cat" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="RULESDATA">
+      <Component Id="RulesManifest" Guid="*">
+        <File Id="SignedRulesManifest" Name="manifest.json" Source="$(var.StageDir)\rules\manifest.json" KeyPath="yes" />
+      </Component>
+      <Component Id="RulesSignature" Guid="*">
+        <File Id="SignedRulesSignature" Name="manifest.sig" Source="$(var.StageDir)\rules\manifest.sig" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

@@ -1,3 +1,5 @@
 # Versions with Windows x64 wheels, checked against the official PyPI release files.
 cryptography==50.0.2
 yara-python==4.5.4
+pywin32==312
+PyInstaller==6.22.3

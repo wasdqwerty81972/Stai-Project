@@ -1,5 +1,6 @@
 mod platform;
 mod pty;
+mod protection_bridge;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -2096,7 +2097,18 @@ pub fn run() {
             execute_pty_create,
             execute_pty_input,
             execute_pty_resize,
-            execute_pty_kill
+            execute_pty_kill,
+            protection_bridge::get_protection_status,
+            protection_bridge::start_protection_scan,
+            protection_bridge::get_protection_scan,
+            protection_bridge::cancel_protection_scan,
+            protection_bridge::list_protection_threats,
+            protection_bridge::get_protection_triage,
+            protection_bridge::request_protection_triage,
+            protection_bridge::get_protection_agent_history,
+            protection_bridge::send_protection_agent_message,
+            protection_bridge::list_quarantine_items,
+            protection_bridge::restore_quarantine_item
         ])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())

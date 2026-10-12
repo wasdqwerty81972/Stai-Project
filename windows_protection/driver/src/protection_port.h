@@ -7,19 +7,13 @@
 NTSTATUS StaiSendRequestToService(
     _In_ ULONGLONG RequestId,
     _In_ ULONG Operation,
-    _In_ PUNICODE_STRING FilePath
+    _In_ PUNICODE_STRING FilePath,
+    _Out_ PBOOLEAN ShouldBlock
 );
 
-VOID StaiCompleteOutstandingRequest(
+VOID StaiSendCompletionToService(
     _In_ ULONGLONG RequestId,
-    _In_ NTSTATUS FinalStatus
-);
-
-VOID StaiCleanupOutstandingRequests(VOID);
-
-NTSTATUS StaiWaitForServiceReply(
-    _In_ PSTAI_OUTSTANDING_REQUEST OutstandingRequest,
-    _In_ LONGLONG TimeoutMs
+    _In_ NTSTATUS FinalIoStatus
 );
 
 #endif

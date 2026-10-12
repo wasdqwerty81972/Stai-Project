@@ -120,6 +120,45 @@ def test_reply_round_trip_preserves_verdict() -> None:
     assert decoded.verdict.rule_version == "test-1"
 
 
+def test_reply_frame_matches_packed_driver_wire_layout() -> None:
+    reply = FilterReply(
+        request_id=0x0102030405060708,
+        verdict=ScanVerdict(
+            status="detected",
+            action="block",
+            rule_id="h",
+            rule_version="v",
+            sha256="a" * 64,
+            reason="signed high-confidence rule match",
+        ),
+    )
+
+    # Hand-derived from the packed C V1 schema: size, version, request ID,
+    # verdict, rule ID length, rule version length, then the two UTF-16 strings.
+    expected = bytes.fromhex(
+        "1e000000 01000000 0807060504030201 01000000 01000000 0100 6800 7600"
+    )
+    assert encode_filter_reply(reply) == expected
+
+
+def test_block_without_complete_verification_identity_serializes_as_allow() -> None:
+    reply = FilterReply(
+        request_id=9,
+        verdict=ScanVerdict(
+            status="detected",
+            action="block",
+            rule_id=None,
+            rule_version="unknown",
+            sha256=None,
+            reason="unverified block-shaped verdict",
+        ),
+    )
+
+    decoded = decode_filter_reply(encode_filter_reply(reply))
+    assert decoded.verdict.action == "allow"
+    assert decoded.verdict.status == "unknown"
+
+
 def test_completion_round_trip_various_statuses() -> None:
     for status in [
         "STATUS_SUCCESS",
@@ -194,3 +233,27 @@ def test_request_rejects_truncated_path() -> None:
 def test_completion_rejects_wrong_size() -> None:
     with pytest.raises(ProtocolError):
         decode_filter_completion(b"\x10\x00\x00\x00" + b"\x00" * 12)  # 16 bytes, not 20
+
+
+def test_protocol_rejects_zero_request_ids() -> None:
+    request_frame = encode_filter_request(
+        FilterRequest(request_id=1, operation="create", path=r"C:\x.exe")
+    )
+    zero_id_request = bytearray(request_frame)
+    zero_id_request[8:16] = b"\0" * 8
+
+    with pytest.raises(ProtocolError, match="request_id"):
+        decode_filter_request(bytes(zero_id_request))
+    with pytest.raises(ProtocolError, match="request_id"):
+        encode_filter_request(FilterRequest(request_id=0, operation="create", path="x"))
+    with pytest.raises(ProtocolError, match="request_id"):
+        encode_filter_reply(
+            FilterReply(request_id=0, verdict=ScanVerdict(
+                status="clean", action="allow", rule_id=None,
+                rule_version="test-1", sha256=None, reason="clean",
+            ))
+        )
+    with pytest.raises(ProtocolError, match="request_id"):
+        encode_filter_completion(
+            FilterCompletion(request_id=0, final_io_status="STATUS_SUCCESS")
+        )

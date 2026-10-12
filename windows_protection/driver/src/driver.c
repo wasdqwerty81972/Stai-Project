@@ -6,7 +6,7 @@ CONST FLT_OPERATION_REGISTRATION Callbacks[] = {
     { IRP_MJ_CREATE,
       0,
       StaiPreCreate,
-      StaiPostCreate },
+      NULL },
     { IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION,
       0,
       StaiPreAcquireForSectionSynchronization,
@@ -43,9 +43,12 @@ NTSTATUS DriverEntry(
     UNREFERENCED_PARAMETER(RegistryPath);
 
     ExInitializeFastMutex(&g_FilterContext.ContextLock);
-    InitializeListHead(&g_FilterContext.OutstandingRequests);
+    ExInitializeRundownProtection(&g_FilterContext.ClientPortRundown);
+    KeInitializeEvent(&g_FilterContext.ClientPortDrainEvent, NotificationEvent, TRUE);
     g_FilterContext.RequestIdCounter = 0;
+    g_FilterContext.OutstandingRequestCount = 0;
     g_FilterContext.ServiceConnected = FALSE;
+    g_FilterContext.ClientPortDrainInProgress = FALSE;
     g_FilterContext.PendingShutdown = 0;
 
     status = FltRegisterFilter(DriverObject, &FilterRegistration, &g_FilterContext.FilterHandle);
@@ -55,7 +58,9 @@ NTSTATUS DriverEntry(
 
     RtlInitUnicodeString(&portName, STAI_PORT_NAME);
 
-    status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
+    /* Development ACL: SYSTEM and administrators may connect. The service host
+       must run as SYSTEM; a product-specific service SID ACL is still needed. */
+    status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_CONNECT);
     if (!NT_SUCCESS(status)) {
         FltUnregisterFilter(g_FilterContext.FilterHandle);
         return status;
@@ -76,7 +81,7 @@ NTSTATUS DriverEntry(
         NULL,
         StaiConnectNotify,
         StaiDisconnectNotify,
-        StaiMessageNotify,
+        NULL,
         1
     );
 
@@ -100,9 +105,8 @@ NTSTATUS DriverEntry(
 NTSTATUS StaiUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
     UNREFERENCED_PARAMETER(Flags);
 
-    InterlockedIncrement(&g_FilterContext.PendingShutdown);
+    InterlockedExchange(&g_FilterContext.PendingShutdown, 1);
 
-    StaiCleanupOutstandingRequests();
     StaiClosePort();
     FltUnregisterFilter(g_FilterContext.FilterHandle);
 
@@ -116,7 +120,6 @@ NTSTATUS StaiConnectNotify(
     _In_ ULONG SizeOfContext,
     _Outptr_result_maybenull_ PVOID *ConnectionPortCookie
 ) {
-    NTSTATUS status;
     PEPROCESS clientProcess;
 
     UNREFERENCED_PARAMETER(ServerPortCookie);
@@ -125,10 +128,15 @@ NTSTATUS StaiConnectNotify(
 
     ExAcquireFastMutex(&g_FilterContext.ContextLock);
 
-    if (g_FilterContext.ServiceConnected) {
+    if (g_FilterContext.PendingShutdown ||
+        g_FilterContext.ServiceConnected ||
+        g_FilterContext.ClientPortDrainInProgress) {
         ExReleaseFastMutex(&g_FilterContext.ContextLock);
         return STATUS_ALREADY_COMMITTED;
     }
+
+    ExReInitializeRundownProtection(&g_FilterContext.ClientPortRundown);
+    KeClearEvent(&g_FilterContext.ClientPortDrainEvent);
 
     clientProcess = PsGetCurrentProcess();
     g_FilterContext.ServiceProcess = clientProcess;
@@ -144,72 +152,85 @@ NTSTATUS StaiConnectNotify(
 }
 
 VOID StaiDisconnectNotify(_In_opt_ PVOID ConnectionPortCookie) {
+    PFLT_PORT clientPort = NULL;
+    PEPROCESS serviceProcess = NULL;
+    BOOLEAN ownsDrain = FALSE;
+
     UNREFERENCED_PARAMETER(ConnectionPortCookie);
 
     ExAcquireFastMutex(&g_FilterContext.ContextLock);
 
-    if (g_FilterContext.ServiceProcess) {
-        ObDereferenceObject(g_FilterContext.ServiceProcess);
+    if (g_FilterContext.ClientPort) {
+        clientPort = g_FilterContext.ClientPort;
+        serviceProcess = g_FilterContext.ServiceProcess;
         g_FilterContext.ServiceProcess = NULL;
+        g_FilterContext.ClientPort = NULL;
+        g_FilterContext.ServiceConnected = FALSE;
+        g_FilterContext.ClientPortDrainInProgress = TRUE;
+        KeClearEvent(&g_FilterContext.ClientPortDrainEvent);
+        ownsDrain = TRUE;
     }
 
-    g_FilterContext.ClientPort = NULL;
-    g_FilterContext.ServiceConnected = FALSE;
+    ExReleaseFastMutex(&g_FilterContext.ContextLock);
+    if (!ownsDrain) {
+        return;
+    }
 
+    FltCloseClientPort(g_FilterContext.FilterHandle, &clientPort);
+    ExWaitForRundownProtectionRelease(&g_FilterContext.ClientPortRundown);
+    if (serviceProcess) {
+        ObDereferenceObject(serviceProcess);
+    }
+
+    ExAcquireFastMutex(&g_FilterContext.ContextLock);
+    g_FilterContext.ClientPortDrainInProgress = FALSE;
+    KeSetEvent(&g_FilterContext.ClientPortDrainEvent, IO_NO_INCREMENT, FALSE);
     ExReleaseFastMutex(&g_FilterContext.ContextLock);
 }
 
-NTSTATUS StaiMessageNotify(
-    _In_opt_ PVOID ConnectionPortCookie,
-    _In_reads_bytes_opt_(InputBufferSize) PVOID InputBuffer,
-    _In_ ULONG InputBufferSize,
-    _Out_writes_bytes_to_opt_(OutputBufferSize, *ReturnOutputBufferLength) PVOID OutputBuffer,
-    _In_ ULONG OutputBufferSize,
-    _Out_ PULONG ReturnOutputBufferLength
-) {
-    PSTAI_REQUEST request;
-    PSTAI_REPLY reply;
-    ULONGLONG requestId;
-    NTSTATUS status = STATUS_SUCCESS;
-
-    UNREFERENCED_PARAMETER(ConnectionPortCookie);
-    UNREFERENCED_PARAMETER(OutputBuffer);
-    UNREFERENCED_PARAMETER(OutputBufferSize);
-    UNREFERENCED_PARAMETER(ReturnOutputBufferLength);
-
-    if (!InputBuffer || InputBufferSize < sizeof(STAI_REQUEST)) {
-        return STATUS_INVALID_BUFFER_SIZE;
-    }
-
-    request = (PSTAI_REQUEST)InputBuffer;
-
-    if (!stai_validate_request(request, InputBufferSize)) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    requestId = request->request_id;
-
-    if (request->operation == STAI_OP_CREATE ||
-        request->operation == STAI_OP_IMAGE_MAPPING) {
-        UNICODE_STRING filePath;
-        filePath.Length = (USHORT)(request->path_len * sizeof(WCHAR));
-        filePath.MaximumLength = filePath.Length;
-        filePath.Buffer = request->path;
-
-        status = StaiSendRequestToService(requestId, request->operation, &filePath);
-    }
-
-    return status;
-}
-
-NTSTATUS StaiCreatePort(_In_ PFLT_FILTER FilterHandle) {
-    UNREFERENCED_PARAMETER(FilterHandle);
-    return STATUS_SUCCESS;
-}
-
 VOID StaiClosePort(VOID) {
+    PFLT_PORT clientPort = NULL;
+    PEPROCESS serviceProcess = NULL;
+    BOOLEAN ownsDrain = FALSE;
+    BOOLEAN waitForDrain = FALSE;
+
     if (g_FilterContext.ServerPort) {
         FltCloseCommunicationPort(g_FilterContext.ServerPort);
         g_FilterContext.ServerPort = NULL;
+    }
+
+    ExAcquireFastMutex(&g_FilterContext.ContextLock);
+    if (g_FilterContext.ClientPort) {
+        clientPort = g_FilterContext.ClientPort;
+        serviceProcess = g_FilterContext.ServiceProcess;
+        g_FilterContext.ClientPort = NULL;
+        g_FilterContext.ServiceProcess = NULL;
+        g_FilterContext.ServiceConnected = FALSE;
+        g_FilterContext.ClientPortDrainInProgress = TRUE;
+        KeClearEvent(&g_FilterContext.ClientPortDrainEvent);
+        ownsDrain = TRUE;
+    } else if (g_FilterContext.ClientPortDrainInProgress) {
+        waitForDrain = TRUE;
+    }
+    ExReleaseFastMutex(&g_FilterContext.ContextLock);
+
+    if (ownsDrain) {
+        FltCloseClientPort(g_FilterContext.FilterHandle, &clientPort);
+        ExWaitForRundownProtectionRelease(&g_FilterContext.ClientPortRundown);
+        if (serviceProcess) {
+            ObDereferenceObject(serviceProcess);
+        }
+        ExAcquireFastMutex(&g_FilterContext.ContextLock);
+        g_FilterContext.ClientPortDrainInProgress = FALSE;
+        KeSetEvent(&g_FilterContext.ClientPortDrainEvent, IO_NO_INCREMENT, FALSE);
+        ExReleaseFastMutex(&g_FilterContext.ContextLock);
+    } else if (waitForDrain) {
+        KeWaitForSingleObject(
+            &g_FilterContext.ClientPortDrainEvent,
+            Executive,
+            KernelMode,
+            FALSE,
+            NULL
+        );
     }
 }

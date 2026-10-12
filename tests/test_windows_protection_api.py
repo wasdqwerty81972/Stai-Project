@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -57,6 +55,7 @@ def mock_protection_service():
             state="active", driver_state="running", service_state="running", rules_version="test-1", last_scan="2026-01-01T00:00:00", counts={"detected": 5, "blocked": 2, "quarantined": 1}, windows_security={"registered_av_provider": "Windows Defender", "defender_mode": "enabled", "query_available": True}, sensor_coverage={}, last_error=None
         )),
         rules=SimpleNamespace(version="test-1", rules=()),
+        rules_trust_established=True,
     )
 
     return service
@@ -123,6 +122,69 @@ def test_status_includes_registered_av_and_defender_mode_when_available(monkeypa
     assert data["windows_security"]["registered_av_provider"] == "Windows Defender"
     assert data["windows_security"]["defender_mode"] == "enabled"
     assert data["windows_security"]["query_available"] is True
+
+
+def test_status_never_reports_active_when_rules_trust_is_unestablished(monkeypatch, mock_protection_service):
+    mock_protection_service.rules_trust_established = False
+    mock_protection_service.get_status.return_value = SimpleNamespace(
+        state="active",
+        driver_state="running",
+        service_state="running",
+        rules_version="rules-7",
+        last_scan=None,
+        counts={"detected": 0, "blocked": 0, "quarantined": 0},
+        windows_security={"registered_av_provider": None, "defender_mode": None, "query_available": False},
+        sensor_coverage={},
+        last_error=None,
+    )
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/status")
+
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "degraded"
+    assert "trust" in reply.json()["last_error"].lower()
+
+
+def test_status_never_reports_active_for_dev_empty_rules(monkeypatch, mock_protection_service):
+    mock_protection_service.rules_trust_established = True
+    mock_protection_service.get_status.return_value = SimpleNamespace(
+        state="active",
+        driver_state="running",
+        service_state="running",
+        rules_version="dev-empty",
+        last_scan=None,
+        counts={"detected": 0, "blocked": 0, "quarantined": 0},
+        windows_security={"registered_av_provider": None, "defender_mode": None, "query_available": False},
+        sensor_coverage={},
+        last_error=None,
+    )
+    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/status")
+
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "degraded"
+    assert "empty" in reply.json()["last_error"].lower()
+
+
+def test_local_dev_empty_bootstrap_is_reported_as_degraded(monkeypatch, tmp_path):
+    ui_dir = tmp_path / "ui"
+    ui_dir.mkdir()
+    monkeypatch.setattr(server, "__file__", str(ui_dir / "api_server.py"))
+    monkeypatch.setattr(server, "_protection_service", None, raising=False)
+    service = server._get_protection_service()
+    monkeypatch.setattr(server, "_get_protection_service", lambda: service)
+
+    with TestClient(server.app) as client:
+        reply = client.get("/api/protection/status")
+
+    assert reply.status_code == 200
+    assert reply.json()["rules_version"] == "dev-empty"
+    assert reply.json()["rules_trust_established"] is False
+    assert reply.json()["state"] == "degraded"
 
 
 def test_scan_rejects_client_supplied_paths(monkeypatch, mock_protection_service):
@@ -195,13 +257,31 @@ def test_restore_requires_existing_quarantine_item(monkeypatch, mock_protection_
     assert reply.status_code == 404
 
 
-def test_protection_agent_chat_cannot_execute_tools(monkeypatch, mock_protection_service):
-    _reset_protection_service_mock()
-    # Mock the agent chat to return a response without tool calls
-    mock_protection_service.agent_chat = MagicMock(return_value=SimpleNamespace(
-        session_id="sess-1", message="Analysis complete", tool_calls=[], response_action=None
+def test_protection_agent_chat_cannot_execute_tools(monkeypatch, tmp_path):
+    from cyber_os.protection.store import DetectionRecord, ProtectionStore
+    from cyber_os.protection.triage import ProtectionTriage
+
+    class Provider:
+        available = True
+
+        def analyze(self, context):
+            return "Analysis complete"
+
+        def respond(self, context, history, message):
+            self.context = context
+            self.message = message
+            return "Analysis complete"
+
+    store = ProtectionStore(tmp_path / "protection.db")
+    store.record_detection(DetectionRecord(
+        detection_id="det-1", sha256="a" * 64, rule_id="hash-1", rule_version="rules-7",
+        action="block", confidence="high", severity="critical", file_type=".exe", size_bytes=1024,
+        file_path=r"C:\Users\Alice\Desktop\sample.exe", created_at="2026-01-01T00:00:00",
+        triage_enqueued=False,
     ))
-    monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
+    provider = Provider()
+    triage = ProtectionTriage(store, provider)
+    monkeypatch.setattr(server, "_get_protection_triage", lambda: triage, raising=False)
 
     with TestClient(server.app) as client:
         reply = client.post("/api/protection/agent/messages", json={
@@ -215,6 +295,52 @@ def test_protection_agent_chat_cannot_execute_tools(monkeypatch, mock_protection
     assert data["tool_calls"] == []
     assert data["response_action"] is None
     assert "message" in data
+    assert "C:\\Users" not in repr(provider.context)
+
+
+def test_protection_triage_routes_schedule_and_retrieve_separate_result(monkeypatch, tmp_path):
+    from cyber_os.protection.store import DetectionRecord, ProtectionStore
+    from cyber_os.protection.triage import ProtectionTriage
+
+    class Provider:
+        available = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def analyze(self, context):
+            self.calls += 1
+            assert "file_path" not in context
+            assert "sha256" not in context
+            return "Rule analysis is complete."
+
+        def respond(self, context, history, message):
+            return "This alert matched a configured rule."
+
+    store = ProtectionStore(tmp_path / "triage.db")
+    store.record_detection(DetectionRecord(
+        detection_id="det-triage", sha256="b" * 64, rule_id="hash-2", rule_version="rules-7",
+        action="block", confidence="high", severity="high", file_type=".exe", size_bytes=2048,
+        file_path=r"C:\Users\Alice\Downloads\payload.exe", created_at="2026-01-01T00:00:00",
+        triage_enqueued=False,
+    ))
+    provider = Provider()
+    triage = ProtectionTriage(store, provider)
+    monkeypatch.setattr(server, "_get_protection_triage", lambda: triage, raising=False)
+
+    with TestClient(server.app) as client:
+        first = client.post("/api/protection/triage/det-triage")
+        second = client.post("/api/protection/triage/det-triage")
+        result = client.get("/api/protection/triage", params={"detection_id": "det-triage"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert result.status_code == 200
+    assert result.json()["triage_id"] == "det-triage"
+    assert result.json()["state"] in {"queued", "running", "completed"}
+    assert result.json()["recommendations"] == []
+    assert store.count_triage_jobs() == 1
+    assert store.get_detection("det-triage").action == "block"
 
 
 def test_get_unknown_scan_job_returns_404(monkeypatch, mock_protection_service):
