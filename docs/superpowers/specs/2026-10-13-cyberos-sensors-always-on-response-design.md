@@ -24,9 +24,9 @@ The sensor queue is durable, but sensor events are not connected to the protecti
 
 ### 1. Background runtime and boot lifecycle
 
-Run a dedicated Windows service at automatic start. It owns the sensor collectors and durable event queue independently of the UI/API process. The service runs with the least privileges that still allow configured sources to be read. It must not silently change Windows audit policies, install third-party collectors, or enable privacy-sensitive collection.
+Extend the existing `STAIProtection` Windows service to own the sensor collectors and response coordinator at automatic start. Reusing the existing boot-time protection host keeps sensor-to-protection routing local and avoids a second privileged service. Confirm or set the installed service start type to automatic. The host owns the durable event queue independently of the UI/API process. It must not silently change Windows audit policies, install third-party collectors, or enable privacy-sensitive collection.
 
-The local API/UI attaches as a client to read status and warnings. If the API or AI agent is offline, sensor detections remain durably queued. When the agent becomes available, pending escalations are delivered idempotently using the stable sensor event ID. Service installation, upgrade, stop, uninstall, and service recovery behavior must be explicit and observable.
+The local API/UI attaches through the existing protected named-pipe boundary to read status and warnings. If the API or AI agent is offline, sensor detections remain durably queued. When the agent becomes available, pending escalations are delivered idempotently using the stable sensor event ID. Service installation, upgrade, stop, uninstall, and service recovery behavior must be explicit and observable.
 
 ### 2. Catalog placement and truthful runtime status
 
@@ -60,7 +60,7 @@ Show the overall service state, individual sensor states, last event/error, queu
 - Missing audit policy or permissions produce partial/permission states and a user-visible explanation. The service does not change host policy on its own.
 - Queue backpressure preserves source checkpoints and must not silently discard an anomaly.
 - Repeated delivery is idempotent by stable sensor event ID.
-- Default privacy settings continue to hash or omit paths, DNS names, and command lines. Only evidence needed for a file scan is sent to the protection engine; only minimal, redacted context is sent to the AI agent.
+- Default privacy settings continue to hash or omit paths, DNS names, and command lines. A file path needed for a protection scan may be passed transiently in memory to the local protection engine, but is not added to the durable sensor event or sent to the UI/AI agent. Only minimal, redacted context is sent to the AI agent.
 - If protection or AI is unavailable, preserve the warning, expose the unresolved stage, and retry delivery without claiming success.
 
 ## Delivery sequence
