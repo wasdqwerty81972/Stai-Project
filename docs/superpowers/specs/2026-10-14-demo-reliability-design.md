@@ -9,21 +9,21 @@ Make the real protection features that can run in this checkout reliable and usa
 - `cyber_main.py` defaults to Tauri on Windows. There is no Cargo command or release executable here. A recent debug executable exists, but the launch flow ignores it.
 - The local dashboard is a Vite app. In browser context, its current protection client uses Tauri `invoke`, so it cannot call the API from browser mode.
 - `/health` only reports API liveness. It does not initialize the scanner or establish that rules are available.
-- The API looks for a manifest, signature, and public key under `.protection`. Those files are absent here, so it creates an empty ruleset and reports degraded protection. The repository has a signed EICAR hash demo package and a pinned public key under `cyber_os/protection/resources`.
-- The scanner runs SHA-256 rules and optional YARA. Inspection found YARA runtime/compile/match failure can return `unknown/allow` before a matching SHA-256 block rule is evaluated.
+- The API looks for a manifest, signature, and public key under `.protection`. Those files are absent here, so it creates an empty ruleset and reports degraded protection. The repository has a signed EICAR hash demo package and a pinned public key under `cyber_os/protection/resources`; that package detects only the EICAR test file and is not a production threat database.
+- The scanner runs SHA-256 rules and optional YARA. Current code already preserves a matching high-confidence SHA-256 block when YARA fails, and `tests/test_windows_protection_scanner.py` contains a regression test for that case.
 - The Windows protection service is not installed on this host, and no driver package is available for installation. Source-level or user-mode tests cannot establish kernel enforcement.
 
 ## Approaches considered
 
 1. Require a signed native release, installed service, and loaded minifilter before opening the app. This gives the intended deployment path but cannot be assembled and validated on this host by tomorrow.
 2. Open the existing native debug app and leave its Tauri-only IPC unchanged. This gives a desktop window, but with no installed service its protection actions cannot reach a working scanner.
-3. Recommended: connect browser mode to the real local API, load the repository's signed rules through a pinned trust root when no installed rules are present, fix scanner verdict precedence, and show user-mode/service/driver states separately. Keep native launch when it is operational; use the browser UI as a functional fallback.
+3. Recommended: connect browser mode to the real local user-mode scanner API, load the repository's signed EICAR test rule through a pinned trust root when no installed rules are present, and show user-mode/service/driver states separately. Keep native launch when its pipe is operational; use the browser UI as a functional fallback.
 
 ## Design
 
 ### Dashboard access to protection
 
-The protection client selects Tauri IPC in the native app and HTTP requests to the loopback API in browser mode. Both adapters implement the same typed client contract for status, scans, threats, quarantine, and restore. HTTP calls stay on loopback and use the API's existing validation and response models. Browser startup uses the installed local Vite package directly, avoiding dependence on a global pnpm shim.
+The protection client selects Tauri IPC in the native app and HTTP requests to the loopback API in browser mode. Both adapters implement the same typed client contract for status, scans, threats, triage, quarantine, and restore. HTTP calls stay on loopback, allow only the dashboard's exact local origin, and use the API's existing validation and response models. Scheduled scans remain unavailable in browser mode unless the Windows service is reachable; the page must report that state clearly. Browser startup uses the installed local Vite package directly, avoiding dependence on a global pnpm shim.
 
 ### Launcher and readiness
 
@@ -31,17 +31,17 @@ The protection client selects Tauri IPC in the native app and HTTP requests to t
 
 ### Trusted rules and accurate status
 
-When no installed rule package exists, load the repository's signed rule manifest and verify it against the pinned `trusted-rules.pub`. Do not treat an editable public key beside an editable manifest as a trust root. Missing or invalid rules stay degraded and include a useful reason.
+When all installed rule-package files are absent, load the repository's signed EICAR test manifest and verify it against the pinned `trusted-rules.pub`. Mark its scope as test-only/limited; it is not a general malware database and cannot justify a green production-protected state. Do not treat an editable public key beside an editable manifest as a trust root. A partial or invalid installed package stays degraded and includes a useful reason rather than silently falling back.
 
-Protection status reports scanner availability and rules version/trust separately from the installed Windows service and minifilter driver. Local user-mode scanning must not be represented as service or kernel protection. The dashboard exposes the current limitation without showing a green protected state when the service or driver is missing.
+Protection status reports local scanner availability, rules version/trust/scope separately from the installed Windows service and minifilter driver. Local user-mode scanning must not be represented as Windows service or kernel protection. The dashboard exposes the current limitation without showing a green protected state when the service or driver is missing.
 
-### Scanner verdict handling
+### Scanner regression coverage
 
-Evaluate trusted SHA-256 matches independently of optional YARA execution. If YARA is unavailable, invalid, or times out but a trusted hash block rule matches, preserve the block verdict and record the YARA limitation. If no deterministic rule matches and YARA cannot run, report `unknown` rather than `clean`. Keep current timeouts and quarantine policy; do not broaden signature semantics in this change.
+Keep the existing scanner contract: a matching high-confidence SHA-256 block remains a block if optional YARA fails, and a file without a deterministic match reports `unknown` when YARA cannot run. Run these regression tests with the API and end-to-end checks; do not rewrite this already-correct behavior.
 
 ### Safe validation
 
-Use tests with a harmless inert marker and an explicit test ruleset to exercise the real scanner, quarantine, persistence, API responses, and browser client refresh. Do not put this test-only signature in the trusted production rules or add a synthetic detection button to the user-facing app. The signed bundled EICAR rule remains the only production demo signature until a separately signed rule update is available. Never install or execute malware for the demonstration.
+Use tests with a harmless inert marker and an explicit test ruleset to exercise the real user-mode scanner, quarantine, persistence, API responses, and browser client refresh. Do not put this test-only signature in the trusted bundled rules or add a synthetic detection button to the user-facing app. The signed bundled EICAR test rule remains limited to that standard test file; it is not a production threat database. Never install or execute malware for the demonstration.
 
 ## Failure handling
 
@@ -50,8 +50,8 @@ The UI and launcher distinguish API unavailable, scanner unavailable, rules abse
 ## Verification and acceptance criteria
 
 - Launcher tests prove the selected mode for a usable native app, complete Tauri dev prerequisites, browser fallback, and no runnable UI; `/health` alone cannot mark protection ready.
-- API tests prove pinned signed-rule fallback, rejection of invalid/untrusted packages, and separate scanner/service/driver status.
-- Scanner tests first reproduce the YARA-failure plus matching SHA-256 case, then prove the block verdict remains; unmatched files with unavailable YARA remain unknown.
+- API tests prove pinned signed-rule fallback, rejection of partial/invalid installed packages, test-only rule scope, and separate scanner/service/driver status.
+- Existing scanner regression tests pass for YARA failure with a matching SHA-256 block and for unmatched files when YARA is unavailable.
 - Integration tests with a harmless inert marker verify detection, quarantine, persistence, and API/browser-visible refresh using the actual scanner and test-only rule.
 - Frontend tests prove browser-mode HTTP and native-mode Tauri clients satisfy the same operations and report errors without mislabeling detections.
 - On the target Windows machine, `python cyber_main.py` opens a usable dashboard. A scan and quarantine workflow completes through the actual local scanner. The status page accurately reports whether the Windows service and driver are installed/loaded.
