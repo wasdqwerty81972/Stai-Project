@@ -17,17 +17,17 @@ Make the real protection features that can run in this checkout reliable and usa
 
 1. Require a signed native release, installed service, and loaded minifilter before opening the app. This gives the intended deployment path but cannot be assembled and validated on this host by tomorrow.
 2. Open the existing native debug app and leave its Tauri-only IPC unchanged. This gives a desktop window, but with no installed service its protection actions cannot reach a working scanner.
-3. Recommended: connect browser mode to the real local user-mode scanner API, load the repository's signed EICAR test rule through a pinned trust root when no installed rules are present, and show user-mode/service/driver states separately. Keep native launch when its pipe is operational; use the browser UI as a functional fallback.
+3. Recommended: keep the Tauri Windows app as the preferred shell, let its protection client use the named pipe when available and fall back to the real local user-mode scanner API when the pipe is absent, and let browser mode use that same HTTP adapter. Load the repository's signed EICAR test rule through a pinned trust root when no installed rules are present, and show user-mode/service/driver states separately. Use browser mode only when no native app can run.
 
 ## Design
 
 ### Dashboard access to protection
 
-The protection client selects Tauri IPC in the native app and HTTP requests to the loopback API in browser mode. Both adapters implement the same typed client contract for status, scans, threats, triage, quarantine, and restore. HTTP calls stay on loopback, allow only the dashboard's exact local origin, and use the API's existing validation and response models. Scheduled scans remain unavailable in browser mode unless the Windows service is reachable; the page must report that state clearly. Browser startup uses the installed local Vite package directly, avoiding dependence on a global pnpm shim.
+The protection client selects Tauri IPC in the native app and HTTP requests to the loopback API in browser mode. If the native protection pipe is unavailable, the Tauri client falls back to that local API and exposes the local scanner's limited status; it must not label local API operation as Windows service or kernel protection. Both adapters implement the same typed client contract for status, scans, threats, triage, quarantine, and restore. HTTP calls stay on loopback, allow only the dashboard's exact local origins (including the Tauri origin), and use the API's existing validation and response models. Scheduled scans remain unavailable in local API mode unless the Windows service is reachable; the page must report that state clearly. Browser startup uses the installed local Vite package directly, avoiding dependence on a global pnpm shim.
 
 ### Launcher and readiness
 
-`cyber_main.py` starts the API and selects a dashboard path that can reach protection operations. Use the native Tauri app only when its local protection service pipe is reachable; otherwise start the browser dashboard through the local Vite dependencies and its HTTP adapter to the local scanner API. The launcher announces the selected mode and names missing prerequisites if no mode can start. API liveness and protection readiness remain distinct; a degraded scanner does not prevent the dashboard from opening, and API liveness is never reported as AV readiness.
+`cyber_main.py` starts the API and prefers the native Tauri app when a release executable, a usable existing debug executable, or complete Tauri development prerequisites are available. When no native app can run, it starts the browser dashboard through the local Vite dependencies and HTTP adapter. The launcher announces the selected mode and names missing prerequisites if no mode can start. API liveness and protection readiness remain distinct; a degraded scanner does not prevent the dashboard from opening, and API liveness is never reported as AV readiness.
 
 ### Trusted rules and accurate status
 
