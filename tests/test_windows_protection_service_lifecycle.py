@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 from cyber_os.protection.windows_service import (
+    _installed_user_quick_scan_roots,
     ProtectionServiceHost,
     WindowsNamedPipeServer,
     build_pipe_sddl,
@@ -19,6 +20,35 @@ from cyber_os.protection.windows_service import (
 
 CLIENT_SID = "S-1-5-21-123456789-123456789-123456789-1001"
 OTHER_SID = "S-1-5-21-123456789-123456789-123456789-1002"
+
+
+def test_enrolled_user_quick_scan_roots_use_redirected_folders(tmp_path, monkeypatch):
+    profile = tmp_path / "enrolled-user"
+    downloads = tmp_path / "redirected" / "Downloads"
+    desktop = tmp_path / "redirected" / "Desktop"
+    local_temp = profile / "AppData" / "Local" / "Temp"
+    startup = profile / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    for folder in (downloads, desktop, local_temp, startup):
+        folder.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        "cyber_os.protection.windows_service._read_installed_user_profile_root",
+        lambda sid: profile if sid == CLIENT_SID else None,
+    )
+    monkeypatch.setattr(
+        "cyber_os.protection.windows_service._read_installed_user_known_folders",
+        lambda _sid: {"Downloads": str(downloads), "Desktop": str(desktop)},
+    )
+
+    roots = _installed_user_quick_scan_roots(CLIENT_SID)
+
+    assert set(roots) == {downloads.resolve(), desktop.resolve(), local_temp.resolve(), startup.resolve()}
+
+
+def test_quick_scan_roots_are_empty_when_enrolled_user_profile_is_unavailable(monkeypatch):
+    monkeypatch.setattr("cyber_os.protection.windows_service._read_installed_user_profile_root", lambda _sid: None)
+
+    assert _installed_user_quick_scan_roots(CLIENT_SID) == []
 
 
 class _Store:

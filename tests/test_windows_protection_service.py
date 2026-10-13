@@ -254,3 +254,33 @@ def test_running_scan_can_be_cancelled(
     final = store.get_scan_job(job.job_id)
     assert final is not None
     assert final.state == "cancelled"
+
+
+def test_quick_scan_uses_configured_enrolled_user_roots_and_persists_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enrolled_root = tmp_path / "enrolled" / "Downloads"
+    service_account_root = tmp_path / "service-account" / "Downloads"
+    enrolled_root.mkdir(parents=True)
+    service_account_root.mkdir(parents=True)
+    (enrolled_root / "sample.bin").write_bytes(b"enrolled")
+    (service_account_root / "ignored.bin").write_bytes(b"wrong profile")
+
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    svc._config.quick_scan_roots = [enrolled_root]
+    monkeypatch.setattr(service_mod, "SCAN_ROOTS_QUICK", [service_account_root])
+    visited: list[Path] = []
+
+    def _iter_configured(self, root):  # noqa: ANN001 - test stub
+        visited.append(Path(root))
+        yield from root.iterdir()
+
+    monkeypatch.setattr(ProtectionService, "_iter_files", _iter_configured)
+    job = svc.start_scan("quick")
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+
+    final = store.get_scan_job(job.job_id)
+    assert final is not None
+    assert set(visited) == {enrolled_root}
+    assert final.root_snapshot == [str(enrolled_root.resolve())]

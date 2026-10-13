@@ -12,6 +12,7 @@ Three correctness and safety defects were fixed during this audit:
 - A verified high-confidence SHA-256 block match now survives a YARA timeout or runtime failure. Without such a hash match, the result remains `unknown` when YARA is unavailable.
 - AI classifications from sensor investigations are advisory. They no longer manufacture a high-confidence block verdict or quarantine a file. The existing automatic quarantine path is limited to local high-confidence rule matches; a general approval-gated response controller is still missing.
 - File watcher create/modify events now use canonical catalogue IDs 49/50 instead of unrelated process-handle IDs 17/18.
+- The Windows service now resolves Quick Scan roots for its enrolled dashboard SID, honors redirected Downloads/Desktop locations, and records a per-job root snapshot. If it cannot resolve the enrolled profile, it does not silently scan LocalSystem's profile.
 
 ## Findings by subsystem
 
@@ -19,7 +20,7 @@ Three correctness and safety defects were fixed during this audit:
 |---|---|---|
 | File scanner | Implemented, narrow | `cyber_os/protection/scanner.py` hashes stable regular files and matches SHA-256 and YARA rules. It rejects reparse points and detects changes during scanning. It does not yet parse PE structure, measure entropy, inspect scripts or documents, or scan archive contents. |
 | Detection rules | Implemented, minimal | `cyber_os/protection/rule_package.py` verifies the detached Ed25519 signature and schema. `cyber_os/protection/resources/demo-manifest.json` contains one exact raw EICAR SHA-256 block rule. No broader curated database is bundled. |
-| Quick Scan | Partially implemented; installed-service root bug | `cyber_os/protection/service.py` scans Downloads, Desktop, and Startup roots captured from `Path.home()` at import time. Under LocalSystem this can resolve to the service account profile instead of the enrolled dashboard user. The authenticated pipe has no custom-root operation. |
+| Quick Scan | Partially implemented; roots corrected | The Windows host resolves Downloads, Desktop, Local Temp, and Startup from the enrolled dashboard user's profile and known-folder redirection. The selected roots are snapshotted with each durable scan job. Non-Windows development instances retain the local `Path.home()` defaults. Scan accounting, one-pass traversal, and honest error/skipped/unknown counts remain incomplete. |
 | Full/System Scan | Partially implemented | The only root is hardcoded `C:\`. Other local volumes are not enumerated. Traversal errors can be swallowed, so `completed` does not prove full coverage. |
 | Scan accounting | Partially implemented | SQLite stores job ID, scope, state, files scanned/total, detections, errors, and timestamps. Unknown scan verdicts are counted as scanned, skipped files are not counted, and root/iterator failures can disappear. Jobs left `running` after a service crash are not reconciled. |
 | Custom and scheduled scans | Missing | Scan scope is constrained to `quick` and `system`. No caller-selected files/folders or persisted schedule is wired through service IPC. |
@@ -39,7 +40,8 @@ Three correctness and safety defects were fixed during this audit:
 
 - `pytest tests/test_windows_protection_scanner.py -q` — 7 passed, 1 skipped after the hash/YARA precedence fix.
 - `pytest tests/test_windows_protection_scanner.py tests/test_windows_protection_service.py tests/test_windows_protection_core.py tests/test_windows_protection_rules.py tests/test_windows_protection_store.py tests/test_sensor_warnings.py tests/test_windows_file_watch.py tests/test_windows_sensor_service.py tests/test_sensor_registry.py -q` — 57 passed, 1 skipped. This includes scanner, service, store, warning, watcher, sensor-service, and catalogue coverage after all three fixes.
-- `pytest -q` — 636 passed, 1 skipped, 299 subtests passed. Pytest reported 22 existing warnings, including framework deprecations and unawaited event-bus coroutine warnings.
+- `pytest -q` — 644 passed, 1 skipped, 299 subtests passed. Pytest reported 13 existing framework deprecation warnings.
+- Quick Scan regression and store migration checks — 32 protection service/store/lifecycle tests passed; verifies redirected enrolled-user roots, no LocalSystem fallback when the profile is missing, immutable job snapshots, and migration from schema version 2.
 - The failing test was observed before each behavior change: hash block during YARA failure, and a high-confidence AI report attempting to quarantine an unrecognized file.
 - `cyber_os/sensors/sensor_registry_data.json` contains exactly 256 catalog records. The implementation registry marks 2 as implemented and 12 as partial at the source level; the rest are registered-only. The protection service was not installed on the inspected host, so the active sensor count there is 0. The watcher ID mismatch was corrected and now has a regression test.
 - Source-level or mocked tests do not prove live event-log collection, driver enforcement, or production readiness.

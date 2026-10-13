@@ -75,7 +75,7 @@ def test_blocked_count_requires_denied_completion(tmp_path: Path) -> None:
 def test_scan_job_progress_survives_store_reopen(tmp_path: Path) -> None:
     db = tmp_path / "p.db"
     store = ProtectionStore(db)
-    store.create_scan_job("job-1", "quick")
+    store.create_scan_job("job-1", "quick", root_snapshot=["C:\\Users\\demo\\Downloads"])
     store.update_scan_job(
         "job-1", state="running", files_scanned=5, files_total=10, detections=1, errors=0
     )
@@ -90,6 +90,42 @@ def test_scan_job_progress_survives_store_reopen(tmp_path: Path) -> None:
         10,
         1,
     )
+    assert job.root_snapshot == ["C:\\Users\\demo\\Downloads"]
+
+
+def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "legacy.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (2);
+            CREATE TABLE scan_jobs (
+                job_id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                state TEXT NOT NULL,
+                files_scanned INTEGER NOT NULL DEFAULT 0,
+                files_total INTEGER NOT NULL DEFAULT 0,
+                detections INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT
+            );
+            INSERT INTO scan_jobs (job_id, scope, state, started_at)
+            VALUES ('legacy-job', 'quick', 'completed', '2026-10-01T00:00:00');
+            """
+        )
+
+    store = ProtectionStore(db)
+    job = store.get_scan_job("legacy-job")
+
+    assert job is not None
+    assert job.root_snapshot == []
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
 
 
 def test_scan_cancellation_is_durable(tmp_path: Path) -> None:

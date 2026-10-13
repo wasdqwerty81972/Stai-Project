@@ -926,6 +926,24 @@ def _read_installed_user_known_folders(client_sid: str | None) -> dict[str, str]
         return {}
 
 
+def _installed_user_quick_scan_roots(client_sid: str | None) -> list[Path]:
+    """Resolve local Quick Scan roots for the enrolled dashboard user."""
+    profile_root = _read_installed_user_profile_root(client_sid)
+    if profile_root is None:
+        return []
+    from cyber_os.sensors.windows_file_watch import monitored_user_roots
+
+    roots = monitored_user_roots(profile_root, _read_installed_user_known_folders(client_sid))
+    startup = profile_root / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    try:
+        canonical_startup = startup.resolve()
+        if canonical_startup.is_dir() and not str(canonical_startup).startswith("\\\\"):
+            roots.append(canonical_startup)
+    except OSError:
+        pass
+    return roots
+
+
 def create_default_host() -> ProtectionServiceHost:
     """Build a host only from installed data and the embedded trusted public key."""
     data_root = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "STAI" / "Protection"
@@ -947,6 +965,7 @@ def create_default_host() -> ProtectionServiceHost:
     except (OSError, InvalidRulePackage):
         last_error = "trusted rule package is unavailable or invalid"
 
+    client_sid = _read_installed_client_sid()
     service = None
     from .ai_provider import create_default_provider
     from .triage import ProtectionTriage
@@ -960,6 +979,11 @@ def create_default_host() -> ProtectionServiceHost:
                 quarantine_root=data_root / "quarantine",
                 rules=rules,
                 store=store,
+                quick_scan_roots=(
+                    _installed_user_quick_scan_roots(client_sid)
+                    if os.name == "nt"
+                    else None
+                ),
             ),
             on_detection=triage.request,
         )
@@ -970,7 +994,6 @@ def create_default_host() -> ProtectionServiceHost:
 
         filter_client = create_filter_client()
 
-    client_sid = _read_installed_client_sid()
     sensor_service = None
     response_coordinator = None
     file_monitor = None

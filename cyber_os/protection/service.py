@@ -32,6 +32,7 @@ class ProtectionConfig:
     rules: RuleSet
     store: ProtectionStore
     yara_timeout_seconds: int = 5
+    quick_scan_roots: list[Path] | None = None
 
 
 class ScanScope:
@@ -210,14 +211,21 @@ class ProtectionService:
                 raise RuntimeError("scan already in progress")
 
             job_id = str(uuid.uuid4())
-            job = self._config.store.create_scan_job(job_id, scope)
+            configured_roots = (
+                self._config.quick_scan_roots
+                if scope == "quick" and self._config.quick_scan_roots is not None
+                else SCAN_ROOTS_QUICK if scope == "quick" else SCAN_ROOTS_SYSTEM
+            )
+            roots = self._normalize_scan_roots(configured_roots)
+            snapshot = [str(root) for root in roots]
+            job = self._config.store.create_scan_job(job_id, scope, root_snapshot=snapshot)
             self._config.store.update_scan_job(job_id, state="running")
 
             self._cancel_scan.clear()
             self._current_job_id = job_id
             self._scan_thread = threading.Thread(
                 target=self._run_scan,
-                args=(job_id, scope),
+                args=(job_id, scope, roots),
                 daemon=True,
             )
             self._scan_thread.start()
@@ -235,9 +243,31 @@ class ProtectionService:
             self._cancel_scan.set()
             return True
 
-    def _run_scan(self, job_id: str, scope: Literal["quick", "system"]) -> None:
+    @staticmethod
+    def _normalize_scan_roots(roots: list[Path]) -> list[Path]:
+        normalized: list[Path] = []
+        seen: set[str] = set()
+        for candidate in roots:
+            root = Path(candidate).expanduser().resolve(strict=False)
+            text = str(root)
+            if text.startswith("\\\\"):
+                continue
+            key = str(root).casefold() if root.drive else str(root)
+            if key not in seen:
+                normalized.append(root)
+                seen.add(key)
+        return normalized
+
+    def _run_scan(
+        self,
+        job_id: str,
+        scope: Literal["quick", "system"],
+        roots: list[Path] | None = None,
+    ) -> None:
         try:
-            roots = SCAN_ROOTS_QUICK if scope == "quick" else SCAN_ROOTS_SYSTEM
+            roots = roots if roots is not None else self._normalize_scan_roots(
+                SCAN_ROOTS_QUICK if scope == "quick" else SCAN_ROOTS_SYSTEM
+            )
             accessible_roots = [r for r in roots if r.exists()]
 
             if not accessible_roots:

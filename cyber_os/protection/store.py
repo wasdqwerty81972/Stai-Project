@@ -7,15 +7,15 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Literal, Optional
+from typing import Any, Iterator, Literal, Optional, Sequence
 
 from .models import DetectionRule, RuleSet, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     files_total INTEGER NOT NULL DEFAULT 0,
     detections INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
+    root_snapshot TEXT NOT NULL DEFAULT '[]',
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error_message TEXT
@@ -149,6 +150,7 @@ class ScanJob:
     started_at: str
     completed_at: Optional[str]
     error_message: Optional[str]
+    root_snapshot: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -219,6 +221,9 @@ class ProtectionStore:
         conn = self._get_conn()
         try:
             conn.executescript(CREATE_TABLES_SQL)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(scan_jobs)")}
+            if "root_snapshot" not in columns:
+                conn.execute("ALTER TABLE scan_jobs ADD COLUMN root_snapshot TEXT NOT NULL DEFAULT '[]'")
             cursor = conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row is None:
@@ -507,7 +512,13 @@ class ProtectionStore:
             ).fetchall()
             return [dict(row) for row in reversed(rows)]
 
-    def create_scan_job(self, job_id: str, scope: Literal["quick", "system"]) -> ScanJob:
+    def create_scan_job(
+        self,
+        job_id: str,
+        scope: Literal["quick", "system"],
+        *,
+        root_snapshot: Sequence[str] = (),
+    ) -> ScanJob:
         job = ScanJob(
             job_id=job_id,
             scope=scope,
@@ -519,16 +530,18 @@ class ProtectionStore:
             started_at=datetime.now().isoformat(),
             completed_at=None,
             error_message=None,
+            root_snapshot=[str(root) for root in root_snapshot],
         )
         with self._transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO scan_jobs
-                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at, root_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (job.job_id, job.scope, job.state, job.files_scanned, job.files_total,
-                 job.detections, job.errors, job.started_at),
+                 job.detections, job.errors, job.started_at,
+                 json.dumps(job.root_snapshot, ensure_ascii=False, separators=(",", ":"))),
             )
         return job
 
@@ -592,6 +605,7 @@ class ProtectionStore:
                 started_at=row["started_at"],
                 completed_at=row["completed_at"],
                 error_message=row["error_message"],
+                root_snapshot=json.loads(row["root_snapshot"] or "[]"),
             )
 
     def record_filter_completion(self, request_id: str, final_io_status: str) -> bool:

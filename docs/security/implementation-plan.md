@@ -24,10 +24,11 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 - [x] Keep an exact signed hash block verdict when optional YARA fails; preserve `unknown` when only YARA/observe evidence exists.
 - [x] Ensure AI-generated classifications remain advisory and cannot manufacture a deterministic block verdict.
 - [x] Align selected-folder watcher event IDs with the canonical file creation/modification sensors 49/50.
+- [x] Resolve Windows Quick Scan roots from the enrolled dashboard user's profile and redirected Downloads/Desktop folders; store each job's immutable root snapshot.
 - [ ] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
 - [ ] Replace the count-then-rescan traversal with one bounded traversal that records root access failures, permission errors, reparse-point skips, locked/oversized files, and cancellation truthfully.
 - [ ] Validate service-start recovery for interrupted jobs; do not show an incomplete job as clean.
-- [ ] Correct Quick Scan to use the authenticated enrolled-user profile and persist an immutable root snapshot per job.
+- [x] Correct Quick Scan to use the enrolled-user profile and persist an immutable root snapshot per job. If the installed user/profile cannot be resolved, Windows Quick Scan has no fallback to LocalSystem's `Path.home()` roots and fails as unavailable.
 - [ ] Add a caller-selected Custom Scan scope with authenticated, constrained paths and durable results.
 - [ ] Enumerate eligible local volumes for Full Scan and document archive/large-file behavior rather than implying unsupported coverage.
 - [ ] Run isolated benign fixtures and exact raw EICAR through the application-owned engine; add ZIP-contained EICAR only when bounded extraction and traversal protections are implemented.
@@ -68,7 +69,7 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 
 ## Next implementation slice
 
-Continue Phase 1 with Quick Scan root correctness and scan accounting. These paths are foundational for reliable scheduled, custom, and full scans. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
+Quick Scan now uses enrolled-user roots and stores the root list durably for each job. Continue Phase 1 with scan accounting and one-pass traversal. These paths are foundational for reliable scheduled, custom, and full scans. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
 
 ## Acceptance ledger
 
