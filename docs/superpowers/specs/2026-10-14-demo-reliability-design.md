@@ -64,3 +64,7 @@ The UI and launcher distinguish API unavailable, scanner unavailable, rules abse
 - Building, signing, or installing the minifilter driver, allocating a production altitude, or changing driver fail-open behavior.
 - Adding a synthetic threat event or demo-only detection button to the product UI.
 - Unrelated dashboard redesign or new network/process monitoring features.
+
+## Follow-up requested
+
+After this protection hardening, connect the dashboard's AI Agent sidebar action to the existing `StaiChatWorkspace` inside the SVS Cyber Tauri experience. Keep this as a separate design/implementation task because the existing chat workspace is part of the Next.js app while the protection dashboard is a Vite/Tauri app; this plan does not change the AI Agent navigation.
