@@ -13,6 +13,7 @@ from .models import DetectionRule, RuleSet, ScanVerdict
 
 _CHUNK_SIZE = 1024 * 1024
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+SCANNER_ENGINE_VERSION = "1"
 
 
 class _FileChanged(Exception):

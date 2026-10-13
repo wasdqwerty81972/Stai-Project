@@ -231,6 +231,7 @@ button:focus-visible, textarea:focus-visible {
 .inline-alert { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 13px; padding: 10px 12px; border: 1px solid; border-radius: 8px; font-size: 10px; line-height: 1.45; }
 .error-alert { border-color: rgba(231, 103, 111, 0.24); background: rgba(133, 43, 52, 0.13); color: #f19ba0; }
 .success-alert { border-color: rgba(60, 192, 139, 0.23); background: rgba(31, 122, 88, 0.13); color: #79d9b1; }
+.coverage-gap { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--surface)); color: var(--amber); }
 .loading-row, .page-loading { display: flex; min-height: 74px; align-items: center; justify-content: center; gap: 10px; color: #8998ad; font-size: 11px; }
 .page-loading { min-height: 360px; }
 .spinner { width: 16px; height: 16px; border: 2px solid #2b3d55; border-top-color: #75b2ff; border-radius: 50%; animation: spin 850ms linear infinite; }
@@ -258,10 +259,13 @@ button:focus-visible, textarea:focus-visible {
 .progress-meta { display: flex; justify-content: space-between; margin: 17px 0 7px; color: #8b9ab0; font-size: 9px; }
 .progress-track { height: 6px; overflow: hidden; border-radius: 8px; background: #202c3d; }
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #3288e2, #61bcff); transition: width 200ms ease; }
+.progress-track.is-indeterminate span { width: 28%; animation: scan-indeterminate 1.2s ease-in-out infinite alternate; }
+@keyframes scan-indeterminate { from { transform: translateX(0); } to { transform: translateX(255%); } }
 .scan-result-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 17px 0; }
 .scan-result-stats > div { display: grid; gap: 4px; }
 .scan-result-stats strong { overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .scan-result-stats span { color: #75839a; font-size: 8px; }
+.scan-version-meta { margin: 0 0 9px; color: #75839a; font-size: 8px; }
 .completion-note { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: #73d8ac; font-size: 9px; }
 .success-icon { color: #72d9ad; }
 .muted-icon { color: #8b98aa; }

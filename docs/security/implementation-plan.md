@@ -11,7 +11,7 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 
 - Per-file scanning hashes stable regular files and matches signed SHA-256/YARA rules. The signed demo package recognizes the exact EICAR file.
 - Background Quick and System scans exist. Windows Quick Scan now selects the enrolled user's local profile roots and saves them per job; scan accounting and traversal coverage remain incomplete. Full scan still targets only `C:\`.
-- SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage; there is no full reputation database or verified update activation system.
+- SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage. Scan jobs now retain per-job roots, discovered/scanned/skipped/error/unknown counts, engine/rule versions, and duration; there is no full reputation database or verified update activation system.
 - A Windows service, authenticated named pipe, user-mode folder watcher, and minifilter source exist. The service/driver are not installed and there is no signed production driver package.
 - The sensor catalogue has 256 definitions, of which 2 are source-marked implemented and 12 partial; zero were active on the inspected host. The watcher currently emits file sensor IDs that disagree with the canonical registry.
 - The native dashboard has real protection APIs for overview, scans, detections, quarantine, status, and agent triage. Dedicated live Tasks and Network views are missing.
@@ -24,8 +24,9 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 - [x] Keep an exact signed hash block verdict when optional YARA fails; preserve `unknown` when only YARA/observe evidence exists.
 - [x] Ensure AI-generated classifications remain advisory and cannot manufacture a deterministic block verdict.
 - [x] Align selected-folder watcher event IDs with the canonical file creation/modification sensors 49/50.
-- [ ] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
-- [ ] Replace the count-then-rescan traversal with one bounded traversal that records root access failures, permission errors, reparse-point skips, locked/oversized files, and cancellation truthfully.
+- [x] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
+- [x] Replace count-then-rescan with one traversal that records root/path access failures, reparse-point skips, unknown verdicts, and cancellation truthfully.
+- [ ] Add explicit per-file size/time budgets and typed reasons for locked, oversized, and otherwise skipped files.
 - [ ] Validate service-start recovery for interrupted jobs; do not show an incomplete job as clean.
 - [x] Correct Quick Scan to use the enrolled-user profile and persist an immutable root snapshot per job. If the installed user/profile cannot be resolved, Windows Quick Scan has no fallback to LocalSystem's `Path.home()` roots and fails as unavailable.
 - [ ] Add a caller-selected Custom Scan scope with authenticated, constrained paths and durable results.

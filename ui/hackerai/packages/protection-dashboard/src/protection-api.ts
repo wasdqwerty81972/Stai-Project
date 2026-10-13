@@ -82,6 +82,12 @@ export interface ScanJob {
   files_total: number | null;
   detections: number;
   errors: number;
+  files_skipped?: number;
+  unknown_verdicts?: number;
+  engine_version?: string;
+  rules_version?: string;
+  duration_ms?: number | null;
+  root_snapshot?: string[];
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;

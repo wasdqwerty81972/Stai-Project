@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import stat
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +15,7 @@ from typing import Any, Callable, Iterator, Literal, Optional
 
 from .models import DetectionRule, RuleSet, ScanVerdict
 from .quarantine import QuarantineItem, QuarantineResult, list_quarantine_items, quarantine_file, restore_quarantine
-from .scanner import scan_path
+from .scanner import SCANNER_ENGINE_VERSION, scan_path
 from .store import DetectionRecord, ProtectionStatus, ProtectionStore, ScanJob, WindowsSecurityStatus
 
 
@@ -218,7 +221,13 @@ class ProtectionService:
             )
             roots = self._normalize_scan_roots(configured_roots)
             snapshot = [str(root) for root in roots]
-            job = self._config.store.create_scan_job(job_id, scope, root_snapshot=snapshot)
+            job = self._config.store.create_scan_job(
+                job_id,
+                scope,
+                root_snapshot=snapshot,
+                engine_version=SCANNER_ENGINE_VERSION,
+                rules_version=self._config.rules.version,
+            )
             self._config.store.update_scan_job(job_id, state="running")
 
             self._cancel_scan.clear()
@@ -264,97 +273,142 @@ class ProtectionService:
         scope: Literal["quick", "system"],
         roots: list[Path] | None = None,
     ) -> None:
+        started = time.monotonic()
+        files_discovered = 0
+        files_scanned = 0
+        files_skipped = 0
+        detections = 0
+        errors = 0
+        unknown_verdicts = 0
+
+        def report_error(_error: OSError) -> None:
+            nonlocal errors
+            errors += 1
+
+        def report_skip() -> None:
+            nonlocal files_skipped
+            files_skipped += 1
+
+        def persist_progress(
+            *,
+            state: Literal["pending", "running", "completed", "cancelled", "failed"] | None = None,
+            error_message: str | None = None,
+        ) -> None:
+            self._config.store.update_scan_job(
+                job_id,
+                state=state,
+                files_total=files_discovered,
+                files_scanned=files_scanned,
+                files_skipped=files_skipped,
+                unknown_verdicts=unknown_verdicts,
+                detections=detections,
+                errors=errors,
+                duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+                error_message=error_message,
+            )
+
         try:
             roots = roots if roots is not None else self._normalize_scan_roots(
                 SCAN_ROOTS_QUICK if scope == "quick" else SCAN_ROOTS_SYSTEM
             )
-            accessible_roots = [r for r in roots if r.exists()]
-
-            if not accessible_roots:
-                self._config.store.update_scan_job(
-                    job_id, state="failed", error_message="no accessible scan roots"
-                )
+            if not roots:
+                persist_progress(state="failed", error_message="no enrolled scan roots are available")
                 return
-
-            # Count total files first (for progress)
-            total_files = 0
-            for root in accessible_roots:
-                try:
-                    for _ in self._iter_files(root):
-                        total_files += 1
-                except OSError:
-                    pass
-
-            self._config.store.update_scan_job(job_id, files_total=total_files)
-
-            files_scanned = 0
-            detections = 0
-            errors = 0
-
-            for root in accessible_roots:
+            for root in roots:
                 if self._cancel_scan.is_set():
-                    self._config.store.update_scan_job(job_id, state="cancelled")
+                    persist_progress(state="cancelled")
                     return
 
-                try:
-                    for file_path in self._iter_files(root):
-                        if self._cancel_scan.is_set():
-                            self._config.store.update_scan_job(job_id, state="cancelled")
-                            return
-
-                        try:
-                            verdict = self.scan_file(file_path)
-                            files_scanned += 1
-                            if verdict.status == "detected":
-                                detections += 1
-                        except Exception:
-                            errors += 1
-                            files_scanned += 1
-
-                        # Update progress every 10 files
-                        if files_scanned % 10 == 0:
-                            self._config.store.update_scan_job(
-                                job_id, files_scanned=files_scanned, detections=detections, errors=errors
-                            )
-                except OSError:
-                    errors += 1
+                for file_path in self._iter_files(root, on_error=report_error, on_skip=report_skip):
+                    if self._cancel_scan.is_set():
+                        persist_progress(state="cancelled")
+                        return
+                    files_discovered += 1
+                    try:
+                        verdict = self.scan_file(file_path)
+                    except Exception:
+                        errors += 1
+                    else:
+                        files_scanned += 1
+                        if verdict.status == "detected":
+                            detections += 1
+                        elif verdict.status == "unknown":
+                            unknown_verdicts += 1
+                    if files_discovered % 10 == 0:
+                        persist_progress(state="running")
 
             final_state = "cancelled" if self._cancel_scan.is_set() else "completed"
-            self._config.store.update_scan_job(
-                job_id,
-                state=final_state,
-                files_scanned=files_scanned,
-                detections=detections,
-                errors=errors,
-            )
+            if files_discovered == 0 and errors > 0 and final_state != "cancelled":
+                final_state = "failed"
+            persist_progress(state=final_state)
 
         except Exception as e:
-            self._config.store.update_scan_job(job_id, state="failed", error_message=str(e))
+            persist_progress(state="failed", error_message=str(e))
         finally:
             with self._scan_lock:
                 self._current_job_id = None
 
-    def _iter_files(self, root: Path) -> Iterator[Path]:
-        """Iterate files under root, skipping reparse points and quarantine dir."""
-        try:
-            for entry in root.rglob("*"):
-                if self._cancel_scan.is_set():
-                    return
-                if not entry.is_file():
-                    continue
-                # Skip quarantine directory
-                if self._is_under_quarantine(entry):
-                    continue
-                # Skip reparse points (symlinks, junctions)
-                try:
-                    st = entry.stat()
-                    if hasattr(st, "st_file_attributes") and st.st_file_attributes & 0x400:
-                        continue
-                except OSError:
-                    continue
-                yield entry
-        except OSError:
-            return
+    def _iter_files(
+        self,
+        root: Path,
+        *,
+        on_error: Callable[[OSError], None] | None = None,
+        on_skip: Callable[[], None] | None = None,
+    ) -> Iterator[Path]:
+        """Walk one root without following links and report failures/skips."""
+        pending = [Path(root)]
+        while pending and not self._cancel_scan.is_set():
+            current = pending.pop()
+            try:
+                current_stat = current.stat(follow_symlinks=False)
+            except OSError as exc:
+                if on_error is not None:
+                    on_error(exc)
+                continue
+            if getattr(current_stat, "st_file_attributes", 0) & 0x400 or current.is_symlink():
+                if on_skip is not None:
+                    on_skip()
+                continue
+            if self._is_under_quarantine(current):
+                if on_skip is not None:
+                    on_skip()
+                continue
+            if stat.S_ISREG(current_stat.st_mode):
+                yield current
+                continue
+            if not stat.S_ISDIR(current_stat.st_mode):
+                if on_skip is not None:
+                    on_skip()
+                continue
+            try:
+                with os.scandir(current) as scan_entries:
+                    for entry in scan_entries:
+                        if self._cancel_scan.is_set():
+                            return
+                        path = Path(entry.path)
+                        try:
+                            entry_stat = entry.stat(follow_symlinks=False)
+                        except OSError as exc:
+                            if on_error is not None:
+                                on_error(exc)
+                            continue
+                        if getattr(entry_stat, "st_file_attributes", 0) & 0x400 or entry.is_symlink():
+                            if on_skip is not None:
+                                on_skip()
+                            continue
+                        if self._is_under_quarantine(path):
+                            if on_skip is not None:
+                                on_skip()
+                            continue
+                        if stat.S_ISDIR(entry_stat.st_mode):
+                            pending.append(path)
+                        elif stat.S_ISREG(entry_stat.st_mode):
+                            yield path
+                        elif on_skip is not None:
+                            on_skip()
+            except OSError as exc:
+                if on_error is not None:
+                    on_error(exc)
 
     def _is_under_quarantine(self, path: Path) -> bool:
         try:

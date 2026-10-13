@@ -15,7 +15,7 @@ from typing import Any, Iterator, Literal, Optional, Sequence
 from .models import DetectionRule, RuleSet, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     detections INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
     root_snapshot TEXT NOT NULL DEFAULT '[]',
+    files_skipped INTEGER NOT NULL DEFAULT 0,
+    unknown_verdicts INTEGER NOT NULL DEFAULT 0,
+    engine_version TEXT NOT NULL DEFAULT '',
+    rules_version TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
     error_message TEXT
@@ -151,6 +156,11 @@ class ScanJob:
     completed_at: Optional[str]
     error_message: Optional[str]
     root_snapshot: list[str] = field(default_factory=list)
+    files_skipped: int = 0
+    unknown_verdicts: int = 0
+    engine_version: str = ""
+    rules_version: str = ""
+    duration_ms: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -222,8 +232,17 @@ class ProtectionStore:
         try:
             conn.executescript(CREATE_TABLES_SQL)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(scan_jobs)")}
-            if "root_snapshot" not in columns:
-                conn.execute("ALTER TABLE scan_jobs ADD COLUMN root_snapshot TEXT NOT NULL DEFAULT '[]'")
+            migrations = {
+                "root_snapshot": "TEXT NOT NULL DEFAULT '[]'",
+                "files_skipped": "INTEGER NOT NULL DEFAULT 0",
+                "unknown_verdicts": "INTEGER NOT NULL DEFAULT 0",
+                "engine_version": "TEXT NOT NULL DEFAULT ''",
+                "rules_version": "TEXT NOT NULL DEFAULT ''",
+                "duration_ms": "INTEGER",
+            }
+            for name, declaration in migrations.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE scan_jobs ADD COLUMN {name} {declaration}")
             cursor = conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             if row is None:
@@ -518,6 +537,8 @@ class ProtectionStore:
         scope: Literal["quick", "system"],
         *,
         root_snapshot: Sequence[str] = (),
+        engine_version: str = "",
+        rules_version: str = "",
     ) -> ScanJob:
         job = ScanJob(
             job_id=job_id,
@@ -531,17 +552,21 @@ class ProtectionStore:
             completed_at=None,
             error_message=None,
             root_snapshot=[str(root) for root in root_snapshot],
+            engine_version=engine_version,
+            rules_version=rules_version,
         )
         with self._transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO scan_jobs
-                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at, root_snapshot)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (job_id, scope, state, files_scanned, files_total, detections, errors, started_at,
+                 root_snapshot, engine_version, rules_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (job.job_id, job.scope, job.state, job.files_scanned, job.files_total,
                  job.detections, job.errors, job.started_at,
-                 json.dumps(job.root_snapshot, ensure_ascii=False, separators=(",", ":"))),
+                 json.dumps(job.root_snapshot, ensure_ascii=False, separators=(",", ":")),
+                 job.engine_version, job.rules_version),
             )
         return job
 
@@ -554,6 +579,9 @@ class ProtectionStore:
         files_total: Optional[int] = None,
         detections: Optional[int] = None,
         errors: Optional[int] = None,
+        files_skipped: Optional[int] = None,
+        unknown_verdicts: Optional[int] = None,
+        duration_ms: Optional[int] = None,
         error_message: Optional[str] = None,
     ) -> bool:
         with self._transaction() as conn:
@@ -574,6 +602,15 @@ class ProtectionStore:
             if errors is not None:
                 updates.append("errors = ?")
                 params.append(errors)
+            if files_skipped is not None:
+                updates.append("files_skipped = ?")
+                params.append(files_skipped)
+            if unknown_verdicts is not None:
+                updates.append("unknown_verdicts = ?")
+                params.append(unknown_verdicts)
+            if duration_ms is not None:
+                updates.append("duration_ms = ?")
+                params.append(duration_ms)
             if error_message is not None:
                 updates.append("error_message = ?")
                 params.append(error_message)
@@ -606,6 +643,11 @@ class ProtectionStore:
                 completed_at=row["completed_at"],
                 error_message=row["error_message"],
                 root_snapshot=json.loads(row["root_snapshot"] or "[]"),
+                files_skipped=row["files_skipped"],
+                unknown_verdicts=row["unknown_verdicts"],
+                engine_version=row["engine_version"],
+                rules_version=row["rules_version"],
+                duration_ms=row["duration_ms"],
             )
 
     def record_filter_completion(self, request_id: str, final_io_status: str) -> bool:

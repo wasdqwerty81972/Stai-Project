@@ -75,9 +75,23 @@ def test_blocked_count_requires_denied_completion(tmp_path: Path) -> None:
 def test_scan_job_progress_survives_store_reopen(tmp_path: Path) -> None:
     db = tmp_path / "p.db"
     store = ProtectionStore(db)
-    store.create_scan_job("job-1", "quick", root_snapshot=["C:\\Users\\demo\\Downloads"])
+    store.create_scan_job(
+        "job-1",
+        "quick",
+        root_snapshot=["C:\\Users\\demo\\Downloads"],
+        engine_version="1",
+        rules_version="signed-2",
+    )
     store.update_scan_job(
-        "job-1", state="running", files_scanned=5, files_total=10, detections=1, errors=0
+        "job-1",
+        state="running",
+        files_scanned=5,
+        files_total=10,
+        detections=1,
+        errors=0,
+        files_skipped=2,
+        unknown_verdicts=1,
+        duration_ms=1234,
     )
 
     reopened = ProtectionStore(db)
@@ -91,6 +105,8 @@ def test_scan_job_progress_survives_store_reopen(tmp_path: Path) -> None:
         1,
     )
     assert job.root_snapshot == ["C:\\Users\\demo\\Downloads"]
+    assert (job.files_skipped, job.unknown_verdicts, job.duration_ms) == (2, 1, 1234)
+    assert (job.engine_version, job.rules_version) == ("1", "signed-2")
 
 
 def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: Path) -> None:
@@ -125,7 +141,7 @@ def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: P
     assert job is not None
     assert job.root_snapshot == []
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 4
 
 
 def test_scan_cancellation_is_durable(tmp_path: Path) -> None:

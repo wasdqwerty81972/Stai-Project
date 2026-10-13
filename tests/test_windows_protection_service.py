@@ -216,9 +216,22 @@ def test_scan_does_not_follow_symlink_outside_scope(tmp_path: Path) -> None:
         pytest.skip("creating a directory symlink is not permitted on this host")
 
     svc, _ = _service(tmp_path, RuleSet("test-1", ()))
-    found = {Path(p).resolve() for p in svc._iter_files(root)}
+    skipped: list[int] = []
+    found = {
+        Path(p).resolve()
+        for p in svc._iter_files(root, on_skip=lambda: skipped.append(1))
+    }
 
     assert secret.resolve() not in found, "scan followed a symlink outside the scope"
+    assert skipped == [1]
+
+
+def test_scan_walk_reports_inaccessible_roots(tmp_path: Path) -> None:
+    svc, _ = _service(tmp_path, RuleSet("test-1", ()))
+    errors: list[OSError] = []
+
+    assert list(svc._iter_files(tmp_path / "missing", on_error=errors.append)) == []
+    assert len(errors) == 1
 
 
 def test_running_scan_can_be_cancelled(
@@ -233,7 +246,7 @@ def test_running_scan_can_be_cancelled(
     svc, store = _service(tmp_path, RuleSet("test-1", ()))
     monkeypatch.setattr(service_mod, "SCAN_ROOTS_QUICK", [scan_root])
 
-    def _fake_iter(self, root):  # noqa: ANN001 - test stub
+    def _fake_iter(self, root, **_callbacks):  # noqa: ANN001 - test stub
         yield from files
 
     def _cancel_on_scan(self, path):  # noqa: ANN001 - test stub
@@ -264,6 +277,7 @@ def test_quick_scan_uses_configured_enrolled_user_roots_and_persists_snapshot(
     enrolled_root.mkdir(parents=True)
     service_account_root.mkdir(parents=True)
     (enrolled_root / "sample.bin").write_bytes(b"enrolled")
+    (enrolled_root / "uncertain.bin").write_bytes(b"unknown")
     (service_account_root / "ignored.bin").write_bytes(b"wrong profile")
 
     svc, store = _service(tmp_path, RuleSet("test-1", ()))
@@ -271,16 +285,32 @@ def test_quick_scan_uses_configured_enrolled_user_roots_and_persists_snapshot(
     monkeypatch.setattr(service_mod, "SCAN_ROOTS_QUICK", [service_account_root])
     visited: list[Path] = []
 
-    def _iter_configured(self, root):  # noqa: ANN001 - test stub
+    def _iter_configured(self, root, **_callbacks):  # noqa: ANN001 - test stub
         visited.append(Path(root))
         yield from root.iterdir()
 
+    def _scan_fixture(self, path):  # noqa: ANN001 - test stub
+        status = "unknown" if path.name == "uncertain.bin" else "clean"
+        return ScanVerdict(
+            status=status,
+            action="allow",
+            rule_id=None,
+            rule_version="test-1",
+            sha256=None,
+            reason="fixture",
+        )
+
     monkeypatch.setattr(ProtectionService, "_iter_files", _iter_configured)
+    monkeypatch.setattr(ProtectionService, "scan_file", _scan_fixture)
     job = svc.start_scan("quick")
     assert svc._scan_thread is not None
     svc._scan_thread.join(timeout=5)
 
     final = store.get_scan_job(job.job_id)
     assert final is not None
-    assert set(visited) == {enrolled_root}
+    assert visited == [enrolled_root.resolve()]
     assert final.root_snapshot == [str(enrolled_root.resolve())]
+    assert (final.files_total, final.files_scanned, final.unknown_verdicts) == (2, 2, 1)
+    assert final.files_skipped == 0
+    assert (final.engine_version, final.rules_version) == ("1", "test-1")
+    assert final.duration_ms is not None and final.duration_ms >= 0

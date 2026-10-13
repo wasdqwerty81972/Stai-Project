@@ -35,6 +35,9 @@ export function ScanView({
     scan?.files_total && scan.files_total > 0
       ? Math.min(100, Math.round((scan.files_scanned / scan.files_total) * 100))
       : 0;
+  const hasCoverageGaps = Boolean(
+    scan && (scan.errors > 0 || (scan.unknown_verdicts ?? 0) > 0 || (scan.files_skipped ?? 0) > 0),
+  );
 
   return (
     <>
@@ -97,22 +100,31 @@ export function ScanView({
               <span className={`scan-state-label state-${scan.state}`}>{scan.state}</span>
             </div>
             <div className="progress-meta">
-              <span>{scan.files_scanned} of {scan.files_total ?? "—"} files scanned</span>
-              {scan.files_total !== null && <span>{progress}%</span>}
+              <span>{busy
+                ? `Scanned ${scan.files_scanned}; discovered ${scan.files_total ?? 0} so far`
+                : `${scan.files_scanned} of ${scan.files_total ?? "—"} discovered files scanned`}</span>
+              {!busy && scan.files_total !== null && <span>{progress}%</span>}
             </div>
+            {scan.engine_version && <div className="scan-version-meta">
+              Scan used scanner v{scan.engine_version} and rules v{scan.rules_version || "unknown"} across {scan.root_snapshot?.length ?? 0} locations.
+            </div>}
             <div
-              className="progress-track"
+              className={`progress-track${busy ? " is-indeterminate" : ""}`}
               role="progressbar"
               aria-label="Scan progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={progress}
+              aria-valuemin={busy ? undefined : 0}
+              aria-valuemax={busy ? undefined : 100}
+              aria-valuenow={busy ? undefined : progress}
+              aria-valuetext={busy ? `Scanning. ${scan.files_scanned} scanned; ${scan.files_total ?? 0} discovered so far.` : `${progress}%`}
             >
-              <span style={{ width: `${progress}%` }} />
+              <span style={busy ? undefined : { width: `${progress}%` }} />
             </div>
             <div className="scan-result-stats">
               <div><strong>{scan.detections}</strong><span>detections</span></div>
+              <div><strong>{scan.unknown_verdicts ?? 0}</strong><span>unknown verdicts</span></div>
+              <div><strong>{scan.files_skipped ?? 0}</strong><span>skipped</span></div>
               <div><strong>{scan.errors}</strong><span>access errors</span></div>
+              <div><strong>{scan.duration_ms == null ? "—" : `${(scan.duration_ms / 1000).toFixed(1)}s`}</strong><span>duration</span></div>
               <div><strong>{scan.started_at ? new Date(scan.started_at).toLocaleString() : "—"}</strong><span>started</span></div>
             </div>
             {scan.error_message && <div role="alert" className="inline-alert error-alert">{scan.error_message}</div>}
@@ -121,7 +133,15 @@ export function ScanView({
                 Cancel scan
               </button>
             )}
-            {scan.state === "completed" && <div className="completion-note"><CheckCircle2 size={15} aria-hidden="true" /> Results saved by the local service</div>}
+            {scan.state === "completed" && (hasCoverageGaps ? (
+              <div className="inline-alert coverage-gap" role="status">
+                Coverage is incomplete. This result does not establish that the selected locations are clean.
+              </div>
+            ) : (
+              <div className="completion-note">
+                <CheckCircle2 size={15} aria-hidden="true" /> Scan finished for the listed locations. Review detections above.
+              </div>
+            ))}
           </div>
         )}
       </section>
