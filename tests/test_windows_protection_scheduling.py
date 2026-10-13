@@ -55,6 +55,30 @@ def test_schedule_manager_persists_and_runs_due_scan_once(tmp_path) -> None:
     assert saved["last_result"] == "running"
 
 
+def test_schedule_manager_records_partial_scan_outcome(tmp_path) -> None:
+    store = ProtectionStore(tmp_path / "partial-schedule.db")
+    store.create_scan_job("job-partial", "quick")
+    store.update_scan_job("job-partial", state="partial", unknown_verdicts=2)
+    manager = ScanScheduleManager(store, object())
+    manager.configure(
+        enabled=True,
+        frequency="daily",
+        scope="quick",
+        local_time="10:00",
+        weekday=None,
+        now=datetime(2026, 10, 13, 9, 0, tzinfo=timezone.utc),
+    )
+    store.update_scan_schedule_run(
+        next_run_at="2026-10-14T10:00:00+00:00",
+        last_run_at="2026-10-13T10:00:00+00:00",
+        last_job_id="job-partial",
+        last_result="running",
+        error_message=None,
+    )
+
+    assert manager.get_schedule()["last_result"] == "partial"
+
+
 @pytest.mark.parametrize(
     "values",
     [

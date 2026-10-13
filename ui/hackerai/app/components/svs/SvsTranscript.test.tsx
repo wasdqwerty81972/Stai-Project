@@ -61,6 +61,12 @@ describe("SvsTranscript", () => {
     expect(screen.getByText("Checking the HTTP response")).toBeInTheDocument();
   });
 
+  it("shows a thinking state while an assistant turn has no events yet", () => {
+    show([entry("pending-assistant", "assistant", [])], { running: true });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking...");
+  });
+
   it("groups consecutive activity into one collapsible work section", () => {
     show([
       entry("work", "assistant", [

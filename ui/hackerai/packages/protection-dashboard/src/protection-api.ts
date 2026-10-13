@@ -78,7 +78,7 @@ export interface SensorWarning {
 export interface ScanJob {
   job_id: string;
   scope: ScanScope;
-  state: "queued" | "running" | "completed" | "cancelled" | "failed";
+  state: "queued" | "running" | "completed" | "partial" | "cancelled" | "failed";
   files_scanned: number;
   files_total: number | null;
   detections: number;

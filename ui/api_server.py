@@ -72,7 +72,9 @@ async def _consume_sensor_ai_escalations() -> None:
             for warning in claimed if isinstance(claimed, list) else []:
                 try:
                     agent = await asyncio.to_thread(_get_agent)
-                    result = await asyncio.to_thread(agent.analyze_sensor_warning, warning)
+                    result = await asyncio.to_thread(
+                        _analyze_sensor_warning_with_emergency_reasoning, agent, warning
+                    )
                     await asyncio.to_thread(
                         _protection_pipe_request,
                         "complete_sensor_ai_escalation",
@@ -93,6 +95,25 @@ async def _consume_sensor_ai_escalations() -> None:
             # AI provider cannot interrupt sensor collection.
             pass
         await asyncio.sleep(2.0)
+
+
+def _analyze_sensor_warning_with_emergency_reasoning(agent: Any, warning: dict[str, Any]) -> Any:
+    """Analyze a structured high-severity warning at medium Gemini reasoning."""
+    soc_orchestrator = getattr(agent, "soc_orchestrator", None)
+    provider = getattr(soc_orchestrator, "api", None)
+    severity = str(warning.get("severity") or "").strip().casefold() if isinstance(warning, dict) else ""
+    if provider is None or severity not in {"high", "critical"}:
+        return agent.analyze_sensor_warning(warning)
+
+    # The AiApi is shared with ordinary runs; hold its run lock while changing
+    # the override so a concurrent chat cannot inherit emergency settings.
+    with _agent_run_lock:
+        previous_level = getattr(provider, "reasoning_level_override", None)
+        provider.reasoning_level_override = "medium"
+        try:
+            return agent.analyze_sensor_warning(warning)
+        finally:
+            provider.reasoning_level_override = previous_level
 
 
 async def _start_sensor_ai_consumer() -> None:
@@ -212,7 +233,7 @@ def _get_protection_service() -> Any:
                             return []
                         def create_scan_job(self, job_id, scope):
                             from types import SimpleNamespace
-                            return SimpleNamespace(job_id=job_id, scope=scope, state="failed", files_scanned=0, files_total=0, detections=0, errors=0, started_at=datetime.now().isoformat(), completed_at=datetime.now().isoformat(), error_message=err_text)
+                            return SimpleNamespace(job_id=job_id, scope=scope, state="failed", files_scanned=0, files_total=0, detections=0, errors=0, files_skipped=0, unknown_verdicts=0, started_at=datetime.now().isoformat(), completed_at=datetime.now().isoformat(), error_message=err_text)
                         def update_scan_job(self, *args, **kwargs):
                             return False
                         def get_scan_job(self, job_id):
@@ -290,6 +311,7 @@ SUPPORTED_CHAT_MODELS = {
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
 }
+SUPPORTED_REASONING_LEVELS = {"low", "medium", "high"}
 
 app.add_middleware(
     CORSMiddleware,
@@ -400,6 +422,17 @@ async def chat(payload: dict[str, Any]) -> dict[str, Any]:
     model = payload.get("model")
     if model and model not in SUPPORTED_CHAT_MODELS:
         raise HTTPException(status_code=400, detail="Unsupported Gemini model")
+    reasoning_level = payload.get("reasoning_level", "medium")
+    if reasoning_level not in SUPPORTED_REASONING_LEVELS:
+        raise HTTPException(status_code=400, detail="Unsupported reasoning level")
+    # Ordinary UI chats must leave this false. Only a trusted internal
+    # emergency producer should set it; prompt text is never inspected to infer
+    # an emergency, and this flag only changes model reasoning effort.
+    autonomous_emergency = payload.get("autonomous_emergency", False)
+    if not isinstance(autonomous_emergency, bool):
+        raise HTTPException(status_code=400, detail="autonomous_emergency must be a boolean")
+    if autonomous_emergency:
+        reasoning_level = "medium"
     had_user_message = any(
         entry.get("session_id") == session_id and entry.get("type") == "user_message"
         for entry in chat_history
@@ -409,16 +442,34 @@ async def chat(payload: dict[str, Any]) -> dict[str, Any]:
         session_id=session_id,
         source="ui",
         message=prompt,
-        data={"model": model} if model else {},
+        data={"model": model, "reasoning_level": reasoning_level},
     )
     event_bus.publish(user_event)
-    response = await asyncio.to_thread(_run_agent_prompt_sync, prompt, session_id, model)
+    def publish_response_delta(delta: str) -> None:
+        if delta:
+            event_bus.publish(AgentEvent(
+                type="response_delta",
+                session_id=session_id,
+                source="api_server",
+                message=delta,
+                data={"model": model, "reasoning_level": reasoning_level},
+            ))
+
+    response = await asyncio.to_thread(
+        _run_agent_prompt_sync,
+        prompt,
+        session_id,
+        model,
+        reasoning_level=reasoning_level,
+        autonomous_emergency=autonomous_emergency,
+        on_delta=publish_response_delta,
+    )
     response_event = AgentEvent(
         type="response",
         session_id=session_id,
         source="api_server",
         message=response,
-        data={"model": model} if model else {},
+        data={"model": model, "reasoning_level": reasoning_level},
     )
     event_bus.publish(response_event)
     if not had_user_message:
@@ -1136,18 +1187,38 @@ def _run_agent_prompt(prompt: str) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def _run_agent_prompt_sync(prompt: str, session_id: str, model: str | None = None) -> str:
+def _run_agent_prompt_sync(
+    prompt: str,
+    session_id: str,
+    model: str | None = None,
+    *,
+    reasoning_level: str = "medium",
+    autonomous_emergency: bool = False,
+    on_delta: Any | None = None,
+) -> str:
     """Execute one prompt and attach the session to newly emitted events."""
     if model and model not in SUPPORTED_CHAT_MODELS:
         raise ValueError("Unsupported Gemini model")
+    if reasoning_level not in SUPPORTED_REASONING_LEVELS:
+        raise ValueError("Unsupported reasoning level")
+    effective_reasoning_level = "medium" if autonomous_emergency else reasoning_level
     # CyberAgent keeps cancellation and investigation state on one singleton.
     # Serialize runs so one session cannot clear or signal another run's state.
     with _agent_run_lock:
         agent = _get_agent()
         provider = getattr(getattr(agent, "orchestrator", None), "_api", None)
         previous_model = getattr(provider, "model_override", None)
+        previous_reasoning_level = getattr(provider, "reasoning_level_override", None)
+        previous_delta_callback = getattr(agent.orchestrator, "response_delta_callback", None) if hasattr(agent, "orchestrator") else None
+        runtime = getattr(agent, "agent_runtime", None)
+        previous_runtime_delta_callback = getattr(runtime, "response_delta_callback", None)
         if provider is not None:
             provider.model_override = None if model in (None, "auto") else model
+            provider.reasoning_level_override = effective_reasoning_level
+        if hasattr(agent, "orchestrator"):
+            agent.orchestrator.response_delta_callback = on_delta
+        if runtime is not None:
+            runtime.response_delta_callback = on_delta
         with _active_runs_lock:
             _active_runs[session_id] = agent.cancel_event
         try:
@@ -1159,6 +1230,11 @@ def _run_agent_prompt_sync(prompt: str, session_id: str, model: str | None = Non
         finally:
             if provider is not None:
                 provider.model_override = previous_model
+                provider.reasoning_level_override = previous_reasoning_level
+            if hasattr(agent, "orchestrator"):
+                agent.orchestrator.response_delta_callback = previous_delta_callback
+            if runtime is not None:
+                runtime.response_delta_callback = previous_runtime_delta_callback
             with _active_runs_lock:
                 _active_runs.pop(session_id, None)
 
@@ -1402,6 +1478,8 @@ class ScanResponse(BaseModel):
     files_total: int
     detections: int
     errors: int
+    files_skipped: int = 0
+    unknown_verdicts: int = 0
     started_at: str
     completed_at: str | None = None
     error_message: str | None = None
@@ -1530,6 +1608,8 @@ def start_protection_scan(request: ScanRequest) -> dict[str, Any]:
         "files_total": job.files_total,
         "detections": job.detections,
         "errors": job.errors,
+        "files_skipped": job.files_skipped,
+        "unknown_verdicts": job.unknown_verdicts,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "error_message": job.error_message,
@@ -1551,6 +1631,8 @@ def get_protection_scan(job_id: str) -> dict[str, Any]:
         "files_total": job.files_total,
         "detections": job.detections,
         "errors": job.errors,
+        "files_skipped": job.files_skipped,
+        "unknown_verdicts": job.unknown_verdicts,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "error_message": job.error_message,

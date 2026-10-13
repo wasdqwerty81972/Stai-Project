@@ -516,13 +516,25 @@ class CyberSecurityOrchestrator:
     def __init__(self, use_mock: bool = True):
         self.use_mock = use_mock
         self._api = AiApi(use_mock=use_mock)
+        self.response_delta_callback = None
 
-    def _call_role(self, role: str, system: str, user: str) -> str:
+    def _call_role(
+        self,
+        role: str,
+        system: str,
+        user: str,
+        *,
+        stream_response: bool = False,
+        on_delta=None,
+    ) -> str:
         if self.use_mock:
             from key_manager import MockRoleKeyManager
             return MockRoleKeyManager._CANNED.get(role, MockRoleKeyManager._CANNED["default"])
         try:
-            resp = self._api.chat_with_role(role, system, user, temperature=0.2, max_retries=2)
+            resp = self._api.chat_with_role(
+                role, system, user, temperature=0.2, max_retries=2,
+                on_delta=on_delta or (self.response_delta_callback if stream_response else None),
+            )
             content = resp.choices[0].message.content
             # Guard against empty model output (Gemini can return this on content-filtered prompts)
             if not content or not content.strip():
@@ -1627,6 +1639,7 @@ class CyberAgent:
                 "Answer the user's drive-availability question using only this real tool result. "
                 "Do not invent drives or claim a drive is available without evidence.\n"
                 f"{evidence[:4000]}",
+                stream_response=True,
             )
 
         # Drive and malware scans are deterministic local operations. Route
@@ -1655,7 +1668,8 @@ class CyberAgent:
                     "and no malware result exists. Do not invent scan findings.\n"
                     f"Requested target: {scan_target}\n"
                     "Observation: target is not mounted or accessible.\n"
-                    "Observation: scan was not started."
+                    "Observation: scan was not started.",
+                    stream_response=True,
                 )
             self._publish_ui_event(
                 "agent_reasoning",
@@ -1707,6 +1721,7 @@ class CyberAgent:
                 "malware_analyst",
                 CYBER_ROLES["malware_analyst"],
                 f"Summarize this real malware scan of {scan_target}. Do not invent detections.\n{scan_output[:6000]}",
+                stream_response=True,
             )
             return str(summary)
 
@@ -1894,7 +1909,8 @@ class CyberAgent:
                 "Inspect this real local network connection and listening-port output. "
                 "Summarize listening ports, active connections, suspicious indicators, "
                 "and safe next steps. Do not claim a port is open unless the output supports it.\n"
-                f"{network_output[:12000]}"
+                f"{network_output[:12000]}",
+                stream_response=True,
             )
 
         if "honeypot" in lower:
@@ -1976,7 +1992,10 @@ class CyberAgent:
   - 'cyberos report' - Generate incident report"""
 
         # Fallback to AI orchestrator
-        return self.orchestrator._call_role("investigator", "You are a SOC analyst assistant.", f"Process this user request:\n{user_input}")
+        return self.orchestrator._call_role(
+            "investigator", "You are a SOC analyst assistant.",
+            f"Process this user request:\n{user_input}", stream_response=True,
+        )
 
     def _run_soc_validation(self, user_input: str) -> str:
         """Run a collaborative specialist investigation and populated workflows."""
@@ -2098,6 +2117,7 @@ class CyberAgent:
             "Keep confirmed facts, limitations, and inconclusive results distinct. "
             "Do not claim containment occurred and do not invent evidence.\n\n"
             + evidence_package,
+            stream_response=True,
         )
         if response and not str(response).startswith("[AI ERROR]"):
             return str(response)

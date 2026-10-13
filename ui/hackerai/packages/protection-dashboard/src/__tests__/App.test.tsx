@@ -215,6 +215,23 @@ test("starts_and_tracks_quick_scan", async () => {
   expect(await screen.findByText(/48 of 48 files scanned/i)).toBeInTheDocument();
 });
 
+test("shows_partial_scan_as_incomplete_coverage", async () => {
+  const user = userEvent.setup();
+  jest.mocked(startScan).mockResolvedValue({
+    ...scan,
+    state: "partial",
+    files_scanned: 4,
+    files_total: 5,
+    unknown_verdicts: 1,
+  } as never);
+  render(<App />);
+
+  await user.click(await screen.findByRole("button", { name: "Quick Scan" }));
+
+  expect(await screen.findByText(/Coverage is incomplete/i)).toBeInTheDocument();
+  expect(screen.getByLabelText("Scan completed with coverage gaps")).toBeInTheDocument();
+});
+
 test("saves_a_weekly_local_scan_schedule", async () => {
   const user = userEvent.setup();
   render(<App />);

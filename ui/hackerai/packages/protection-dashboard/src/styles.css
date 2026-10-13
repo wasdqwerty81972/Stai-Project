@@ -263,6 +263,7 @@ button:focus-visible, textarea:focus-visible {
 .scan-state-label { padding: 4px 8px; border: 1px solid var(--line); border-radius: 20px; color: #aab6c8; font-size: 9px; text-transform: capitalize; }
 .state-running, .state-queued { border-color: rgba(73, 151, 237, 0.26); color: #91c3ff; }
 .state-completed { border-color: rgba(61, 192, 139, 0.24); color: #71d9ad; }
+.state-partial { border-color: rgba(232, 173, 76, 0.32); color: #e7b562; }
 .state-failed { border-color: rgba(222, 97, 105, 0.23); color: #f18b91; }
 .scan-result-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .scan-result-title > div { display: grid; gap: 4px; }
@@ -282,6 +283,7 @@ button:focus-visible, textarea:focus-visible {
 .success-icon { color: #72d9ad; }
 .muted-icon { color: #8b98aa; }
 .error-icon { color: #f18a91; }
+.warning-icon { color: #e7b562; }
 
 .subtle-count { color: #7e8da2; font-size: 9px; }
 .agent-layout { display: grid; grid-template-columns: minmax(240px, 0.74fr) minmax(0, 1.26fr); align-items: start; gap: 12px; }
@@ -464,7 +466,7 @@ button:focus-visible, textarea:focus-visible {
 .button-secondary:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-soft); }
 .status-active, .health-value.healthy, .completion-note, .success-icon,
 .restored-tag { color: var(--green); }
-.status-degraded, .health-value.attention, .metric-amber .metric-icon,
+.status-degraded, .health-value.attention, .warning-icon, .metric-amber .metric-icon,
 .detection-symbol, .quarantine-symbol { color: var(--amber); }
 .status-unavailable, .error-icon { color: var(--red); }
 .spinner { border-color: var(--line); border-top-color: var(--blue); }

@@ -48,9 +48,7 @@ describe("SvsCyberComposer command menu", () => {
       />,
     );
 
-    expect(screen.getAllByRole("option")[0]).toHaveAccessibleName(
-      /\/plan/i,
-    );
+    expect(screen.getAllByRole("option")[0]).toHaveAccessibleName(/\/plan/i);
   });
 
   it("supports keyboard selection and escape dismissal", () => {
@@ -71,7 +69,9 @@ describe("SvsCyberComposer command menu", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onChange).toHaveBeenCalledWith("/security ");
     fireEvent.keyDown(input, { key: "Escape" });
-    expect(screen.queryByRole("listbox", { name: "Commands" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("listbox", { name: "Commands" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the attachment and model controls in the composer toolbar", () => {
@@ -107,8 +107,31 @@ describe("SvsCyberComposer command menu", () => {
     // The trigger is a Radix DropdownMenu, which opens on keydown/pointerdown.
     // A synthetic click never reaches it, so the menu stayed closed and the
     // options were never in the DOM.
-    fireEvent.keyDown(screen.getByTestId("model-selector"), { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByTestId("model-selector"), {
+      key: "ArrowDown",
+    });
     fireEvent.click(screen.getByTestId("model-option-gemini-3.1-pro-preview"));
     expect(onModelChange).toHaveBeenCalledWith("gemini-3.1-pro-preview");
+  });
+
+  it("shows reasoning levels and reports the selected level", () => {
+    const onReasoningLevelChange = jest.fn();
+    render(
+      <SvsCyberComposer
+        value=""
+        onChange={jest.fn()}
+        onSubmit={jest.fn()}
+        onStop={jest.fn()}
+        status="ready"
+        reasoningLevel="medium"
+        onReasoningLevelChange={onReasoningLevelChange}
+      />,
+    );
+
+    const trigger = screen.getByTestId("reasoning-level-selector");
+    expect(trigger).toHaveAccessibleName(/reasoning: medium/i);
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    fireEvent.click(screen.getByTestId("reasoning-level-option-high"));
+    expect(onReasoningLevelChange).toHaveBeenCalledWith("high");
   });
 });

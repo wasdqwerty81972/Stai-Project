@@ -842,6 +842,7 @@ class AiApi:
         # Scoped by the API server for a serialized user run. None keeps the
         # configured default model.
         self.model_override: Optional[str] = None
+        self.reasoning_level_override: Optional[str] = None
 
     def _get_client_for_role(self, role: str):
         """Get client for a specific role."""
@@ -941,7 +942,7 @@ class AiApi:
 
     def chat_with_role(self, role: str, system: str, user: str, 
                        temperature: float = 0.3, top_p: float = 0.9,
-                       max_retries: int = 3) -> _SimpleResponse:
+                       max_retries: int = 3, on_delta=None) -> _SimpleResponse:
         """
         Chat completion with a specific role (planner, designer, coder, reviewer, reporter, analyst).
         
@@ -958,12 +959,18 @@ class AiApi:
         role_index = self._ROLE_MAP.get(role.lower(), 0)
         
         if _GENAI_AVAILABLE:
-            config = _genai_types.GenerateContentConfig(
+            config_values = dict(
                 system_instruction=system,
                 temperature=temperature,
                 top_p=top_p,
                 tools=None,
             )
+            reasoning_level = getattr(self, "reasoning_level_override", None)
+            if reasoning_level:
+                config_values["thinking_config"] = _genai_types.ThinkingConfig(
+                    thinking_level=reasoning_level.upper(),
+                )
+            config = _genai_types.GenerateContentConfig(**config_values)
         else:
             class _Cfg:
                 def __init__(self, system_instruction, temperature, top_p):
@@ -988,17 +995,38 @@ class AiApi:
 
         for attempt in range(max_attempts):
             client, label = self._km.client_for_role(role_index + attempt)
+            emitted_stream_delta = False
             try:
-                response = client.models.generate_content(
-                    model=self._select_model(client, self.model_override),
-                    contents=contents,
-                    config=config
-                )
-                text = "".join(p.text or "" for p in response.candidates[0].content.parts)
+                model = self._select_model(client, self.model_override)
+                stream = getattr(client.models, "generate_content_stream", None)
+                if on_delta is not None and callable(stream):
+                    chunks = stream(model=model, contents=contents, config=config)
+                    text_parts = []
+                    for chunk in chunks:
+                        delta = getattr(chunk, "text", None) or ""
+                        if delta:
+                            text_parts.append(delta)
+                            emitted_stream_delta = True
+                            on_delta(delta)
+                    text = "".join(text_parts)
+                else:
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=contents,
+                        config=config
+                    )
+                    text = "".join(p.text or "" for p in response.candidates[0].content.parts)
+                    if on_delta is not None and text:
+                        emitted_stream_delta = True
+                        on_delta(text)
                 if not text.strip():
                     text = "[The model returned an empty response. Please rephrase your request.]"
                 return _SimpleResponse(text, model=label)
             except Exception as e:
+                if emitted_stream_delta:
+                    raise RuntimeError(
+                        "Gemini streaming failed after partial output; automatic provider retry was stopped"
+                    ) from e
                 last_error = e
                 err_str = str(e)
                 # Gemini-specific: model returned no content — don't retry, return gracefully

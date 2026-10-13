@@ -76,6 +76,41 @@ def test_clean_file_returns_allow_verdict(tmp_path: Path) -> None:
     assert verdict.action == "allow"
 
 
+def test_oversized_file_returns_unknown_with_typed_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = tmp_path / "large.bin"
+    sample.write_bytes(b"12345")
+    monkeypatch.setattr(scanner, "MAX_FILE_SIZE_BYTES", 4)
+
+    verdict = scan_path(sample, _rule_set())
+
+    assert (verdict.status, verdict.action, verdict.reason_code) == (
+        "unknown",
+        "allow",
+        "oversized",
+    )
+
+
+def test_file_time_budget_returns_unknown_with_typed_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample = tmp_path / "slow.bin"
+    sample.write_bytes(b"small fixture")
+    times = iter((10.0, 12.0))
+    monkeypatch.setattr(scanner.time, "monotonic", lambda: next(times))
+
+    verdict = scan_path(sample, _rule_set(), file_timeout_seconds=1.0)
+
+    assert (verdict.status, verdict.action, verdict.reason_code) == (
+        "unknown",
+        "allow",
+        "time_budget_exceeded",
+    )
+
+
 def test_file_mutated_during_scan_returns_unknown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -85,8 +120,8 @@ def test_file_mutated_during_scan_returns_unknown(
     sample.write_bytes(content)
     original_reader = scanner._read_digest
 
-    def mutate_after_read(path: Path, expected: tuple) -> str:
-        digest = original_reader(path, expected)
+    def mutate_after_read(path: Path, expected: tuple, **kwargs) -> str:
+        digest = original_reader(path, expected, **kwargs)
         path.write_bytes(content + b" changed")
         return digest
 
@@ -121,6 +156,7 @@ def test_yara_timeout_returns_unknown(
 
     assert verdict.status == "unknown"
     assert verdict.action == "allow"
+    assert verdict.reason_code == "time_budget_exceeded"
 
 
 def test_signed_sha256_block_match_survives_yara_failure(

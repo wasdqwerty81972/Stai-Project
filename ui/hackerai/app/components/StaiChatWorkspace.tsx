@@ -488,16 +488,58 @@ export function applyEvent(
     const part: TextPart = { type: "text", text: event.message };
     return assistantIndex === -1
       ? createAssistant(part)
-      : updateAssistant((entry) => ({
+      : updateAssistant((entry) => {
+          const streamedText = entry.parts
+            .filter(
+              (existing): existing is TextPart => existing.type === "text",
+            )
+            .map((existing) => existing.text)
+            .join("");
+          const hasStreamedAnswer = entry.parts.some(
+            (existing) => existing.type === "text",
+          );
+          return {
+            ...entry,
+            parts:
+              hasStreamedAnswer && streamedText === event.message
+                ? [
+                    ...entry.parts.filter(
+                      (existing) => existing.type !== "text",
+                    ),
+                    part,
+                  ]
+                : entry.parts.some(
+                      (existing) =>
+                        existing.type === "text" &&
+                        existing.text === event.message,
+                    )
+                  ? entry.parts
+                  : [...entry.parts, part],
+            animate: entry.animate || animateAssistant,
+          };
+        });
+  }
+
+  if (event.type === "response_delta" && event.message) {
+    const appendText = (entry: ChatEntry): ChatEntry => {
+      const lastPart = entry.parts.at(-1);
+      if (lastPart?.type === "text") {
+        return {
           ...entry,
-          parts: entry.parts.some(
-            (existing) =>
-              existing.type === "text" && existing.text === event.message,
-          )
-            ? entry.parts
-            : [...entry.parts, part],
-          animate: entry.animate || animateAssistant,
-        }));
+          parts: [
+            ...entry.parts.slice(0, -1),
+            { type: "text", text: lastPart.text + event.message },
+          ],
+        };
+      }
+      return {
+        ...entry,
+        parts: [...entry.parts, { type: "text", text: event.message }],
+      };
+    };
+    return assistantIndex === -1
+      ? createAssistant({ type: "text", text: event.message })
+      : updateAssistant(appendText);
   }
 
   if (
@@ -630,6 +672,9 @@ function StaiChatWorkspaceContent({
   >([]);
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
   const [selectedModel, setSelectedModel] = useState<SelectedModel>("auto");
+  const [reasoningLevel, setReasoningLevel] = useState<
+    "low" | "medium" | "high"
+  >("medium");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [communicationsOpen, setCommunicationsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -658,26 +703,23 @@ function StaiChatWorkspaceContent({
     if (!landing) router.push("/");
   }
 
-  const appendEvent = useCallback(
-    (event: StaiAgentEvent) => {
-      if (eventLogRef.current.has(event.event_id)) return;
-      eventLogRef.current.set(event.event_id, event);
-      const activity = activityFromEvent(event);
-      if (activity) {
-        setActivities((current) =>
-          [
-            ...current.filter(
-              (item) =>
-                item.label !== activity.label || activity.status !== "running",
-            ),
-            activity,
-          ].slice(-8),
-        );
-      }
-      setEntries(reconcileEvents([...eventLogRef.current.values()]));
-    },
-    [],
-  );
+  const appendEvent = useCallback((event: StaiAgentEvent) => {
+    if (eventLogRef.current.has(event.event_id)) return;
+    eventLogRef.current.set(event.event_id, event);
+    const activity = activityFromEvent(event);
+    if (activity) {
+      setActivities((current) =>
+        [
+          ...current.filter(
+            (item) =>
+              item.label !== activity.label || activity.status !== "running",
+          ),
+          activity,
+        ].slice(-8),
+      );
+    }
+    setEntries(reconcileEvents([...eventLogRef.current.values()]));
+  }, []);
 
   // Load conversations list + connect WebSocket
   useEffect(() => {
@@ -804,6 +846,7 @@ function StaiChatWorkspaceContent({
         message,
         targetSessionId,
         selectedModel,
+        reasoningLevel,
         requestControllerRef.current.signal,
       );
 
@@ -893,103 +936,108 @@ function StaiChatWorkspaceContent({
 
   return (
     <>
-    <div className="flex h-full min-h-0 w-full overflow-hidden bg-background text-foreground">
-      <SvsWorkspaceSidebar
-        conversations={conversations}
-        activeSessionId={landing ? undefined : sessionId}
-        onClearAll={clearTasks}
-        collapsed={sidebarCollapsed}
-        onCollapsedChange={setSidebarCollapsed}
-      />
-
-      {/* ── Main column ──────────────────────────────────────────────────── */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <SvsWorkspaceHeader
-          title={
-            landing
-              ? "SVS-Cyber"
-              : conversations.find((c) => c.id === sessionId)?.title ||
-                "SVS-Cyber"
-          }
-          connection={landing ? "idle" : connection}
-          running={isStreaming}
-          onOpenNavigation={() => setSidebarCollapsed(false)}
-          onOpenSettings={() => setCommunicationsOpen(true)}
+      <div className="flex h-full min-h-0 w-full overflow-hidden bg-background text-foreground">
+        <SvsWorkspaceSidebar
+          conversations={conversations}
+          activeSessionId={landing ? undefined : sessionId}
+          onClearAll={clearTasks}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
         />
-        <SvsSensorStatus />
 
-        {/* Activity strip — HackerAI-style agent work header */}
-        {activities.length > 0 && (
-          <div
-            className="mx-auto flex w-full max-w-[768px] items-center gap-2 overflow-x-auto px-4 py-2 text-xs text-muted-foreground"
-            aria-label="Agent activity"
-          >
-            <Activity className="size-3.5 shrink-0" aria-hidden="true" />
-            {activities.slice(-4).map((item) => (
-              <span
-                key={item.id}
-                className={`inline-flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 ${
-                  item.status === "failed"
-                    ? "text-destructive"
-                    : item.status === "completed"
-                      ? "text-emerald-400"
+        {/* ── Main column ──────────────────────────────────────────────────── */}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <SvsWorkspaceHeader
+            title={
+              landing
+                ? "SVS-Cyber"
+                : conversations.find((c) => c.id === sessionId)?.title ||
+                  "SVS-Cyber"
+            }
+            connection={landing ? "idle" : connection}
+            running={isStreaming}
+            onOpenNavigation={() => setSidebarCollapsed(false)}
+            onOpenSettings={() => setCommunicationsOpen(true)}
+          />
+          <SvsSensorStatus />
+
+          {/* Activity strip — HackerAI-style agent work header */}
+          {activities.length > 0 && (
+            <div
+              className="mx-auto flex w-full max-w-[768px] items-center gap-2 overflow-x-auto px-4 py-2 text-xs text-muted-foreground"
+              aria-label="Agent activity"
+            >
+              <Activity className="size-3.5 shrink-0" aria-hidden="true" />
+              {activities.slice(-4).map((item) => (
+                <span
+                  key={item.id}
+                  className={`inline-flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 ${
+                    item.status === "failed"
+                      ? "text-destructive"
+                      : item.status === "completed"
+                        ? "text-emerald-400"
+                        : item.status === "running"
+                          ? "text-amber-400"
+                          : ""
+                  }`}
+                >
+                  {item.status === "completed"
+                    ? "✓"
+                    : item.status === "failed"
+                      ? "!"
                       : item.status === "running"
-                        ? "text-amber-400"
-                        : ""
-                }`}
-              >
-                {item.status === "completed"
-                  ? "✓"
-                  : item.status === "failed"
-                    ? "!"
-                    : item.status === "running"
-                      ? "●"
-                      : "·"}{" "}
-                {item.label}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Message list */}
-        <section className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-28">
-          {landing && displayed.length === 0 && status === "ready" ? (
-            <SvsLandingState onSuggestion={setDraft} />
-          ) : (
-            <SvsTranscript
-              entries={displayed}
-              running={isStreaming}
-              error={error}
-              sessionId={sessionId}
-              onApproval={async (requestId, approved) => {
-                await respondToStaiApproval(requestId, approved, sessionId);
-              }}
-              bottomRef={bottomRef}
-            />
+                        ? "●"
+                        : "·"}{" "}
+                  {item.label}
+                </span>
+              ))}
+            </div>
           )}
-        </section>
 
-        {/* Composer */}
-        <SvsCyberComposer
-          value={draft}
-          onChange={setDraft}
-          onSubmit={handleSubmit}
-          onStop={handleStop}
-          status={status}
-          placeholder={
-            landing
-              ? "What investigation should we run?"
-              : "Message the SVS-Cyber agent"
-          }
-          chatId={sessionId}
-          selectedModel={selectedModel}
-          onModelChange={setSelectedModel}
-          isCentered={landing}
-          commands={commands}
-        />
-      </main>
-    </div>
-    <CommunicationsSettings open={communicationsOpen} onOpenChange={setCommunicationsOpen} />
+          {/* Message list */}
+          <section className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-28">
+            {landing && displayed.length === 0 && status === "ready" ? (
+              <SvsLandingState onSuggestion={setDraft} />
+            ) : (
+              <SvsTranscript
+                entries={displayed}
+                running={isStreaming}
+                error={error}
+                sessionId={sessionId}
+                onApproval={async (requestId, approved) => {
+                  await respondToStaiApproval(requestId, approved, sessionId);
+                }}
+                bottomRef={bottomRef}
+              />
+            )}
+          </section>
+
+          {/* Composer */}
+          <SvsCyberComposer
+            value={draft}
+            onChange={setDraft}
+            onSubmit={handleSubmit}
+            onStop={handleStop}
+            status={status}
+            placeholder={
+              landing
+                ? "What investigation should we run?"
+                : "Message the SVS-Cyber agent"
+            }
+            chatId={sessionId}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+            reasoningLevel={reasoningLevel}
+            onReasoningLevelChange={setReasoningLevel}
+            isCentered={landing}
+            commands={commands}
+          />
+        </main>
+      </div>
+      <CommunicationsSettings
+        open={communicationsOpen}
+        onOpenChange={setCommunicationsOpen}
+      />
     </>
   );
 }

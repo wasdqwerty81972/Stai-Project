@@ -11,7 +11,7 @@ from .store import ProtectionStore
 
 
 _LOCAL_TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d\Z")
-_TERMINAL_STATES = {"completed", "cancelled", "failed"}
+_TERMINAL_STATES = {"completed", "partial", "cancelled", "failed"}
 
 
 def next_scan_time(

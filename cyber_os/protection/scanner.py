@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 from pathlib import Path
 from typing import BinaryIO
 
-from .models import DetectionRule, RuleSet, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanReasonCode, ScanVerdict
 
 
 _CHUNK_SIZE = 1024 * 1024
+MAX_FILE_SIZE_BYTES = 256 * 1024 * 1024
+DEFAULT_FILE_TIMEOUT_SECONDS = 30.0
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 SCANNER_ENGINE_VERSION = "1"
 
@@ -26,6 +29,14 @@ class _YaraTimeout(Exception):
 
 class _YaraFailure(Exception):
     """YARA was unavailable or could not compile or match signed rules."""
+
+
+class _ScanBudgetExceeded(Exception):
+    """A file exceeded a configured size or wall-clock scan budget."""
+
+    def __init__(self, reason: str, reason_code: ScanReasonCode) -> None:
+        super().__init__(reason)
+        self.reason_code = reason_code
 
 
 def _snapshot(file_stat: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -56,19 +67,44 @@ def _safe_file_stat(path: Path) -> os.stat_result:
     return file_stat
 
 
-def _digest_stream(stream: BinaryIO) -> str:
+def _digest_stream(
+    stream: BinaryIO,
+    *,
+    deadline: float,
+    max_bytes: int,
+) -> str:
     digest = hashlib.sha256()
-    while chunk := stream.read(_CHUNK_SIZE):
+    total_bytes = 0
+    while True:
+        chunk = stream.read(_CHUNK_SIZE)
+        if time.monotonic() >= deadline:
+            raise _ScanBudgetExceeded(
+                "file scan exceeded its time budget", "time_budget_exceeded"
+            )
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise _ScanBudgetExceeded(
+                "file exceeds the maximum scan size", "oversized"
+            )
         digest.update(chunk)
     return digest.hexdigest()
 
 
-def _read_digest(path: Path, expected: tuple[int, int, int, int, int, int]) -> str:
+def _read_digest(
+    path: Path,
+    expected: tuple[int, int, int, int, int, int],
+    *,
+    deadline: float | None = None,
+    max_bytes: int = MAX_FILE_SIZE_BYTES,
+) -> str:
+    deadline = deadline if deadline is not None else time.monotonic() + DEFAULT_FILE_TIMEOUT_SECONDS
     with path.open("rb") as stream:
         before = os.fstat(stream.fileno())
         if _snapshot(before) != expected:
             raise _FileChanged("scan target changed before reading")
-        digest = _digest_stream(stream)
+        digest = _digest_stream(stream, deadline=deadline, max_bytes=max_bytes)
         after = os.fstat(stream.fileno())
         if _snapshot(after) != expected:
             raise _FileChanged("scan target changed while reading")
@@ -113,7 +149,13 @@ def _match_yara(
     )
 
 
-def _unknown(rule_version: str, reason: str, sha256: str | None = None) -> ScanVerdict:
+def _unknown(
+    rule_version: str,
+    reason: str,
+    sha256: str | None = None,
+    *,
+    reason_code: ScanReasonCode = "analysis_unavailable",
+) -> ScanVerdict:
     return ScanVerdict(
         status="unknown",
         action="allow",
@@ -121,6 +163,7 @@ def _unknown(rule_version: str, reason: str, sha256: str | None = None) -> ScanV
         rule_version=rule_version,
         sha256=sha256,
         reason=reason,
+        reason_code=reason_code,
     )
 
 
@@ -129,6 +172,8 @@ def scan_path(
     rules: RuleSet,
     *,
     yara_timeout_seconds: int = 5,
+    max_file_bytes: int | None = None,
+    file_timeout_seconds: float = DEFAULT_FILE_TIMEOUT_SECONDS,
 ) -> ScanVerdict:
     """Scan one regular file without following links or trusting unstable bytes.
 
@@ -138,12 +183,33 @@ def scan_path(
     """
 
     if yara_timeout_seconds < 1:
-        return _unknown(rules.version, "YARA timeout must be at least one second")
+        return _unknown(
+            rules.version,
+            "YARA timeout must be at least one second",
+            reason_code="invalid_budget",
+        )
+    max_file_bytes = MAX_FILE_SIZE_BYTES if max_file_bytes is None else max_file_bytes
+    if max_file_bytes < 1 or file_timeout_seconds <= 0:
+        return _unknown(
+            rules.version,
+            "file scan budgets must be positive",
+            reason_code="invalid_budget",
+        )
 
     target = Path(path)
     try:
         initial_snapshot = _snapshot(_safe_file_stat(target))
-        digest = _read_digest(target, initial_snapshot)
+        if initial_snapshot[3] > max_file_bytes:
+            raise _ScanBudgetExceeded(
+                "file exceeds the maximum scan size", "oversized"
+            )
+        deadline = time.monotonic() + file_timeout_seconds
+        digest = _read_digest(
+            target,
+            initial_snapshot,
+            deadline=deadline,
+            max_bytes=max_file_bytes,
+        )
         after_hash_snapshot = _snapshot(_safe_file_stat(target))
         if after_hash_snapshot != initial_snapshot:
             raise _FileChanged("scan target changed after reading")
@@ -158,10 +224,21 @@ def scan_path(
         final_snapshot = _snapshot(_safe_file_stat(target))
         if final_snapshot != initial_snapshot:
             raise _FileChanged("scan target changed during YARA matching")
+    except _ScanBudgetExceeded as exc:
+        return _unknown(rules.version, str(exc), reason_code=exc.reason_code)
     except _FileChanged:
-        return _unknown(rules.version, "file changed or is not a safe regular file")
+        return _unknown(
+            rules.version,
+            "file changed or is not a safe regular file",
+            reason_code="unstable_or_unsafe_file",
+        )
     except OSError:
-        return _unknown(rules.version, "file could not be read", locals().get("digest"))
+        return _unknown(
+            rules.version,
+            "file could not be read",
+            locals().get("digest"),
+            reason_code="read_error",
+        )
 
     matching_rules = [
         rule
@@ -185,8 +262,18 @@ def scan_path(
                 rule_version=rules.version,
                 sha256=digest,
                 reason="high-confidence SHA-256 block rule matched; YARA unavailable",
+                reason_code="rule_match",
             )
-        return _unknown(rules.version, str(yara_error), digest)
+        return _unknown(
+            rules.version,
+            str(yara_error),
+            digest,
+            reason_code=(
+                "time_budget_exceeded"
+                if isinstance(yara_error, _YaraTimeout)
+                else "analysis_unavailable"
+            ),
+        )
 
     matching_rules.extend(yara_matches)
     if not matching_rules:
@@ -197,6 +284,7 @@ def scan_path(
             rule_version=rules.version,
             sha256=digest,
             reason="no signed rule matched",
+            reason_code="clean",
         )
 
     blocking_rule = next(
@@ -219,4 +307,5 @@ def scan_path(
             if blocking_rule
             else "observe rule matched"
         ),
+        reason_code="rule_match",
     )

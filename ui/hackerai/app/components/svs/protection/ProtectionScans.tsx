@@ -1,6 +1,12 @@
 "use client";
 
-import { ScanLine, Loader2, XCircle, CheckCircle2, AlertTriangle } from "lucide-react";
+import {
+  ScanLine,
+  Loader2,
+  XCircle,
+  CheckCircle2,
+  AlertTriangle,
+} from "lucide-react";
 import type { ScanJob, ScanScope } from "@/lib/stai-protection-api";
 import { formatTimestamp } from "./ProtectionPrimitives";
 
@@ -18,9 +24,25 @@ function isActive(job: ScanJob | null): boolean {
   return !!job && (job.state === "running" || job.state === "queued");
 }
 
-const TERMINAL_STYLE: Record<string, { Icon: typeof CheckCircle2; cls: string; label: string }> = {
-  completed: { Icon: CheckCircle2, cls: "text-emerald-300", label: "Completed" },
-  cancelled: { Icon: XCircle, cls: "text-muted-foreground", label: "Cancelled" },
+const TERMINAL_STYLE: Record<
+  string,
+  { Icon: typeof CheckCircle2; cls: string; label: string }
+> = {
+  completed: {
+    Icon: CheckCircle2,
+    cls: "text-emerald-300",
+    label: "Completed",
+  },
+  partial: {
+    Icon: AlertTriangle,
+    cls: "text-amber-300",
+    label: "Incomplete coverage",
+  },
+  cancelled: {
+    Icon: XCircle,
+    cls: "text-muted-foreground",
+    label: "Cancelled",
+  },
   failed: { Icon: AlertTriangle, cls: "text-destructive", label: "Failed" },
 };
 
@@ -64,7 +86,10 @@ export function ProtectionScans({
           className="inline-flex items-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100 transition-colors hover:bg-cyan-500/20 focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
         >
           {starting ? (
-            <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+            <Loader2
+              className="size-4 motion-safe:animate-spin"
+              aria-hidden="true"
+            />
           ) : (
             <ScanLine className="size-4" aria-hidden="true" />
           )}
@@ -103,7 +128,10 @@ export function ProtectionScans({
                   aria-hidden="true"
                 />
               ) : terminal ? (
-                <terminal.Icon className={`size-4 ${terminal.cls}`} aria-hidden="true" />
+                <terminal.Icon
+                  className={`size-4 ${terminal.cls}`}
+                  aria-hidden="true"
+                />
               ) : null}
               <span className="capitalize">{job.scope} scan</span>
               <span className="text-muted-foreground">
@@ -132,13 +160,15 @@ export function ProtectionScans({
               aria-label="Scan progress"
             >
               <div
-                className={`h-full rounded-full ${active ? "bg-cyan-400" : "bg-emerald-400"} ${percent == null && active ? "w-1/3 motion-safe:animate-pulse" : ""}`}
+                className={`h-full rounded-full ${active ? "bg-cyan-400" : job.state === "partial" ? "bg-amber-400" : "bg-emerald-400"} ${percent == null && active ? "w-1/3 motion-safe:animate-pulse" : ""}`}
                 style={percent != null ? { width: `${percent}%` } : undefined}
               />
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               {job.files_scanned.toLocaleString()}
-              {job.files_total > 0 ? ` / ${job.files_total.toLocaleString()}` : ""}{" "}
+              {job.files_total > 0
+                ? ` / ${job.files_total.toLocaleString()}`
+                : ""}{" "}
               files scanned
               {percent != null ? ` (${percent}%)` : ""}
             </p>
@@ -154,12 +184,34 @@ export function ProtectionScans({
               <dd className="font-medium text-foreground">{job.errors}</dd>
             </div>
             <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
+              <dt className="text-muted-foreground">Files skipped</dt>
+              <dd className="font-medium text-foreground">
+                {job.files_skipped}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
+              <dt className="text-muted-foreground">Unknown verdicts</dt>
+              <dd className="font-medium text-foreground">
+                {job.unknown_verdicts}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
               <dt className="text-muted-foreground">Started</dt>
               <dd className="font-medium text-foreground">
                 {formatTimestamp(job.started_at)}
               </dd>
             </div>
           </dl>
+
+          {job.state === "partial" ? (
+            <p
+              role="status"
+              className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
+            >
+              This scan did not verify every file. Review skipped files, scan
+              errors, and unknown verdicts before treating the device as clear.
+            </p>
+          ) : null}
 
           <p className="mt-2 text-[11px] text-muted-foreground">
             Scan detections are files matched during this scan; they are counted

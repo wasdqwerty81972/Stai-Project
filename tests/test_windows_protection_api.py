@@ -200,10 +200,10 @@ def test_scan_rejects_client_supplied_paths(monkeypatch, mock_protection_service
 def test_scan_job_routes_report_persisted_progress(monkeypatch, mock_protection_service):
     _reset_protection_service_mock()
     mock_protection_service.start_scan.return_value = SimpleNamespace(
-        job_id="job-123", scope="quick", state="running", files_scanned=50, files_total=100, detections=2, errors=0, started_at="2026-01-01T00:00:00", completed_at=None, error_message=None
+        job_id="job-123", scope="quick", state="running", files_scanned=50, files_total=100, detections=2, errors=0, files_skipped=3, unknown_verdicts=1, started_at="2026-01-01T00:00:00", completed_at=None, error_message=None
     )
     mock_protection_service.store.get_scan_job.return_value = SimpleNamespace(
-        job_id="job-123", scope="quick", state="completed", files_scanned=100, files_total=100, detections=2, errors=0, started_at="2026-01-01T00:00:00", completed_at="2026-01-01T00:02:00", error_message=None
+        job_id="job-123", scope="quick", state="completed", files_scanned=100, files_total=100, detections=2, errors=0, files_skipped=3, unknown_verdicts=1, started_at="2026-01-01T00:00:00", completed_at="2026-01-01T00:02:00", error_message=None
     )
     monkeypatch.setattr(server, "_get_protection_service", lambda: mock_protection_service)
 
@@ -214,6 +214,8 @@ def test_scan_job_routes_report_persisted_progress(monkeypatch, mock_protection_
         job = start_reply.json()
         assert job["job_id"] == "job-123"
         assert job["files_total"] == 100
+        assert job["files_skipped"] == 3
+        assert job["unknown_verdicts"] == 1
 
         # Get scan progress
         get_reply = client.get("/api/protection/scans/job-123")
@@ -221,6 +223,8 @@ def test_scan_job_routes_report_persisted_progress(monkeypatch, mock_protection_
         progress = get_reply.json()
         assert progress["files_scanned"] == 100
         assert progress["state"] == "completed"
+        assert progress["files_skipped"] == 3
+        assert progress["unknown_verdicts"] == 1
 
 
 def test_threats_endpoint_does_not_conflate_detected_and_blocked(monkeypatch, mock_protection_service):

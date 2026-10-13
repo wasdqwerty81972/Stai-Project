@@ -269,6 +269,38 @@ def test_running_scan_can_be_cancelled(
     assert final.state == "cancelled"
 
 
+def test_scan_with_unknown_verdict_is_persisted_as_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scan_root = tmp_path / "scanroot"
+    scan_root.mkdir()
+    (scan_root / "unreadable-by-engine.bin").write_bytes(b"uncertain")
+    svc, store = _service(tmp_path, RuleSet("test-1", ()))
+    monkeypatch.setattr(service_mod, "SCAN_ROOTS_QUICK", [scan_root])
+    monkeypatch.setattr(
+        ProtectionService,
+        "scan_file",
+        lambda self, _path: ScanVerdict(
+            status="unknown",
+            action="allow",
+            rule_id=None,
+            rule_version="test-1",
+            sha256=None,
+            reason="matcher unavailable",
+        ),
+    )
+
+    job = svc.start_scan("quick")
+    assert svc._scan_thread is not None
+    svc._scan_thread.join(timeout=5)
+
+    final = store.get_scan_job(job.job_id)
+    assert final is not None
+    assert final.state == "partial"
+    assert final.files_scanned == 1
+    assert final.unknown_verdicts == 1
+
+
 def test_quick_scan_uses_configured_enrolled_user_roots_and_persists_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

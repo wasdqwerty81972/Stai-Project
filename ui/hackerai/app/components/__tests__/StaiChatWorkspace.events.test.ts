@@ -32,7 +32,10 @@ function event(
 }
 
 function reduce(events: StaiAgentEvent[]): ChatEntry[] {
-  return events.reduce((entries, item) => applyEvent(entries, item), [] as ChatEntry[]);
+  return events.reduce(
+    (entries, item) => applyEvent(entries, item),
+    [] as ChatEntry[],
+  );
 }
 
 describe("SVS transcript event reduction", () => {
@@ -107,6 +110,19 @@ describe("SVS transcript event reduction", () => {
       "reasoning",
       "tool",
       "text",
+    ]);
+  });
+
+  it("appends streamed answer deltas and deduplicates the final response", () => {
+    const entries = reduce([
+      event("user-1", "user_message", 0, "Explain the alert"),
+      event("delta-1", "response_delta", 1, "The alert "),
+      event("delta-2", "response_delta", 2, "is contained."),
+      event("answer-1", "response", 3, "The alert is contained."),
+    ]);
+
+    expect(entries[1]?.parts).toEqual([
+      { type: "text", text: "The alert is contained." },
     ]);
   });
 

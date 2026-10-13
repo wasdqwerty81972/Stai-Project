@@ -245,7 +245,7 @@ export function ScanView({
                 Cancel scan
               </button>
             )}
-            {scan.state === "completed" && (hasCoverageGaps ? (
+            {(scan.state === "completed" || scan.state === "partial") && (hasCoverageGaps ? (
               <div className="inline-alert coverage-gap" role="status">
                 Coverage is incomplete. This result does not establish that the selected locations are clean.
               </div>
@@ -266,6 +266,7 @@ function ScanStateIcon({ state }: { state: ScanJob["state"] }) {
     return <LoaderCircle className="spin panel-icon" size={18} aria-label="Scan in progress" />;
   }
   if (state === "completed") return <CheckCircle2 className="success-icon" size={18} aria-label="Scan completed" />;
+  if (state === "partial") return <AlertCircle className="warning-icon" size={18} aria-label="Scan completed with coverage gaps" />;
   if (state === "cancelled") return <XCircle className="muted-icon" size={18} aria-label="Scan cancelled" />;
   return <AlertCircle className="error-icon" size={18} aria-label="Scan failed" />;
 }

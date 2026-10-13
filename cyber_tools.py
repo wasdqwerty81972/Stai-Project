@@ -16,6 +16,8 @@ import ast
 import re
 import string
 import threading
+import socket
+import ipaddress
 import contextlib
 import importlib.util
 import requests
@@ -1734,151 +1736,139 @@ class SystemMonitor:
 # =============================================================================
 
 class HoneypotManager:
-    """Manages AI-powered SSH honeypot for attacker interaction logging."""
+    """Manages a low-interaction SSH banner honeypot.
+
+    It only records connection metadata. It does not accept credentials or run
+    commands, keeping attacker supplied input away from the host and LLMs.
+    """
     def __init__(self):
         self.running = False
         self.connections = []
-        self.logs = []
         self._thread = None
+        self._socket = None
+        self._lock = threading.RLock()
+        self._ready = threading.Event()
+        self._startup_error = None
+        self._host = "127.0.0.1"
+        self._port = 2222
 
-    def start(self, host="0.0.0.0", port=2222):
-        self.running = True
-        self._thread = threading.Thread(target=self._run, args=(host, port), daemon=True)
-        self._thread.start()
+    def start(self, host="127.0.0.1", port=2222):
+        try:
+            host = str(ipaddress.ip_address(host))
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise ValueError("port must be an integer from 1 to 65535")
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"invalid honeypot bind address: {exc}") from exc
+
+        with self._lock:
+            if self.running:
+                if (host, port) == (self._host, self._port):
+                    return {"status": "already_running", "host": self._host, "port": self._port}
+                return {"status": "failed", "error": "honeypot is already running with different settings"}
+            self._host, self._port = host, port
+            self._startup_error = None
+            self._ready.clear()
+            self._thread = threading.Thread(target=self._run, args=(host, port), daemon=True)
+            self._thread.start()
+
+        if not self._ready.wait(timeout=3):
+            return {"status": "failed", "error": "honeypot listener did not become ready"}
+        if self._startup_error:
+            return {"status": "failed", "error": self._startup_error}
         return {"status": "started", "host": host, "port": port}
 
     def stop(self):
-        self.running = False
-        return {"status": "stopped"}
+        with self._lock:
+            listener = self._socket
+            was_running = self.running
+            self.running = False
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        if thread and thread.is_alive():
+            return {"status": "failed", "error": "honeypot listener did not stop"}
+        return {"status": "stopped" if was_running else "already_stopped"}
 
     def status(self):
         return {
             "running": self.running,
+            "host": self._host if self.running else None,
+            "port": self._port if self.running else None,
+            "error": self._startup_error,
             "connections": self.connections[-10:],
-            "logs": self.logs[-20:]
+            "logs": []
         }
 
     def _run(self, host, port):
+        sock = None
         try:
-            import socket
-            import paramiko
-            import requests
-            
-            OLLAMA_URL = "http://localhost:11434/api/generate"
-            OLLAMA_MODEL = "llama3:8b"
-            SYSTEM_PROMPT = """You are a vulnerable Ubuntu 22.04 LTS terminal shell.
-            Return ONLY raw terminal output. No explanations or markdown."""
-
-            def generate_llm_response(command, history):
-                payload = {
-                    "model": OLLAMA_MODEL,
-                    "prompt": f"{SYSTEM_PROMPT}\nSession: {history}\nCommand: {command}",
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 200}
-                }
-                try:
-                    r = requests.post(OLLAMA_URL, json=payload, timeout=5)
-                    if r.status_code == 200:
-                        return r.json().get("response", "command not found")
-                except Exception:
-                    pass
-                return "command not found"
-
-            class HoneypotServer(paramiko.ServerInterface):
-                def check_channel_request(self, kind, chanid):
-                    return paramiko.OPEN_SUCCEEDED if kind == 'session' else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-
-                def check_auth_password(self, username, password):
-                    self.logs.append({"event": "login", "username": username, "password": password})
-                    return paramiko.AUTH_SUCCESSFUL
-
-                def check_channel_shell_request(self, channel):
-                    return True
-
-                def check_channel_pty_request(self, channel, term, modes, height, width, pixelwidth, pixelheight):
-                    return True
-
-            host_key = paramiko.RSAKey.generate(2048)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((host, port))
-            sock.listen(100)
-
+            sock.listen(32)
+            sock.settimeout(0.5)
+            with self._lock:
+                self._socket = sock
+                self.running = True
+            self._ready.set()
             while self.running:
                 try:
-                    sock.settimeout(1.0)
                     client, addr = sock.accept()
                     self.connections.append({"remote": f"{addr[0]}:{addr[1]}", "time": time.strftime("%Y-%m-%dT%H:%M:%SZ")})
-                    
-                    transport = paramiko.Transport(client)
-                    transport.add_server_key(host_key)
-                    server = HoneypotServer()
-                    server.logs = self.logs
-                    
                     try:
-                        transport.start_server(server=server)
-                    except paramiko.SSHException:
+                        client.sendall(b"SSH-2.0-OpenSSH_8.2\r\n")
+                    except OSError:
+                        pass
+                    finally:
                         client.close()
-                        continue
-
-                    channel = transport.accept(20)
-                    if channel is None:
-                        client.close()
-                        continue
-
-                    channel.send(b"Welcome to Ubuntu 22.04 LTS\r\n\r\n")
-                    prompt = b"ubuntu@server:~$ "
-                    channel.send(prompt)
-                    
-                    history = ""
-                    buf = ""
-                    
-                    while self.running:
-                        try:
-                            data = channel.recv(1024).decode("utf-8", errors="ignore")
-                            if not data:
-                                break
-                            
-                            if data in ('\r', '\n'):
-                                channel.send(b"\r\n")
-                                cmd = buf.strip()
-                                buf = ""
-                                
-                                if cmd.lower() in ("exit", "logout"):
-                                    channel.send(b"logout\r\n")
-                                    break
-                                
-                                if cmd:
-                                    out = generate_llm_response(cmd, history)
-                                    history += f"\n$ {cmd}\n{out}"
-                                    channel.send(out.replace("\n", "\r\n").encode() + b"\r\n")
-                                
-                                channel.send(prompt)
-                            
-                            elif data in ('\x08', '\x7f'):
-                                if buf:
-                                    buf = buf[:-1]
-                                    channel.send(b"\b \b")
-                            
-                            else:
-                                buf += data
-                                channel.send(data.encode())
-                        
-                        except Exception:
-                            break
-                    
-                    channel.close()
-                    transport.close()
-                    client.close()
-                
                 except socket.timeout:
                     continue
-                except Exception:
-                    time.sleep(1)
-            
-            sock.close()
+                except OSError as exc:
+                    if self.running:
+                        raise exc
+                    break
         except Exception as e:
-            print(f"[!] Honeypot error: {e}")
+            with self._lock:
+                self._startup_error = str(e)
+                self.running = False
+            self._ready.set()
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            with self._lock:
+                if self._socket is sock:
+                    self._socket = None
+                self.running = False
+
+
+_HONEYPOT_MANAGER = HoneypotManager()
+
+
+def _register_honeypot_tools(registry):
+    """Register the low-interaction honeypot through the guarded tool path."""
+    registry.register_tool(ToolDefinition(
+        "start_honeypot", ["cross_platform"], "",
+        risk_level=RiskLevel.MODIFIES_SYSTEM,
+        python_func=lambda host="127.0.0.1", port=2222, **kw: _HONEYPOT_MANAGER.start(host, port),
+    ))
+    registry.register_tool(ToolDefinition(
+        "stop_honeypot", ["cross_platform"], "",
+        risk_level=RiskLevel.MODIFIES_SYSTEM,
+        python_func=lambda **kw: _HONEYPOT_MANAGER.stop(),
+    ))
+    registry.register_tool(ToolDefinition(
+        "honeypot_status", ["cross_platform"], "",
+        risk_level=RiskLevel.READ_ONLY,
+        python_func=lambda **kw: _HONEYPOT_MANAGER.status(),
+    ))
 
 
 # =============================================================================
@@ -2649,10 +2639,7 @@ def register_all_default_tools(registry: ToolRegistry):
     registry.register_tool(ToolDefinition("s3_bucket_leak_checker", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda: {"status": "simulated", "buckets_checked": 0}))
     registry.register_tool(ToolDefinition("container_security_audit", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda: {"status": "simulated", "containers_scanned": 0}))
 
-    # Honeypot SSH Server
-    registry.register_tool(ToolDefinition("start_honeypot", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda **kw: {"status": "simulated", "honeypot": "started"}))
-    registry.register_tool(ToolDefinition("stop_honeypot", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda **kw: {"status": "simulated", "honeypot": "stopped"}))
-    registry.register_tool(ToolDefinition("honeypot_status", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=lambda **kw: {"running": False, "connections": [], "logs": []}))
+    _register_honeypot_tools(registry)
 
     # Quantum-ready crypto audit
     registry.register_tool(ToolDefinition("quantum_ready_audit", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=QuantumReadinessChecker.audit_crypto_readiness))

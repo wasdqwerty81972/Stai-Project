@@ -35,10 +35,20 @@ import { Button } from "@/components/ui/button";
 import { SvsCyberModelSelector } from "./SvsCyberModelSelector";
 import type { SelectedModel } from "@/app/contexts/StaiGlobalState";
 import { useHotkeys } from "react-hotkeys-hook";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Brain, ChevronDown } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type SvsStatus = "ready" | "submitted" | "streaming" | "error";
+export type SvsReasoningLevel = "low" | "medium" | "high";
 
 export interface SvsCommand {
   name: string;
@@ -64,6 +74,8 @@ interface SvsCyberComposerProps {
   chatId?: string;
   selectedModel?: SelectedModel;
   onModelChange?: (model: SelectedModel) => void;
+  reasoningLevel?: SvsReasoningLevel;
+  onReasoningLevelChange?: (level: SvsReasoningLevel) => void;
   /** Whether to show on landing (centered) */
   isCentered?: boolean;
   /** Slash commands made available by the SVS-Cyber command registry. */
@@ -87,6 +99,8 @@ export function SvsCyberComposer({
   chatId,
   selectedModel = "auto",
   onModelChange,
+  reasoningLevel = "medium",
+  onReasoningLevelChange,
   isCentered = false,
   commands = [],
 }: SvsCyberComposerProps) {
@@ -144,7 +158,8 @@ export function SvsCyberComposer({
     "ctrl+c",
     (e) => {
       // If user has highlighted text (e.g. copying text in textarea or page), don't stop generation
-      const selection = typeof window !== "undefined" ? window.getSelection()?.toString() : "";
+      const selection =
+        typeof window !== "undefined" ? window.getSelection()?.toString() : "";
       if (selection && selection.length > 0) {
         return;
       }
@@ -170,7 +185,7 @@ export function SvsCyberComposer({
 
   // ─── Draft persistence to localStorage ─────────────────────────────────────
   const DRAFT_TTL = 7 * 24 * 60 * 60 * 1000;
-  const draftKey = `svs_draft_${chatId || 'landing'}`;
+  const draftKey = `svs_draft_${chatId || "landing"}`;
 
   useEffect(() => {
     if (debounceTimer.current) {
@@ -248,7 +263,14 @@ export function SvsCyberComposer({
         }
       }
     },
-    [matchingCommands, selectedCommandIndex, selectCommand, showCommandMenu, status, value],
+    [
+      matchingCommands,
+      selectedCommandIndex,
+      selectCommand,
+      showCommandMenu,
+      status,
+      value,
+    ],
   );
 
   const handleSubmit = useCallback(
@@ -277,9 +299,7 @@ export function SvsCyberComposer({
 
   const canSend = status === "ready" && value.trim().length > 0;
 
-  const effectivePlaceholder =
-    placeholder ??
-    "Tell SVS-Cyber what you need…";
+  const effectivePlaceholder = placeholder ?? "Tell SVS-Cyber what you need…";
 
   return (
     /* Matches HackerAI: relative px-4 pb-3 wrapper */
@@ -297,11 +317,7 @@ export function SvsCyberComposer({
                   ? "ring-2 ring-ring/30 border-ring/40 dark:border-ring/40"
                   : ""
               }
-              ${
-                isGenerating
-                  ? "opacity-80 cursor-not-allowed"
-                  : ""
-              }
+              ${isGenerating ? "opacity-80 cursor-not-allowed" : ""}
             `}
           >
             {/* Textarea row — matches HackerAI ChatInputTextarea wrapper */}
@@ -318,7 +334,9 @@ export function SvsCyberComposer({
                 >
                   <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                     <Terminal className="size-3" /> Commands
-                    <span className="ml-auto normal-case tracking-normal">↑↓ select · Enter apply</span>
+                    <span className="ml-auto normal-case tracking-normal">
+                      ↑↓ select · Enter apply
+                    </span>
                   </div>
                   {matchingCommands.map((command, index) => (
                     <button
@@ -335,10 +353,16 @@ export function SvsCyberComposer({
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => selectCommand(command)}
                     >
-                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-semibold text-foreground">/{command.name}</code>
-                      <span className="min-w-0 flex-1 truncate text-xs">{command.description}</span>
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-semibold text-foreground">
+                        /{command.name}
+                      </code>
+                      <span className="min-w-0 flex-1 truncate text-xs">
+                        {command.description}
+                      </span>
                       {command.argument_hint && (
-                        <span className="shrink-0 text-[11px] text-muted-foreground/80">{command.argument_hint}</span>
+                        <span className="shrink-0 text-[11px] text-muted-foreground/80">
+                          {command.argument_hint}
+                        </span>
                       )}
                     </button>
                   ))}
@@ -409,9 +433,48 @@ export function SvsCyberComposer({
                     disabled={isGenerating}
                   />
                 )}
+                {onReasoningLevelChange && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild disabled={isGenerating}>
+                      <button
+                        type="button"
+                        className="flex h-7 items-center gap-1.5 rounded-full border border-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-border/50 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        aria-label={`Reasoning: ${reasoningLevel}. Click to change.`}
+                        data-testid="reasoning-level-selector"
+                      >
+                        <Brain className="size-3 shrink-0" aria-hidden="true" />
+                        <span>Reasoning: {reasoningLevel}</span>
+                        <ChevronDown
+                          className="size-3 shrink-0 opacity-60"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      sideOffset={6}
+                      className="w-48 p-1"
+                    >
+                      <DropdownMenuLabel className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                        Reasoning level
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {(["low", "medium", "high"] as const).map((level) => (
+                        <DropdownMenuItem
+                          key={level}
+                          onSelect={() => onReasoningLevelChange(level)}
+                          className="cursor-pointer capitalize"
+                          data-testid={`reasoning-level-option-${level}`}
+                        >
+                          {level}
+                          {reasoningLevel === level ? " · selected" : ""}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </div>
             </div>
-
           </div>
         </form>
       </div>

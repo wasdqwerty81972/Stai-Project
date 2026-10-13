@@ -227,6 +227,15 @@ function AssistantTurn({
 
   return (
     <div className="w-full min-w-0 space-y-3 text-foreground">
+      {running && entry.parts.length === 0 && (
+        <div
+          role="status"
+          className="flex items-center gap-2 text-sm text-muted-foreground"
+        >
+          <BrainIcon aria-hidden="true" className="size-4" />
+          Thinking...
+        </div>
+      )}
       {workParts.length > 0 && (
         <WorkedFor
           hasWork

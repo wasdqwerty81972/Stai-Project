@@ -11,11 +11,11 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 
 - Per-file scanning hashes stable regular files and matches signed SHA-256/YARA rules. The signed demo package recognizes the exact EICAR file.
 - Background Quick and System scans exist. Windows Quick Scan selects the enrolled user's local profile roots and saves them per job. Daily and weekly local-time schedules are persisted by the service and exposed in the Scans dashboard; startup marks prior pending/running jobs interrupted before scheduled work starts. Full scan still targets only `C:\`.
-- SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage. Scan jobs now retain per-job roots, discovered/scanned/skipped/error/unknown counts, engine/rule versions, and duration; there is no full reputation database or verified update activation system.
+- SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage. Schema v6 stores per-job roots, discovered/scanned/skipped/error/unknown counts, engine/rule versions, duration, and a `partial` terminal state when coverage is incomplete; there is no full reputation database or verified update activation system.
 - A Windows service, authenticated named pipe, user-mode folder watcher, and minifilter source exist. The service/driver are not installed and there is no signed production driver package.
-- The sensor catalogue has 256 definitions, of which 2 are source-marked implemented and 12 partial; zero were active on the inspected host. The watcher currently emits file sensor IDs that disagree with the canonical registry.
+- The sensor catalogue has 256 definitions, of which 2 are source-marked implemented and 12 partial; zero were active on the inspected host. The selected-folder watcher emits canonical file create/modify sensor IDs 49/50.
 - The native dashboard has real protection APIs for overview, scans, detections, quarantine, status, and agent triage. Dedicated live Tasks and Network views are missing.
-- This audit fixed SHA/YARA result precedence, removed AI-classification-driven quarantine, and corrected file watcher sensor IDs. The repository-wide Python suite passed: 636 passed, 1 skipped, 299 subtests passed; 22 framework/runtime warnings remain.
+- The last repository-wide Python run passed 645 tests, skipped 1, and passed 299 subtests; that run predates the scheduled-scan and partial-outcome slices. Those later changes have focused tests recorded in the audit. This audit fixed SHA/YARA result precedence, removed AI-classification-driven quarantine, and corrected file watcher sensor IDs.
 
 ## Work sequence
 
@@ -26,7 +26,9 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 - [x] Align selected-folder watcher event IDs with the canonical file creation/modification sensors 49/50.
 - [x] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
 - [x] Replace count-then-rescan with one traversal that records root/path access failures, reparse-point skips, unknown verdicts, and cancellation truthfully.
-- [ ] Add explicit per-file size/time budgets and typed reasons for locked, oversized, and otherwise skipped files.
+- [x] Persist incomplete analyzed coverage as `partial` instead of `completed`; atomically migrate existing scan-job databases, preserve counters, and backfill legacy completed rows with recorded coverage gaps.
+- [x] Expose skipped-file and unknown-verdict counters through both protection dashboard APIs and show partial results as amber incomplete coverage.
+- [x] Add a 256 MiB file-size cap, a cooperative 30-second hash-read budget, and machine-readable unknown reason codes for oversized, unreadable, unstable, invalid-budget, and time-budget outcomes. A blocking OS read itself cannot be interrupted; the deadline is checked when each read returns.
 - [x] Validate service-start recovery for interrupted jobs; they are marked failed with the interruption reason and retain scan counters.
 - [x] Add persisted daily/weekly Quick or System schedules with local time, weekly weekday, next-run and last-result/error states in the dashboard. Scheduling runs only while the protection service is running.
 - [x] Correct Quick Scan to use the enrolled-user profile and persist an immutable root snapshot per job. If the installed user/profile cannot be resolved, Windows Quick Scan has no fallback to LocalSystem's `Path.home()` roots and fails as unavailable.
@@ -70,7 +72,7 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 
 ## Next implementation slice
 
-Quick Scan uses enrolled-user roots and stores the root list durably for each job. Scheduled daily/weekly scans and interrupted-job recovery are now wired through the service, authenticated pipe, Tauri bridge, and Scans page. Continue Phase 1 with explicit per-file budgets and typed skip reasons, then custom/full scan coverage. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
+Quick Scan uses enrolled-user roots and stores the root list durably for each job. Scheduled daily/weekly scans, interrupted-job recovery, and truthful `partial` terminal outcomes are wired through the service, authenticated pipe, Tauri bridge, and Scans page. Continue Phase 1 with explicit per-file budgets and typed skip reasons, then custom/full scan coverage. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
 
 ## Acceptance ledger
 

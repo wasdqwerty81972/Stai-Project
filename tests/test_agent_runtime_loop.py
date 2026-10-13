@@ -27,6 +27,33 @@ from cyber_os.stop_conditions import FinishReason, StopConditions  # noqa: E402
 from ui.event_bus import AgentEvent, event_bus  # noqa: E402
 
 
+def test_final_synthesis_forwards_only_final_delta_callback():
+    class Orchestrator:
+        def __init__(self):
+            self.calls = []
+
+        def _call_role(self, role, system, user, **kwargs):
+            self.calls.append(kwargs)
+            callback = kwargs.get("on_delta")
+            if callback:
+                callback("streamed report")
+            return "streamed report"
+
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.agent = type("Agent", (), {"orchestrator": Orchestrator()})()
+    deltas = []
+    runtime.response_delta_callback = deltas.append
+
+    runtime._call_llm("System", "internal planner")
+    assert runtime.agent.orchestrator.calls[0]["on_delta"] is None
+
+    report = runtime._synthesize_final_report("Objective", "System", "Evidence", [])
+
+    assert report == "streamed report"
+    assert deltas == ["streamed report"]
+    assert runtime.agent.orchestrator.calls[1]["on_delta"] == runtime.response_delta_callback
+
+
 class _StubRegistry:
     def __init__(self, tool_names: List[str]) -> None:
         self.tools = {name: _StubTool(name) for name in tool_names}
@@ -504,6 +531,31 @@ class LoopCompletionTests(unittest.TestCase):
         types = recorder.types()
         self.assertIn("agent_completed", types)
         self.assertEqual(types.count("response"), 1, "exactly one response event per run")
+
+    def test_streaming_final_answer_synthesizes_user_text_before_response_event(self) -> None:
+        agent = _StubAgent()
+        runtime = AgentRuntime(agent)
+        runtime._call_llm = lambda system, user: (
+            '{"action_type": "final_answer", "response": "Internal structured candidate."}'
+        )
+        deltas = []
+        runtime.response_delta_callback = deltas.append
+
+        def synthesize(**kwargs):
+            event_bus.publish(AgentEvent(type="response_delta", session_id="s3-stream", message="Final user-facing answer"))
+            runtime.response_delta_callback("Final user-facing answer")
+            return "Final user-facing answer"
+
+        runtime._synthesize_final_report = synthesize
+        recorder = _EventRecorder()
+        try:
+            result = runtime.run_investigation("check the network", session_id="s3-stream")
+        finally:
+            recorder.detach()
+
+        self.assertEqual(result.response, "Final user-facing answer")
+        self.assertEqual(deltas, ["Final user-facing answer"])
+        self.assertLess(recorder.types().index("response_delta"), recorder.types().index("response"))
 
     def test_empty_final_answer_is_synthesized_not_published_blank(self) -> None:
         agent = _StubAgent()

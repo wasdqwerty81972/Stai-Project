@@ -291,7 +291,7 @@ class ProtectionService:
 
         def persist_progress(
             *,
-            state: Literal["pending", "running", "completed", "cancelled", "failed"] | None = None,
+            state: Literal["pending", "running", "completed", "partial", "cancelled", "failed"] | None = None,
             error_message: str | None = None,
         ) -> None:
             self._config.store.update_scan_job(
@@ -337,9 +337,14 @@ class ProtectionService:
                     if files_discovered % 10 == 0:
                         persist_progress(state="running")
 
-            final_state = "cancelled" if self._cancel_scan.is_set() else "completed"
-            if files_discovered == 0 and errors > 0 and final_state != "cancelled":
+            if self._cancel_scan.is_set():
+                final_state = "cancelled"
+            elif files_discovered == 0 and errors > 0:
                 final_state = "failed"
+            elif errors or files_skipped or unknown_verdicts:
+                final_state = "partial"
+            else:
+                final_state = "completed"
             persist_progress(state=final_state)
 
         except Exception as e:

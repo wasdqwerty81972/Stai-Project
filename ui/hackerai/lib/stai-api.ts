@@ -46,9 +46,16 @@ export interface StaiCommand {
 export interface CommunicationsStatus {
   settings: {
     enabled: Record<string, boolean>;
-    notifications: { enabled: boolean; event_types: string[]; destinations: string[] };
+    notifications: {
+      enabled: boolean;
+      event_types: string[];
+      destinations: string[];
+    };
   };
-  platforms: Record<string, { account_id: string; status: string; error: string }>;
+  platforms: Record<
+    string,
+    { account_id: string; status: string; error: string }
+  >;
 }
 
 export interface SensorCapabilityStatus {
@@ -156,12 +163,18 @@ export function sendStaiMessage(
   message: string,
   sessionId = "default",
   model?: string,
+  reasoningLevel: "low" | "medium" | "high" = "medium",
   signal?: AbortSignal,
 ): Promise<StaiChatResponse> {
   return request<StaiChatResponse>("/api/chat", {
     method: "POST",
     signal,
-    body: JSON.stringify({ message, session_id: sessionId, model }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      model,
+      reasoning_level: reasoningLevel,
+    }),
   });
 }
 
@@ -227,10 +240,13 @@ export function getCommunicationsStatus() {
 }
 
 export function setCommunicationsEnabled(enabled: Record<string, boolean>) {
-  return request<CommunicationsStatus["settings"]>("/api/communications/settings", {
-    method: "PUT",
-    body: JSON.stringify({ enabled }),
-  });
+  return request<CommunicationsStatus["settings"]>(
+    "/api/communications/settings",
+    {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    },
+  );
 }
 
 export function setCommunicationsCredential(platform: string, token: string) {
@@ -248,13 +264,21 @@ export function deleteCommunicationsCredential(platform: string) {
 }
 
 export function getCommunicationsPairingRequests() {
-  return request<Array<Record<string, string>>>("/api/communications/pairing-requests");
+  return request<Array<Record<string, string>>>(
+    "/api/communications/pairing-requests",
+  );
 }
 
 export function getCommunicationsPairings() {
-  return request<Array<{ key: string; channel: string; account_id: string; sender_id: string; role: string }>>(
-    "/api/communications/pairings",
-  );
+  return request<
+    Array<{
+      key: string;
+      channel: string;
+      account_id: string;
+      sender_id: string;
+      role: string;
+    }>
+  >("/api/communications/pairings");
 }
 
 export function approveCommunicationsPairing(requestId: string, role: string) {
@@ -264,7 +288,11 @@ export function approveCommunicationsPairing(requestId: string, role: string) {
   );
 }
 
-export function revokeCommunicationsPairing(platform: string, accountId: string, senderId: string) {
+export function revokeCommunicationsPairing(
+  platform: string,
+  accountId: string,
+  senderId: string,
+) {
   return request<{ status: string }>(
     `/api/communications/pairings/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/${encodeURIComponent(senderId)}`,
     { method: "DELETE" },
@@ -276,10 +304,13 @@ export function setCommunicationsNotifications(value: {
   event_types: string[];
   destinations: string[];
 }) {
-  return request<CommunicationsStatus["settings"]>("/api/communications/notifications", {
-    method: "PUT",
-    body: JSON.stringify(value),
-  });
+  return request<CommunicationsStatus["settings"]>(
+    "/api/communications/notifications",
+    {
+      method: "PUT",
+      body: JSON.stringify(value),
+    },
+  );
 }
 
 export function sendCommunicationsTest(destination: string) {
@@ -290,15 +321,24 @@ export function sendCommunicationsTest(destination: string) {
 }
 
 export function disableAllCommunications() {
-  return request<CommunicationsStatus["settings"]>("/api/communications/disable", {
-    method: "POST",
-  });
+  return request<CommunicationsStatus["settings"]>(
+    "/api/communications/disable",
+    {
+      method: "POST",
+    },
+  );
 }
 
 export function getCommunicationsDeliveries() {
-  return request<Array<{ event_id: string; platform: string; event_type: string; status: string; timestamp: number }>>(
-    "/api/communications/deliveries",
-  );
+  return request<
+    Array<{
+      event_id: string;
+      platform: string;
+      event_type: string;
+      status: string;
+      timestamp: number;
+    }>
+  >("/api/communications/deliveries");
 }
 
 export interface StaiEventStreamHandle {

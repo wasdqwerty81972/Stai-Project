@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import difflib
 import ipaddress
+import inspect
 import json
 import os
 import re
@@ -41,6 +42,18 @@ from cyber_os.stop_conditions import FinishReason, StopConditions
 from cyber_os.subagents.manager import SubagentManager
 from cyber_os.system_prompt import SystemPromptComposer
 from ui.event_bus import AgentEvent, event_bus
+
+
+def _accepts_keyword(callable_obj, name: str) -> bool:
+    """Preserve compatibility with older orchestrators and lightweight test doubles."""
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 # Per-step render cap. The compactor enforces the aggregate budget by replacing
 # older outputs with placeholders; this stops any single step from dominating
@@ -335,7 +348,24 @@ class AgentRuntime:
                 # --- Path 1: Final Answer ---
                 if action_type == "final_answer":
                     final_response = step_decision.get("response") or ""
-                    if not final_response.strip():
+                    response_delta_callback = getattr(self, "response_delta_callback", None)
+                    if callable(response_delta_callback):
+                        # The decision model returns structured JSON, which is
+                        # internal control data. Generate a separate final
+                        # user-facing report so only that prose is streamed.
+                        synthesis_context = conversation_context
+                        if final_response.strip():
+                            synthesis_context += (
+                                "\n\nSelected final answer for reference:\n"
+                                + final_response[:6000]
+                            )
+                        final_response = self._synthesize_final_report(
+                            user_input=user_input,
+                            system_prompt=system_prompt,
+                            conversation_context=synthesis_context,
+                            findings=state.findings,
+                        )
+                    elif not final_response.strip():
                         # The decider concluded without composing an answer
                         # (heuristic fallback, or a forced stop). Synthesize from
                         # the evidence rather than publishing an empty message.
@@ -1885,7 +1915,7 @@ Suggest an alternative tool or approach. Return JSON:
         # Default: consider sufficient if output is substantial
         return len(output) > 100
 
-    def _call_llm(self, system: str, user: str) -> Optional[str]:
+    def _call_llm(self, system: str, user: str, on_delta=None) -> Optional[str]:
         """Invoke the configured AI backend, or return None if there isn't one.
 
         None rather than an apology string: the string form used to be returned
@@ -1898,14 +1928,22 @@ Suggest an alternative tool or approach. Return JSON:
             return None
         try:
             if hasattr(orchestrator, "_call_role"):
-                return orchestrator._call_role("investigator", system, user)
+                call = orchestrator._call_role
+                kwargs = {"on_delta": on_delta} if _accepts_keyword(call, "on_delta") else {}
+                return call("investigator", system, user, **kwargs)
             llm = getattr(orchestrator, "llm", None)
             if llm is None:
                 return None
             if hasattr(llm, "chat_with_role"):
-                return llm.chat_with_role("investigator", system, user)
+                call = llm.chat_with_role
+                kwargs = {"on_delta": on_delta} if _accepts_keyword(call, "on_delta") else {}
+                return call("investigator", system, user, **kwargs)
             if hasattr(llm, "chat"):
-                return llm.chat(system=system, user=user, role="investigator")
+                call = llm.chat
+                kwargs = {"system": system, "user": user, "role": "investigator"}
+                if _accepts_keyword(call, "on_delta"):
+                    kwargs["on_delta"] = on_delta
+                return call(**kwargs)
         except Exception as exc:
             print(f"[AgentRuntime] LLM call failed: {exc}")
         return None
@@ -1929,7 +1967,10 @@ Suggest an alternative tool or approach. Return JSON:
             "3. Findings & Severity\n"
             "4. Recommended Next Actions"
         )
-        report = self._call_llm(system=system_prompt, user=prompt)
+        call_kwargs = {"system": system_prompt, "user": prompt}
+        if _accepts_keyword(self._call_llm, "on_delta"):
+            call_kwargs["on_delta"] = getattr(self, "response_delta_callback", None)
+        report = self._call_llm(**call_kwargs)
         if report and report.strip() and not is_ai_error_marker(report):
             return report
         return self._offline_report(user_input, conversation_context, findings)

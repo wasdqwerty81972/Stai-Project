@@ -216,6 +216,7 @@ struct PipeRequest<'a, P> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 struct PipeResponse<T> {
     version: u16,
     request_id: String,

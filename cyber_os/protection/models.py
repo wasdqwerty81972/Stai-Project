@@ -11,6 +11,16 @@ RuleAction = Literal["block", "observe"]
 RuleConfidence = Literal["high", "medium", "low"]
 VerdictStatus = Literal["clean", "detected", "unknown"]
 VerdictAction = Literal["allow", "block"]
+ScanReasonCode = Literal[
+    "clean",
+    "rule_match",
+    "analysis_unavailable",
+    "invalid_budget",
+    "oversized",
+    "time_budget_exceeded",
+    "unstable_or_unsafe_file",
+    "read_error",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,3 +46,6 @@ class ScanVerdict:
     rule_version: str
     sha256: str | None
     reason: str
+    # Machine-readable reason for unknown outcomes so callers never infer
+    # that an unread/unsupported file was clean from the human message.
+    reason_code: ScanReasonCode = "analysis_unavailable"

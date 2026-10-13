@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   getProtectionStatus,
   listThreats,
@@ -101,6 +107,8 @@ const runningJob: ScanJob = {
   files_total: 100,
   detections: 0,
   errors: 0,
+  files_skipped: 0,
+  unknown_verdicts: 0,
   started_at: "2026-10-12T09:00:00.000Z",
   completed_at: null,
   error_message: null,
@@ -122,8 +130,12 @@ beforeEach(() => {
   jest.mocked(listQuarantine).mockResolvedValue([]);
   jest.mocked(startScan).mockResolvedValue(runningJob);
   jest.mocked(getScan).mockResolvedValue(completedJob);
-  jest.mocked(cancelScan).mockResolvedValue({ status: "cancelled", job_id: "scan-1" });
-  jest.mocked(restoreQuarantine).mockResolvedValue({ success: true, item: null });
+  jest
+    .mocked(cancelScan)
+    .mockResolvedValue({ status: "cancelled", job_id: "scan-1" });
+  jest
+    .mocked(restoreQuarantine)
+    .mockResolvedValue({ success: true, item: null });
   jest
     .mocked(getTriage)
     .mockRejectedValue(new Error("triage endpoint not yet implemented"));
@@ -142,14 +154,18 @@ describe("SvsProtectionDashboard", () => {
   it("renders the active state with distinct detection/blocked/quarantine counts", async () => {
     render(<SvsProtectionDashboard />);
 
-    expect(await screen.findByRole("heading", { name: "Active" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Active" }),
+    ).toBeInTheDocument();
 
     // Each count is read from its own labelled tile — proving they are not conflated.
     expect(
       within(screen.getByRole("group", { name: "Detections" })).getByText("4"),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("group", { name: "Confirmed blocked" })).getByText("2"),
+      within(
+        screen.getByRole("group", { name: "Confirmed blocked" }),
+      ).getByText("2"),
     ).toBeInTheDocument();
     expect(
       within(screen.getByRole("group", { name: "Quarantined" })).getByText("1"),
@@ -166,8 +182,12 @@ describe("SvsProtectionDashboard", () => {
     });
     render(<SvsProtectionDashboard />);
 
-    expect(await screen.findByRole("heading", { name: "Degraded" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Active" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Degraded" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Active" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("rule pack stale")).toBeInTheDocument();
   });
 
@@ -179,17 +199,27 @@ describe("SvsProtectionDashboard", () => {
     });
     render(<SvsProtectionDashboard />);
 
-    expect(await screen.findByRole("heading", { name: "Unavailable" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Active" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Unavailable" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Active" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("driver not loaded")).toBeInTheDocument();
   });
 
   it("shows an honest unavailable state (no fabricated zero counts) when the service is unreachable", async () => {
-    jest.mocked(getProtectionStatus).mockRejectedValue(new Error("Failed to fetch"));
+    jest
+      .mocked(getProtectionStatus)
+      .mockRejectedValue(new Error("Failed to fetch"));
     render(<SvsProtectionDashboard />);
 
-    expect(await screen.findByRole("heading", { name: "Unavailable" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Active" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Unavailable" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Active" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(/Failed to fetch/)).toBeInTheDocument();
 
     // Counts render as "—", never as a reassuring "0".
@@ -197,7 +227,9 @@ describe("SvsProtectionDashboard", () => {
       within(screen.getByRole("group", { name: "Detections" })).getByText("—"),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByRole("group", { name: "Confirmed blocked" })).getByText("—"),
+      within(
+        screen.getByRole("group", { name: "Confirmed blocked" }),
+      ).getByText("—"),
     ).toBeInTheDocument();
   });
 
@@ -216,7 +248,9 @@ describe("SvsProtectionDashboard", () => {
     render(<SvsProtectionDashboard />);
     await screen.findByRole("heading", { name: "Active" });
 
-    const nav = screen.getByRole("navigation", { name: "Protection navigation" });
+    const nav = screen.getByRole("navigation", {
+      name: "Protection navigation",
+    });
     for (const label of [
       "Dashboard",
       "AI Agent",
@@ -240,6 +274,29 @@ describe("SvsProtectionDashboard", () => {
 
     await waitFor(() => expect(startScan).toHaveBeenCalledWith("quick"));
     expect(await screen.findByText(/files scanned/)).toBeInTheDocument();
+  });
+
+  it("shows incomplete coverage when any files were skipped or verdicts were unknown", async () => {
+    jest.mocked(startScan).mockResolvedValue({
+      ...runningJob,
+      state: "partial",
+      files_scanned: 97,
+      files_total: 100,
+      files_skipped: 2,
+      unknown_verdicts: 1,
+      completed_at: "2026-10-12T09:01:00.000Z",
+    });
+    render(<SvsProtectionDashboard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Scans" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Quick scan" }));
+
+    expect(
+      await screen.findByText(/This scan did not verify every file/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Incomplete coverage/)).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
   });
 
   it("lists quarantined items and renders the restore outcome", async () => {
@@ -270,7 +327,8 @@ describe("SvsProtectionDashboard", () => {
     jest.mocked(listThreats).mockResolvedValue(threatFixtures);
     jest.mocked(sendAgentMessage).mockResolvedValue({
       session_id: "protection-triage-det-1",
-      message: "This matches the STAI EICAR test rule; it was blocked before execution.",
+      message:
+        "This matches the STAI EICAR test rule; it was blocked before execution.",
       tool_calls: [],
       response_action: null,
     });
@@ -297,7 +355,9 @@ describe("SvsProtectionDashboard", () => {
 
     // The investigation-scoped agent exposes no shell / privileged command control.
     expect(
-      screen.queryByRole("button", { name: /run|execute|terminal|shell|command/i }),
+      screen.queryByRole("button", {
+        name: /run|execute|terminal|shell|command/i,
+      }),
     ).toBeNull();
     expect(screen.queryByText(/terminal|shell/i)).toBeNull();
   });

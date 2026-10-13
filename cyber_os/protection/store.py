@@ -15,7 +15,7 @@ from typing import Any, Iterator, Literal, Optional, Sequence
 from .models import DetectionRule, RuleSet, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_actions_detection ON actions(detection_id);
 CREATE TABLE IF NOT EXISTS scan_jobs (
     job_id TEXT PRIMARY KEY,
     scope TEXT NOT NULL CHECK(scope IN ('quick', 'system')),
-    state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'cancelled', 'failed')),
+    state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'partial', 'cancelled', 'failed')),
     files_scanned INTEGER NOT NULL DEFAULT 0,
     files_total INTEGER NOT NULL DEFAULT 0,
     detections INTEGER NOT NULL DEFAULT 0,
@@ -162,7 +162,7 @@ class ProtectionStatus:
 class ScanJob:
     job_id: str
     scope: Literal["quick", "system"]
-    state: Literal["pending", "running", "completed", "cancelled", "failed"]
+    state: Literal["pending", "running", "completed", "partial", "cancelled", "failed"]
     files_scanned: int
     files_total: int
     detections: int
@@ -263,12 +263,62 @@ class ProtectionStore:
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (DB_SCHEMA_VERSION,))
             elif row[0] < DB_SCHEMA_VERSION:
+                # The table rebuild and version bump must be one atomic change.
+                # A crash midway must leave the v5 table and version intact so
+                # the migration can be retried safely on the next startup.
+                conn.execute("BEGIN IMMEDIATE")
+                self._migrate_scan_jobs_partial_state(conn)
                 conn.execute("DELETE FROM schema_version")
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (DB_SCHEMA_VERSION,))
             conn.commit()
         except sqlite3.Error:
             conn.rollback()
             raise
+
+    @staticmethod
+    def _migrate_scan_jobs_partial_state(conn: sqlite3.Connection) -> None:
+        """Rebuild the scan table to allow truthful partial terminal outcomes."""
+        conn.execute("DROP INDEX IF EXISTS idx_scan_jobs_state")
+        conn.execute(
+            """
+            CREATE TABLE scan_jobs_v6 (
+                job_id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL CHECK(scope IN ('quick', 'system')),
+                state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'partial', 'cancelled', 'failed')),
+                files_scanned INTEGER NOT NULL DEFAULT 0,
+                files_total INTEGER NOT NULL DEFAULT 0,
+                detections INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                root_snapshot TEXT NOT NULL DEFAULT '[]',
+                files_skipped INTEGER NOT NULL DEFAULT 0,
+                unknown_verdicts INTEGER NOT NULL DEFAULT 0,
+                engine_version TEXT NOT NULL DEFAULT '',
+                rules_version TEXT NOT NULL DEFAULT '',
+                duration_ms INTEGER,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                error_message TEXT
+            )
+            """
+        )
+        conn.execute(
+            """INSERT INTO scan_jobs_v6 (
+                    job_id, scope, state, files_scanned, files_total, detections, errors,
+                    root_snapshot, files_skipped, unknown_verdicts, engine_version,
+                    rules_version, duration_ms, started_at, completed_at, error_message
+                )
+                SELECT job_id, scope,
+                    CASE WHEN state = 'completed'
+                        AND (errors > 0 OR files_skipped > 0 OR unknown_verdicts > 0)
+                        THEN 'partial' ELSE state END,
+                    files_scanned, files_total, detections, errors, root_snapshot,
+                    files_skipped, unknown_verdicts, engine_version, rules_version,
+                    duration_ms, started_at, completed_at, error_message
+                FROM scan_jobs"""
+        )
+        conn.execute("DROP TABLE scan_jobs")
+        conn.execute("ALTER TABLE scan_jobs_v6 RENAME TO scan_jobs")
+        conn.execute("CREATE INDEX idx_scan_jobs_state ON scan_jobs(state)")
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -604,7 +654,7 @@ class ProtectionStore:
         self,
         job_id: str,
         *,
-        state: Optional[Literal["pending", "running", "completed", "cancelled", "failed"]] = None,
+        state: Optional[Literal["pending", "running", "completed", "partial", "cancelled", "failed"]] = None,
         files_scanned: Optional[int] = None,
         files_total: Optional[int] = None,
         detections: Optional[int] = None,
@@ -644,7 +694,7 @@ class ProtectionStore:
             if error_message is not None:
                 updates.append("error_message = ?")
                 params.append(error_message)
-            if state in ("completed", "failed", "cancelled"):
+            if state in ("completed", "partial", "failed", "cancelled"):
                 updates.append("completed_at = ?")
                 params.append(datetime.now().isoformat())
             if not updates:

@@ -17,7 +17,8 @@
 
 import { getBackendOrigin } from "@/lib/stai-api";
 
-export type ProtectionState = "active" | "degraded" | "unavailable" | (string & {});
+export type ProtectionState =
+  "active" | "degraded" | "unavailable" | (string & {});
 
 export interface ProtectionWindowsSecurity {
   /** OS-registered antivirus provider, or null when the OS query is unavailable. */
@@ -44,12 +45,14 @@ export type ScanScope = "quick" | "system";
 export interface ScanJob {
   job_id: string;
   scope: string;
-  /** queued | running | completed | cancelled | failed */
+  /** queued | running | completed | partial | cancelled | failed */
   state: string;
   files_scanned: number;
   files_total: number;
   detections: number;
   errors: number;
+  files_skipped: number;
+  unknown_verdicts: number;
   started_at: string;
   completed_at: string | null;
   error_message: string | null;

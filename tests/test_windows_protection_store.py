@@ -141,7 +141,58 @@ def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: P
     assert job is not None
     assert job.root_snapshot == []
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 5
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+
+
+def test_v5_scan_jobs_migrate_to_support_partial_state(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "v5.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (5);
+            CREATE TABLE scan_jobs (
+                job_id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL CHECK(scope IN ('quick', 'system')),
+                state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'completed', 'cancelled', 'failed')),
+                files_scanned INTEGER NOT NULL DEFAULT 0,
+                files_total INTEGER NOT NULL DEFAULT 0,
+                detections INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                root_snapshot TEXT NOT NULL DEFAULT '[]',
+                files_skipped INTEGER NOT NULL DEFAULT 0,
+                unknown_verdicts INTEGER NOT NULL DEFAULT 0,
+                engine_version TEXT NOT NULL DEFAULT '',
+                rules_version TEXT NOT NULL DEFAULT '',
+                duration_ms INTEGER,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                error_message TEXT
+            );
+            CREATE INDEX idx_scan_jobs_state ON scan_jobs(state);
+            INSERT INTO scan_jobs (job_id, scope, state, files_scanned, files_total,
+                unknown_verdicts)
+            VALUES ('legacy-job', 'quick', 'completed', 2, 2, 1);
+            INSERT INTO scan_jobs (job_id, scope, state, files_scanned, files_total)
+            VALUES ('clean-legacy-job', 'system', 'completed', 4, 4);
+            """
+        )
+
+    store = ProtectionStore(db)
+    legacy = store.get_scan_job("legacy-job")
+    assert legacy is not None
+    assert legacy.state == "partial"
+    assert (legacy.files_scanned, legacy.files_total) == (2, 2)
+    clean_legacy = store.get_scan_job("clean-legacy-job")
+    assert clean_legacy is not None
+    assert clean_legacy.state == "completed"
+    assert store.update_scan_job("legacy-job", state="partial", unknown_verdicts=1)
+    partial = store.get_scan_job("legacy-job")
+    assert partial is not None
+    assert partial.state == "partial"
+    assert partial.completed_at is not None
 
 
 def test_scan_cancellation_is_durable(tmp_path: Path) -> None:
