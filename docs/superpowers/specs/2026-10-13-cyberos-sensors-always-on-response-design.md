@@ -65,7 +65,7 @@ Show the overall service state, individual sensor states, last event/error, queu
 
 ## Delivery sequence
 
-1. Create the Windows service lifecycle and durable client handoff; make boot startup and service health observable.
+1. Extend the existing `STAIProtection` Windows service with the sensor lifecycle and durable client handoff; make automatic boot startup and service health observable.
 2. Present the 256 sensors grouped by category and layer by default; make runtime/source readiness distinct from catalog metadata.
 3. Connect existing Windows collectors to immediate warnings and an idempotent response coordinator.
 4. Route file anomalies through verified protection outcomes and other anomaly classes to AI triage; preserve approval-gated remediation.
