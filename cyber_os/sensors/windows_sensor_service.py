@@ -409,16 +409,21 @@ def normalize_windows_event(
     )
 
 
+def _windows_error_code(exc: BaseException) -> Any:
+    code = getattr(exc, "winerror", None)
+    if code is None and getattr(exc, "args", None):
+        first = exc.args[0]
+        code = first if isinstance(first, int) else getattr(first, "winerror", None)
+    return code
+
+
 def _error_kind(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, RuntimeError) and str(exc) in {
         "pywin32 is not installed; Windows event source unavailable",
         "pywin32 Event Log APIs are unavailable",
     }:
         return "unavailable", str(exc)
-    code = getattr(exc, "winerror", None)
-    if code is None and getattr(exc, "args", None):
-        first = exc.args[0]
-        code = first if isinstance(first, int) else getattr(first, "winerror", None)
+    code = _windows_error_code(exc)
     if code in {5, 1314}:
         return "permission_denied", "Permission denied opening Windows Event Log source."
     if code in {15007, 15002, 15011}:
@@ -455,9 +460,20 @@ class WindowsEventLogSource:
             import win32evtlog
         except ImportError as exc:
             raise RuntimeError("pywin32 is not installed; Windows event source unavailable") from exc
-        if not all(hasattr(win32evtlog, name) for name in ("EvtQuery", "EvtNext", "EvtRender", "EvtClose")):
+        if not all(hasattr(win32evtlog, name) for name in ("EvtQuery", "EvtNext", "EvtRender")):
             raise RuntimeError("pywin32 Event Log APIs are unavailable")
         return win32evtlog
+
+    @staticmethod
+    def _close_event_handle(evt: Any, handle: Any) -> None:
+        """Close Event Log handles using either provider-style or pywin32 APIs."""
+        close = getattr(evt, "EvtClose", None)
+        if callable(close):
+            close(handle)
+            return
+        close = getattr(handle, "Close", None)
+        if callable(close):
+            close()
 
     def open(self) -> None:
         try:
@@ -509,9 +525,9 @@ class WindowsEventLogSource:
             try:
                 return _event_fields(evt.EvtRender(latest[0], evt.EvtRenderEventXml))[1]
             finally:
-                evt.EvtClose(latest[0])
+                WindowsEventLogSource._close_event_handle(evt, latest[0])
         finally:
-            evt.EvtClose(tail)
+            WindowsEventLogSource._close_event_handle(evt, tail)
 
     def read_events(self, limit: int = 128) -> List[RawWindowsEvent]:
         try:
@@ -541,16 +557,28 @@ class WindowsEventLogSource:
                     quota = min(remaining, base_quota + (1 if index < extra else 0))
                     if quota <= 0:
                         quota = min(remaining, 1)
-                    items = evt.EvtNext(handle, quota, 100, 0)
+                    try:
+                        items = evt.EvtNext(handle, quota, 100, 0)
+                    except Exception as exc:
+                        if _windows_error_code(exc) != 1460:
+                            raise
+                        # pywin32 reports the normal idle polling timeout as
+                        # ERROR_TIMEOUT instead of returning an empty list.
+                        items = []
                     for item in items:
                         try:
                             result.append(parse_windows_event(evt.EvtRender(item, evt.EvtRenderEventXml)))
                         finally:
-                            evt.EvtClose(item)
+                            self._close_event_handle(evt, item)
                     if not items:
                         # Advance past unrelated records so an idle channel
                         # does not repeatedly scan the same retained log.
-                        latest_record = self._latest_record_id(evt, channel)
+                        try:
+                            latest_record = self._latest_record_id(evt, channel)
+                        except Exception as exc:
+                            if _windows_error_code(exc) != 1460:
+                                raise
+                            latest_record = record_id
                         if latest_record < record_id:
                             # Handle a log clear while the service is already
                             # running, where Windows has restarted record IDs.
@@ -565,7 +593,7 @@ class WindowsEventLogSource:
                 finally:
                     if handle is not None:
                         try:
-                            evt.EvtClose(handle)
+                            self._close_event_handle(evt, handle)
                         except Exception:
                             pass
         return result

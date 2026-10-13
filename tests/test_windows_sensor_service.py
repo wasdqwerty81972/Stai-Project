@@ -340,6 +340,55 @@ class WindowsSensorServiceTests(unittest.TestCase):
         self.assertEqual(source.channel_status["Security"]["state"], "unsupported")
         self.assertEqual(source.channel_status["Security"]["error"], "pywin32 is not installed; Windows event source unavailable")
 
+    def test_pywin32_event_api_does_not_require_nonexistent_evtclose_export(self):
+        import sys
+        from types import SimpleNamespace
+
+        evt = SimpleNamespace(EvtQuery=object(), EvtNext=object(), EvtRender=object())
+        with patch("cyber_os.sensors.windows_sensor_service.os.name", "nt"), patch.dict(sys.modules, {"win32evtlog": evt}):
+            self.assertIs(WindowsEventLogSource._win32evtlog(), evt)
+
+        closed = []
+        handle = SimpleNamespace(Close=lambda: closed.append(True))
+        WindowsEventLogSource._close_event_handle(evt, handle)
+        self.assertEqual(closed, [True])
+
+    def test_event_log_poll_timeout_keeps_idle_channel_available(self):
+        class Handle:
+            def __init__(self, flags):
+                self.flags = flags
+
+            def Close(self):
+                pass
+
+        class TimeoutApi:
+            EvtQueryChannelPath = 1
+            EvtQueryReverseDirection = 2
+            EvtQueryForwardDirection = 4
+            EvtRenderEventXml = 1
+
+            @staticmethod
+            def EvtQuery(channel, flags, expression):
+                return Handle(flags)
+
+            @staticmethod
+            def EvtNext(handle, limit, timeout, flags):
+                if handle.flags & TimeoutApi.EvtQueryReverseDirection:
+                    return []
+                raise OSError(1460, "This operation returned because the timeout period expired.")
+
+            @staticmethod
+            def EvtRender(handle, flags):
+                raise AssertionError("an empty poll must not render an event")
+
+        source = WindowsEventLogSource(channels=["System"])
+        with patch.object(WindowsEventLogSource, "_win32evtlog", return_value=TimeoutApi):
+            source.open()
+            self.assertEqual(source.channel_status["System"]["state"], "available")
+            self.assertEqual(source.read_events(limit=4), [])
+
+        self.assertEqual(source.channel_status["System"]["state"], "available")
+
 
 class CyberOSEngineSensorTests(unittest.TestCase):
     def setUp(self):
