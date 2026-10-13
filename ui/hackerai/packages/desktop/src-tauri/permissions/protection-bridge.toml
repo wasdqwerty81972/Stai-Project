@@ -3,6 +3,8 @@ identifier = "allow-protection-bridge"
 description = "Allows the bundled local protection dashboard to call typed protection commands."
 commands.allow = [
   "get_protection_status",
+  "get_protection_network_snapshot",
+  "get_firewall_snapshot",
   "start_protection_scan",
   "get_protection_scan",
   "cancel_protection_scan",

@@ -16,6 +16,8 @@ binaries = []
 hiddenimports = [
     "pywintypes",
     "pythoncom",
+    "win32com",
+    "win32com.client",
     "servicemanager",
     "win32api",
     "win32event",
@@ -27,6 +29,8 @@ hiddenimports = [
     "win32serviceutil",
     "win32timezone",
     "yara",
+    "psutil",
+    "psutil._pswindows",
 ]
 
 public_key_path = os.environ.get("STAI_TRUSTED_RULES_PUBLIC_KEY")

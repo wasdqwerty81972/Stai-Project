@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 from .rule_package import InvalidRulePackage, RulePackage
 from .store import ProtectionStore
+from .network_telemetry import NetworkTelemetryCollector
+from .windows_firewall import WindowsFirewallManager
 
 
 LOGGER = logging.getLogger("stai.protection.service")
@@ -77,7 +79,8 @@ def _require_identifier(value: Any, name: str) -> str:
 
 
 _EMPTY_OPERATIONS = {
-    "get_status", "list_threats", "list_quarantine", "refresh_scan_profile", "get_scan_schedule"
+    "get_status", "list_threats", "list_quarantine", "refresh_scan_profile", "get_scan_schedule",
+    "get_network_snapshot", "get_firewall_snapshot",
 }
 _SINGLE_ID_OPERATIONS = {
     "get_scan": ("job_id",),
@@ -88,7 +91,7 @@ _SINGLE_ID_OPERATIONS = {
     "restore_quarantine": ("item_id",),
 }
 _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
-    "start_scan", "send_agent_message", "set_scan_schedule"
+    "start_scan", "send_agent_message", "set_scan_schedule",
 }
 
 
@@ -561,6 +564,8 @@ class ProtectionServiceHost:
         rules_trusted: bool = False,
         client_sid: str | None = None,
         windows_security_reader: Callable[[], Any] | None = None,
+        network_telemetry: Any | None = None,
+        firewall_manager: Any | None = None,
         health_refresh_seconds: float = 60.0,
     ) -> None:
         self.store = store
@@ -571,6 +576,8 @@ class ProtectionServiceHost:
         self.client_sid = client_sid
         self.pipe_server = pipe_server
         self._windows_security_reader = windows_security_reader
+        self.network_telemetry = network_telemetry or NetworkTelemetryCollector()
+        self.firewall_manager = firewall_manager or WindowsFirewallManager()
         self._health_refresh_seconds = max(1.0, health_refresh_seconds)
         self._health_stop_event = threading.Event()
         self._health_lock = threading.Lock()
@@ -824,6 +831,12 @@ class ProtectionServiceHost:
     ) -> Any:
         if operation == "get_status":
             return self.get_status()
+        if operation == "get_network_snapshot":
+            self._require_enrolled_caller(caller_context)
+            return self.network_telemetry.snapshot()
+        if operation == "get_firewall_snapshot":
+            self._require_enrolled_caller(caller_context)
+            return self.firewall_manager.snapshot()
         if operation == "list_threats":
             return self.store.list_threats(limit=500)
         if operation == "list_quarantine":

@@ -1,6 +1,8 @@
 import {
   Activity,
+  Cable,
   Bot,
+  Cpu,
   House,
   ListChecks,
   LockKeyhole,
@@ -15,6 +17,9 @@ export type DashboardPage =
   | "Antivirus"
   | "AI Agent"
   | "System Status"
+  | "Processes"
+  | "Network"
+  | "Firewall"
   | "Threat Activity"
   | "Scans"
   | "Quarantine"
@@ -25,6 +30,9 @@ const pages: { label: DashboardPage; icon: LucideIcon }[] = [
   { label: "Antivirus", icon: Shield },
   { label: "AI Agent", icon: Bot },
   { label: "System Status", icon: Activity },
+  { label: "Processes", icon: Cpu },
+  { label: "Network", icon: Cable },
+  { label: "Firewall", icon: Shield },
   { label: "Threat Activity", icon: Shield },
   { label: "Scans", icon: ScanSearch },
   { label: "Quarantine", icon: LockKeyhole },

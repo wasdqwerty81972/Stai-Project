@@ -66,6 +66,91 @@ export interface ScanScheduleInput {
   daysOfWeek: ScanWeekday[];
 }
 
+export interface NetworkConnectionRecord {
+  connection_id: string;
+  pid: number | null;
+  process_identity: string | null;
+  process_name: string | null;
+  executable_path: string | null;
+  protocol: "tcp" | "udp";
+  family: "ipv4" | "ipv6" | "unknown";
+  local_address: string;
+  local_port: number | null;
+  remote_address: string | null;
+  remote_port: number | null;
+  state: string;
+  direction: "unknown";
+  first_seen: string;
+  last_seen: string;
+  activity_source: "active_socket_snapshot";
+}
+
+export interface NetworkInterfaceRecord {
+  name: string;
+  is_up: boolean | null;
+  addresses: Array<{ address: string; family: string }>;
+}
+
+export interface NetworkSnapshot {
+  schema_version: 1;
+  state: "active" | "degraded" | "unavailable";
+  observed_at: string;
+  source: string;
+  coverage: {
+    connections: string;
+    process_attribution: string;
+    direction: string;
+    payload_capture: string;
+    per_process_bytes: string;
+    short_lived_connections: string;
+    dns_over_https_and_quic_domains: string;
+  };
+  connections: NetworkConnectionRecord[] | null;
+  new_connections: Array<{
+    event_id: string;
+    timestamp: string;
+    event_type: "connection_first_observed";
+    connection: NetworkConnectionRecord;
+  }>;
+  interfaces: NetworkInterfaceRecord[] | null;
+  interface_counters: Record<string, { bytes_recv: number; bytes_sent: number }> | null;
+  throughput: {
+    download_bytes_per_second: number | null;
+    upload_bytes_per_second: number | null;
+  };
+  truncated: boolean;
+  errors: string[];
+}
+
+export interface FirewallProfile {
+  name: "domain" | "private" | "public";
+  enabled: boolean;
+  default_inbound_action: "allow" | "block";
+  default_outbound_action: "allow" | "block";
+}
+
+export interface ManagedFirewallRule {
+  rule_id: string;
+  name: string;
+  application: string | null;
+  protocol: string;
+  direction: "inbound" | "outbound";
+  remote_addresses: string;
+  action: "allow" | "block";
+  profiles: number;
+  enabled: boolean;
+  owner: string;
+}
+
+export interface FirewallSnapshot {
+  state: "active" | "unavailable";
+  protection: "enabled" | "partial" | "disabled" | "unavailable";
+  source: string;
+  profiles: FirewallProfile[] | null;
+  managed_rules: ManagedFirewallRule[] | null;
+  error: string | null;
+}
+
 export interface DetectionRecord {
   detection_id: string;
   action: "block" | "allow";
@@ -177,6 +262,12 @@ function invokeProtection<T>(command: string, args?: Record<string, unknown>): P
 
 export const getProtectionStatus = () =>
   invokeProtection<ProtectionStatus>("get_protection_status");
+
+export const getNetworkSnapshot = () =>
+  invokeProtection<NetworkSnapshot>("get_protection_network_snapshot");
+
+export const getFirewallSnapshot = () =>
+  invokeProtection<FirewallSnapshot>("get_firewall_snapshot");
 
 export const startScan = (scope: ScanScope) =>
   invokeProtection<ScanJob>("start_protection_scan", { scope });

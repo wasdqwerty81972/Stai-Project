@@ -48,6 +48,8 @@ Operation names are snake case. Payloads are limited to these typed forms:
 | Operation | Payload |
 | --- | --- |
 | `get_status` | `{}` |
+| `get_network_snapshot` | `{}` (enrolled dashboard user only; current socket/interface metadata, no payload capture) |
+| `get_firewall_snapshot` | `{}` (enrolled dashboard user only; local Windows Firewall profile values and SVS-owned rules; Group Policy may override local values) |
 | `start_scan` | `{ "scope": "quick" | "system" }` |
 | `get_scan`, `cancel_scan` | `{ "job_id": "..." }` |
 | `list_threats`, `list_quarantine` | `{}` |
@@ -77,3 +79,17 @@ contract is implemented by the dashboard bridge and service host, but does not
 claim that the driver, scanner, or service currently provides a production
 antivirus boundary. Production activation remains gated on a trusted rules key,
 signed rules, the signed driver, and end-to-end Windows VM validation.
+
+Firewall changes are limited to confirmed outbound blocks of one globally
+routable IP address and removal of those exact SVS-owned rules. The native
+Windows Firewall API verifies each change. Profile inspection may be
+unavailable if the Windows API cannot be queried. SVS Cyber does not alter
+Defender Firewall profiles, Group Policy, or rules owned by other software.
+
+The Network page polls active socket and interface snapshots while visible.
+Interface rates are device-wide and are derived from successive byte counters;
+they are not per-process rates. TCP and UDP endpoints are labeled separately,
+direction and payloads are not captured, and short-lived connections may be
+missed. ONIONIZE currently reports that routing is off/unconfigured. The UI
+does not change system proxy settings or claim to route all device traffic
+through Tor.

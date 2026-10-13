@@ -4,6 +4,8 @@ import App from "../App";
 import {
   cancelScan,
   getAgentHistory,
+  getFirewallSnapshot,
+  getNetworkSnapshot,
   getProtectionStatus,
   getScanSchedule,
   getProtectionTriage,
@@ -21,6 +23,8 @@ import {
 jest.mock("../protection-api", () => ({
   cancelScan: jest.fn(),
   getAgentHistory: jest.fn(),
+  getFirewallSnapshot: jest.fn(),
+  getNetworkSnapshot: jest.fn(),
   getProtectionStatus: jest.fn(),
   getScanSchedule: jest.fn(),
   getProtectionTriage: jest.fn(),
@@ -151,6 +155,39 @@ function setupDefaults() {
   } as never);
   jest.mocked(getScan).mockResolvedValue(scan as never);
   jest.mocked(cancelScan).mockResolvedValue(undefined as never);
+  jest.mocked(getNetworkSnapshot).mockResolvedValue({
+    schema_version: 1,
+    state: "active",
+    observed_at: "2026-10-13T10:00:00Z",
+    source: "psutil Windows socket and interface snapshots",
+    coverage: {
+      connections: "active_socket_snapshot",
+      process_attribution: "best_effort_pid_and_creation_time",
+      direction: "unknown_from_snapshot",
+      payload_capture: "not_collected",
+      per_process_bytes: "unavailable",
+      short_lived_connections: "may_be_missed_between_snapshots",
+      dns_over_https_and_quic_domains: "not_visible_from_socket_snapshot",
+    },
+    connections: [{
+      connection_id: "conn-1", pid: 12, process_identity: "12:1", process_name: "browser.exe",
+      executable_path: "C:\\Program Files\\Browser\\browser.exe", protocol: "tcp", family: "ipv4",
+      local_address: "192.168.1.4", local_port: 50000, remote_address: "8.8.8.8", remote_port: 443,
+      state: "ESTABLISHED", direction: "unknown", first_seen: "2026-10-13T09:59:00Z",
+      last_seen: "2026-10-13T10:00:00Z", activity_source: "active_socket_snapshot",
+    }],
+    new_connections: [],
+    interfaces: [{ name: "Ethernet", is_up: true, addresses: [{ address: "192.168.1.4", family: "ipv4" }] }],
+    interface_counters: {},
+    throughput: { download_bytes_per_second: 2048, upload_bytes_per_second: 1024 },
+    truncated: false,
+    errors: [],
+  } as never);
+  jest.mocked(getFirewallSnapshot).mockResolvedValue({
+    state: "active", protection: "enabled", source: "Windows Firewall COM API (effective profiles)",
+    profiles: [{ name: "private", enabled: true, default_inbound_action: "block", default_outbound_action: "allow" }],
+    managed_rules: [], error: null,
+  } as never);
   jest.mocked(requestProtectionTriage).mockResolvedValue(triage as never);
   jest.mocked(restoreQuarantine).mockResolvedValue({
     success: true,
@@ -320,4 +357,28 @@ test("keeps_navigation_and_scan_action_keyboard_reachable", async () => {
   scan.focus();
   await user.keyboard("{Enter}");
   expect(startScan).toHaveBeenCalledWith("quick");
+});
+
+test("renders_network_snapshot_without_exposing_unverified_firewall_mutations", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await user.click(await screen.findByRole("button", { name: "Network" }));
+  expect(await screen.findByText("browser.exe")).toBeInTheDocument();
+  expect(screen.getByText("2.0 KB/s")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Inspect browser.exe" }));
+  expect(await screen.findByRole("dialog")).toHaveTextContent("Unknown from socket snapshot");
+  expect(screen.queryByRole("button", { name: /Block this remote IP/ })).not.toBeInTheDocument();
+});
+
+test("renders_the_reported_windows_firewall_profile_state", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await user.click(await screen.findByRole("button", { name: "Firewall" }));
+  expect(await screen.findByText("private")).toBeInTheDocument();
+  expect(screen.getByText("1 of 1")).toBeInTheDocument();
+  expect(screen.getByText("allow")).toBeInTheDocument();
+  expect(screen.getByText(/current build is read-only/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Remove/ })).not.toBeInTheDocument();
 });

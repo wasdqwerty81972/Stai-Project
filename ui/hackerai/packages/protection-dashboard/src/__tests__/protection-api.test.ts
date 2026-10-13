@@ -4,6 +4,8 @@
  */
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
+  getFirewallSnapshot,
+  getNetworkSnapshot,
   getScanSchedule,
   isTrustedProtectionContext,
   refreshScanProfile,
@@ -46,6 +48,8 @@ test("routes_schedule_requests_only_through_the_local_tauri_bridge", async () =>
   jest.mocked(isTauri).mockReturnValue(true);
   jest.mocked(invoke).mockResolvedValue({} as never);
   await refreshScanProfile();
+  await getFirewallSnapshot();
+  await getNetworkSnapshot();
   await getScanSchedule();
   await setScanSchedule({
     enabled: true,
@@ -55,8 +59,10 @@ test("routes_schedule_requests_only_through_the_local_tauri_bridge", async () =>
   });
 
   expect(invoke).toHaveBeenNthCalledWith(1, "refresh_protection_scan_profile", undefined);
-  expect(invoke).toHaveBeenNthCalledWith(2, "get_protection_scan_schedule", undefined);
-  expect(invoke).toHaveBeenNthCalledWith(3, "set_protection_scan_schedule", {
+  expect(invoke).toHaveBeenNthCalledWith(2, "get_firewall_snapshot", undefined);
+  expect(invoke).toHaveBeenNthCalledWith(3, "get_protection_network_snapshot", undefined);
+  expect(invoke).toHaveBeenNthCalledWith(4, "get_protection_scan_schedule", undefined);
+  expect(invoke).toHaveBeenNthCalledWith(5, "set_protection_scan_schedule", {
     enabled: true,
     cadence: "weekly",
     localTime: "10:30",

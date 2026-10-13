@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { Activity, RefreshCw } from "lucide-react";
 import {
   cancelScan,
   getAgentHistory,
+  getFirewallSnapshot,
+  getNetworkSnapshot,
   getProtectionStatus,
   getScanSchedule,
   getProtectionTriage,
@@ -18,6 +20,8 @@ import {
   type AgentHistory,
   type AgentReply,
   type DetectionRecord,
+  type FirewallSnapshot,
+  type NetworkSnapshot,
   type ProtectionStatus,
   type QuarantineItem,
   type ScanJob,
@@ -27,8 +31,10 @@ import {
   type TriageRecord,
 } from "./protection-api";
 import { AgentView } from "./components/AgentView";
+import { FirewallView } from "./components/FirewallView";
 import { HomeView } from "./components/HomeView";
 import { Navigation, type DashboardPage } from "./components/Navigation";
+import { NetworkView } from "./components/NetworkView";
 import { ProtectionOverview } from "./components/ProtectionOverview";
 import { QuarantineView } from "./components/QuarantineView";
 import { ScanView } from "./components/ScanView";
@@ -43,6 +49,9 @@ function messageFor(error: unknown, fallback: string): string {
 function pageSubtitle(page: DashboardPage) {
   if (page === "Home") return "Your security workspace";
   if (page === "Antivirus") return "Windows endpoint protection";
+  if (page === "Processes") return "Process activity";
+  if (page === "Network") return "Network activity and privacy";
+  if (page === "Firewall") return "Windows Firewall protection";
   return "Local Windows protection";
 }
 
@@ -68,6 +77,70 @@ export default function App() {
   const [triageError, setTriageError] = useState<string | null>(null);
   const [history, setHistory] = useState<AgentHistory | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [networkSnapshot, setNetworkSnapshot] = useState<NetworkSnapshot | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [firewallSnapshot, setFirewallSnapshot] = useState<FirewallSnapshot | null>(null);
+  const [firewallError, setFirewallError] = useState<string | null>(null);
+  const [firewallLoading, setFirewallLoading] = useState(false);
+
+  const refreshNetwork = useCallback(async () => {
+    setNetworkLoading(true);
+    setNetworkError(null);
+    try {
+      setNetworkSnapshot(await getNetworkSnapshot());
+    } catch (error) {
+      setNetworkSnapshot(null);
+      setNetworkError(messageFor(error, "Network collection unavailable"));
+    } finally {
+      setNetworkLoading(false);
+    }
+  }, []);
+
+  const refreshFirewall = useCallback(async () => {
+    setFirewallLoading(true);
+    setFirewallError(null);
+    try {
+      setFirewallSnapshot(await getFirewallSnapshot());
+    } catch (error) {
+      setFirewallSnapshot(null);
+      setFirewallError(messageFor(error, "Windows Firewall status unavailable"));
+    } finally {
+      setFirewallLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page !== "Network") return;
+    let stale = false;
+    const update = async () => {
+      try {
+        const result = await getNetworkSnapshot();
+        if (!stale) { setNetworkSnapshot(result); setNetworkError(null); }
+      } catch (error) {
+        if (!stale) { setNetworkSnapshot(null); setNetworkError(messageFor(error, "Network collection unavailable")); }
+      } finally {
+        if (!stale) setNetworkLoading(false);
+      }
+    };
+    setNetworkLoading(true);
+    void update();
+    const timer = window.setInterval(() => void update(), 2500);
+    return () => { stale = true; window.clearInterval(timer); };
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== "Firewall") return;
+    let stale = false;
+    setFirewallLoading(true);
+    setFirewallError(null);
+    void getFirewallSnapshot().then((result) => {
+      if (!stale) setFirewallSnapshot(result);
+    }).catch((error: unknown) => {
+      if (!stale) { setFirewallSnapshot(null); setFirewallError(messageFor(error, "Windows Firewall status unavailable")); }
+    }).finally(() => { if (!stale) setFirewallLoading(false); });
+    return () => { stale = true; };
+  }, [page]);
 
   const refresh = useCallback(async () => {
     setStatusLoading(true);
@@ -382,6 +455,9 @@ export default function App() {
               />
             )}
             {page === "System Status" && <SystemStatus status={status} error={statusError} />}
+            {page === "Processes" && <section className="panel process-unavailable-panel"><div className="panel-heading"><div><div className="eyebrow">PROCESS ACTIVITY</div><h2>Process inventory is being connected</h2></div><span className="panel-icon"><Activity size={18} aria-hidden="true" /></span></div><p className="helper-note">The current local service exposes network socket ownership only. A complete process inventory and executable entropy scan are not yet available here; this page does not show a fabricated process list.</p></section>}
+            {page === "Network" && <NetworkView snapshot={networkSnapshot} error={networkError} loading={networkLoading} onRefresh={() => void refreshNetwork()} />}
+            {page === "Firewall" && <FirewallView snapshot={firewallSnapshot} error={firewallError} loading={firewallLoading} onRefresh={() => void refreshFirewall()} />}
             {page === "Threat Activity" && <ThreatActivity threats={threats} error={threatsError} />}
             {page === "Scans" && (
               <ScanView

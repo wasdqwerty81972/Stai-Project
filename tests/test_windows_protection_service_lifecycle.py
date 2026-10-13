@@ -13,11 +13,14 @@ import pytest
 from cyber_os.protection.windows_service import (
     ProtectionServiceHost,
     ProtectionServiceUnavailable,
+    PipeProtocolError,
+    PROTOCOL_VERSION,
     WindowsNamedPipeServer,
     AuthenticatedPipeClient,
     build_pipe_sddl,
     is_allowed_pipe_client,
     process_pipe_request,
+    _validate_pipe_request,
 )
 from cyber_os.protection.store import ProtectionStore
 
@@ -387,6 +390,88 @@ def test_quick_scan_dispatch_requires_exact_enrolled_user():
 
     with pytest.raises(ProtectionServiceUnavailable, match="enrolled dashboard user"):
         host.dispatch("start_scan", {"scope": "quick"}, caller_context=caller)
+
+
+def test_network_snapshot_requires_enrolled_user_and_uses_injected_collector():
+    class NetworkCollector:
+        calls = 0
+
+        def snapshot(self):
+            self.calls += 1
+            return {"state": "active", "connections": [], "new_connections": []}
+
+    collector = NetworkCollector()
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=None,
+        rules_trusted=False,
+        client_sid=CLIENT_SID,
+        network_telemetry=collector,
+    )
+    caller = type("Caller", (), {"sid": CLIENT_SID, "token_handle": object()})()
+
+    with pytest.raises(ProtectionServiceUnavailable, match="enrolled dashboard user"):
+        host.dispatch("get_network_snapshot", {})
+    with pytest.raises(ProtectionServiceUnavailable, match="enrolled dashboard user"):
+        host.dispatch(
+            "get_network_snapshot",
+            {},
+            caller_context=type("Caller", (), {"sid": OTHER_SID, "token_handle": object()})(),
+        )
+
+    response = host.dispatch("get_network_snapshot", {}, caller_context=caller)
+
+    assert response["state"] == "active"
+    assert collector.calls == 1
+
+    request = {
+        "version": 1,
+        "request_id": "d" * 32,
+        "operation": "get_network_snapshot",
+        "payload": {},
+    }
+    pipe_response = json.loads(
+        process_pipe_request(json.dumps(request).encode(), host, caller)
+    )
+    assert pipe_response["ok"] is True
+    assert pipe_response["data"]["state"] == "active"
+    assert collector.calls == 2
+
+
+def test_firewall_snapshot_requires_enrollment_and_is_read_only():
+    class FirewallManager:
+        calls = []
+
+        def snapshot(self):
+            self.calls.append(("snapshot",))
+            return {"state": "active", "profiles": [], "managed_rules": []}
+
+    manager = FirewallManager()
+    host = ProtectionServiceHost(
+        store=_Store(), service=None, rules_trusted=False, client_sid=CLIENT_SID,
+        firewall_manager=manager,
+    )
+    caller = type("Caller", (), {"sid": CLIENT_SID, "token_handle": object()})()
+    with pytest.raises(ProtectionServiceUnavailable, match="enrolled dashboard user"):
+        host.dispatch("get_firewall_snapshot", {})
+    assert host.dispatch("get_firewall_snapshot", {}, caller_context=caller)["state"] == "active"
+    assert manager.calls == [("snapshot",)]
+
+
+def test_firewall_mutations_are_not_exposed_over_the_local_pipe():
+    for operation, payload in (
+        ("block_remote_ip", {"remote_address": "8.8.8.8", "user_approved": True}),
+        ("remove_firewall_rule", {"rule_id": "SVS Cyber block IP abcdef0123456789", "user_approved": True}),
+    ):
+        request = {
+            "version": PROTOCOL_VERSION,
+            "request_id": "d" * 32,
+            "operation": operation,
+            "payload": payload,
+        }
+        with pytest.raises(PipeProtocolError):
+            _validate_pipe_request(request)
+
 
 
 def test_pipe_dispatch_rejects_non_allowlisted_operation():

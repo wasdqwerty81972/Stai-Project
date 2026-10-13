@@ -197,6 +197,8 @@ enum ProtectionOperation {
     SendAgentMessage,
     ListQuarantine,
     RestoreQuarantine,
+    GetNetworkSnapshot,
+    GetFirewallSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -418,6 +420,20 @@ pub(crate) async fn get_protection_status(
 }
 
 #[tauri::command]
+pub(crate) async fn get_protection_network_snapshot(
+    window: WebviewWindow,
+) -> Result<Value, String> {
+    ensure_local_dashboard(&window)?;
+    request(ProtectionOperation::GetNetworkSnapshot, EmptyPayload {}).await
+}
+
+#[tauri::command]
+pub(crate) async fn get_firewall_snapshot(window: WebviewWindow) -> Result<Value, String> {
+    ensure_local_dashboard(&window)?;
+    request(ProtectionOperation::GetFirewallSnapshot, EmptyPayload {}).await
+}
+
+#[tauri::command]
 pub(crate) async fn start_protection_scan(
     window: WebviewWindow,
     scope: String,
@@ -594,6 +610,8 @@ mod tests {
             ProtectionOperation::SendAgentMessage,
             ProtectionOperation::ListQuarantine,
             ProtectionOperation::RestoreQuarantine,
+            ProtectionOperation::GetNetworkSnapshot,
+            ProtectionOperation::GetFirewallSnapshot,
         ];
         let encoded = operations
             .iter()
@@ -601,7 +619,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!encoded.iter().any(|value| value.contains("shell")));
         assert!(!encoded.iter().any(|value| value.contains("file_command")));
-        assert_eq!(encoded.len(), 14);
+        assert_eq!(encoded.len(), 16);
+        assert!(encoded.iter().any(|value| value == "\"get_network_snapshot\""));
     }
 
     #[test]
