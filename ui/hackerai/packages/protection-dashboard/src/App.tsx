@@ -4,13 +4,16 @@ import {
   cancelScan,
   getAgentHistory,
   getProtectionStatus,
+  getScanSchedule,
   getProtectionTriage,
   getScan,
   listQuarantine,
   listThreats,
   requestProtectionTriage,
   restoreQuarantine,
+  refreshScanProfile,
   sendAgentMessage,
+  setScanSchedule,
   startScan,
   type AgentHistory,
   type AgentReply,
@@ -18,6 +21,8 @@ import {
   type ProtectionStatus,
   type QuarantineItem,
   type ScanJob,
+  type ScanSchedule,
+  type ScanScheduleInput,
   type ScanScope,
   type TriageRecord,
 } from "./protection-api";
@@ -53,6 +58,10 @@ export default function App() {
   const [scan, setScan] = useState<ScanJob | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanBusy, setScanBusy] = useState<ScanScope | null>(null);
+  const [scanSchedule, setScanScheduleState] = useState<ScanSchedule | null>(null);
+  const [scanScheduleLoading, setScanScheduleLoading] = useState(false);
+  const [scanScheduleSaving, setScanScheduleSaving] = useState(false);
+  const [scanScheduleError, setScanScheduleError] = useState<string | null>(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState<string | null>(null);
   const [triage, setTriage] = useState<TriageRecord | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
@@ -94,6 +103,29 @@ export default function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (page !== "Scans") return;
+    let stale = false;
+    setScanScheduleLoading(true);
+    setScanScheduleError(null);
+    void getScanSchedule()
+      .then((schedule) => {
+        if (!stale) setScanScheduleState(schedule);
+      })
+      .catch((error: unknown) => {
+        if (!stale) {
+          setScanScheduleState(null);
+          setScanScheduleError(messageFor(error, "Unable to load the scan schedule."));
+        }
+      })
+      .finally(() => {
+        if (!stale) setScanScheduleLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [page]);
 
   const activeScan = scan?.state === "running" || scan?.state === "queued";
   useEffect(() => {
@@ -203,6 +235,26 @@ export default function App() {
       setScanError(messageFor(error, "Unable to cancel scan"));
     }
   }, [scan]);
+
+  const handleSaveScanSchedule = useCallback(async (input: ScanScheduleInput) => {
+    setScanScheduleError(null);
+    setScanScheduleSaving(true);
+    try {
+      if (input.enabled) {
+        const profile = await refreshScanProfile();
+        if (!profile.ready) {
+          throw new Error("Windows scan folders could not be resolved for this account.");
+        }
+      }
+      setScanScheduleState(await setScanSchedule(input));
+    } catch (error) {
+      const message = messageFor(error, "Unable to save the scan schedule.");
+      setScanScheduleError(message);
+      throw new Error(message);
+    } finally {
+      setScanScheduleSaving(false);
+    }
+  }, []);
 
   const handleRestore = useCallback(async (itemId: string) => {
     const result = await restoreQuarantine(itemId);
@@ -338,6 +390,11 @@ export default function App() {
                 onStart={handleStartScan}
                 onCancel={handleCancelScan}
                 unavailable={!status || Boolean(statusError) || status.state === "unavailable"}
+                schedule={scanSchedule}
+                scheduleLoading={scanScheduleLoading}
+                scheduleSaving={scanScheduleSaving}
+                scheduleError={scanScheduleError}
+                onSaveSchedule={handleSaveScanSchedule}
               />
             )}
             {page === "Quarantine" && (

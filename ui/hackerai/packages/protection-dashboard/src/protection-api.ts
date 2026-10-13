@@ -38,6 +38,34 @@ export interface ScanJob {
   error_message: string | null;
 }
 
+export type ScanCadence = "daily" | "weekly";
+export type ScanWeekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+export interface ScanSchedule {
+  configured: boolean;
+  enabled: boolean;
+  cadence?: ScanCadence | null;
+  local_time?: string | null;
+  days_of_week?: ScanWeekday[] | null;
+  last_run_date?: string | null;
+  last_job_id?: string | null;
+  last_result?: string | null;
+  next_run_local?: string | null;
+}
+
+export interface ScanProfileRefresh {
+  ready: boolean;
+  refreshed_at: string | null;
+  folders: string[];
+}
+
+export interface ScanScheduleInput {
+  enabled: boolean;
+  cadence: ScanCadence;
+  localTime: string;
+  daysOfWeek: ScanWeekday[];
+}
+
 export interface DetectionRecord {
   detection_id: string;
   action: "block" | "allow";
@@ -155,6 +183,20 @@ export const startScan = (scope: ScanScope) =>
 
 export const getScan = (jobId: string) =>
   invokeProtection<ScanJob>("get_protection_scan", { jobId });
+
+export const getScanSchedule = () =>
+  invokeProtection<ScanSchedule>("get_protection_scan_schedule");
+
+export const refreshScanProfile = () =>
+  invokeProtection<ScanProfileRefresh>("refresh_protection_scan_profile");
+
+export const setScanSchedule = (schedule: ScanScheduleInput) =>
+  invokeProtection<ScanSchedule>("set_protection_scan_schedule", {
+    enabled: schedule.enabled,
+    cadence: schedule.cadence,
+    localTime: schedule.localTime,
+    daysOfWeek: schedule.daysOfWeek,
+  });
 
 export const cancelScan = (jobId: string) =>
   invokeProtection<ScanJob | void>("cancel_protection_scan", { jobId });

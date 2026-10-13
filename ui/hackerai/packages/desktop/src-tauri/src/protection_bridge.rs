@@ -64,6 +64,26 @@ pub(crate) struct ScanJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ScanSchedule {
+    pub configured: bool,
+    pub enabled: bool,
+    pub cadence: Option<String>,
+    pub local_time: Option<String>,
+    pub days_of_week: Option<Vec<String>>,
+    pub last_run_date: Option<String>,
+    pub last_job_id: Option<String>,
+    pub last_result: Option<String>,
+    pub next_run_local: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ScanProfileRefresh {
+    pub ready: bool,
+    pub refreshed_at: Option<String>,
+    pub folders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DetectionRecord {
     pub detection_id: String,
     pub action: String,
@@ -167,6 +187,9 @@ enum ProtectionOperation {
     StartScan,
     GetScan,
     CancelScan,
+    RefreshScanProfile,
+    GetScanSchedule,
+    SetScanSchedule,
     ListThreats,
     GetTriage,
     RequestTriage,
@@ -230,6 +253,14 @@ struct AgentMessagePayload<'a> {
     detection_id: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+struct ScanSchedulePayload<'a> {
+    enabled: bool,
+    cadence: &'a str,
+    local_time: &'a str,
+    days_of_week: &'a [String],
+}
+
 fn unavailable_error() -> String {
     "protection service unavailable".to_string()
 }
@@ -262,6 +293,38 @@ fn validate_scope(scope: &str) -> Result<ScanScope, String> {
         "system" => Ok(ScanScope::System),
         _ => Err("scan scope must be quick or system".to_string()),
     }
+}
+
+fn validate_scan_schedule(
+    cadence: &str,
+    local_time: &str,
+    days_of_week: &[String],
+) -> Result<(), String> {
+    if cadence != "daily" && cadence != "weekly" {
+        return Err("schedule cadence must be daily or weekly".to_string());
+    }
+    let bytes = local_time.as_bytes();
+    if bytes.len() != 5
+        || bytes[2] != b':'
+        || !bytes[..2].iter().all(u8::is_ascii_digit)
+        || !bytes[3..].iter().all(u8::is_ascii_digit)
+        || (bytes[0] - b'0') * 10 + (bytes[1] - b'0') > 23
+        || (bytes[3] - b'0') * 10 + (bytes[4] - b'0') > 59
+    {
+        return Err("schedule time must use HH:MM".to_string());
+    }
+    let allowed = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    let mut seen = std::collections::HashSet::new();
+    if days_of_week
+        .iter()
+        .any(|day| !allowed.contains(&day.as_str()) || !seen.insert(day.as_str()))
+    {
+        return Err("schedule weekdays are invalid".to_string());
+    }
+    if (cadence == "weekly") != !days_of_week.is_empty() {
+        return Err("weekly schedules require days; daily schedules require none".to_string());
+    }
+    Ok(())
 }
 
 async fn request<T: for<'de> Deserialize<'de>, P: Serialize>(
@@ -374,6 +437,44 @@ pub(crate) async fn get_protection_scan(
 }
 
 #[tauri::command]
+pub(crate) async fn refresh_protection_scan_profile(
+    window: WebviewWindow,
+) -> Result<ScanProfileRefresh, String> {
+    ensure_local_dashboard(&window)?;
+    request(ProtectionOperation::RefreshScanProfile, EmptyPayload {}).await
+}
+
+#[tauri::command]
+pub(crate) async fn get_protection_scan_schedule(
+    window: WebviewWindow,
+) -> Result<ScanSchedule, String> {
+    ensure_local_dashboard(&window)?;
+    request(ProtectionOperation::GetScanSchedule, EmptyPayload {}).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_protection_scan_schedule(
+    window: WebviewWindow,
+    enabled: bool,
+    cadence: String,
+    local_time: String,
+    days_of_week: Vec<String>,
+) -> Result<ScanSchedule, String> {
+    ensure_local_dashboard(&window)?;
+    validate_scan_schedule(&cadence, &local_time, &days_of_week)?;
+    request(
+        ProtectionOperation::SetScanSchedule,
+        ScanSchedulePayload {
+            enabled,
+            cadence: &cadence,
+            local_time: &local_time,
+            days_of_week: &days_of_week,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn cancel_protection_scan(
     window: WebviewWindow,
     job_id: String,
@@ -483,6 +584,9 @@ mod tests {
             ProtectionOperation::StartScan,
             ProtectionOperation::GetScan,
             ProtectionOperation::CancelScan,
+            ProtectionOperation::RefreshScanProfile,
+            ProtectionOperation::GetScanSchedule,
+            ProtectionOperation::SetScanSchedule,
             ProtectionOperation::ListThreats,
             ProtectionOperation::GetTriage,
             ProtectionOperation::RequestTriage,
@@ -497,7 +601,43 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!encoded.iter().any(|value| value.contains("shell")));
         assert!(!encoded.iter().any(|value| value.contains("file_command")));
-        assert_eq!(encoded.len(), 11);
+        assert_eq!(encoded.len(), 14);
+    }
+
+    #[test]
+    fn schedule_validation_accepts_daily_and_weekly_values() {
+        assert!(validate_scan_schedule("daily", "09:30", &[]).is_ok());
+        assert!(validate_scan_schedule("weekly", "23:59", &["mon".into(), "fri".into()]).is_ok());
+    }
+
+    #[test]
+    fn schedule_validation_rejects_invalid_time_cadence_and_days() {
+        assert!(validate_scan_schedule("monthly", "09:30", &[]).is_err());
+        assert!(validate_scan_schedule("daily", "24:00", &[]).is_err());
+        assert!(validate_scan_schedule("daily", "09:00", &["mon".into()]).is_err());
+        assert!(validate_scan_schedule("weekly", "09:00", &[]).is_err());
+        assert!(validate_scan_schedule("weekly", "09:00", &["mon".into(), "mon".into()]).is_err());
+        assert!(validate_scan_schedule("daily", "١٢:٣٤", &[]).is_err());
+    }
+
+    #[test]
+    fn schedule_payload_uses_the_pipe_contract_names() {
+        let days = vec!["mon".to_string()];
+        let payload = ScanSchedulePayload {
+            enabled: true,
+            cadence: "weekly",
+            local_time: "10:30",
+            days_of_week: &days,
+        };
+        assert_eq!(
+            serde_json::to_value(payload).unwrap(),
+            json!({
+                "enabled": true,
+                "cadence": "weekly",
+                "local_time": "10:30",
+                "days_of_week": ["mon"]
+            })
+        );
     }
 
     #[test]

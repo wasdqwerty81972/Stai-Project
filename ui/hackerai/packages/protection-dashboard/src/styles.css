@@ -262,6 +262,35 @@ button:focus-visible, textarea:focus-visible {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .scan-center-panel { margin-bottom: 13px; }
+.schedule-panel { margin-top: 13px; }
+.schedule-loading { margin: 2px 0 12px; color: #8da1ba; font-size: 10px; }
+.schedule-form { display: grid; gap: 14px; }
+.schedule-enable-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: rgba(7, 13, 22, 0.38); cursor: pointer; }
+.schedule-enable-row > span { display: grid; gap: 4px; }
+.schedule-enable-row strong { font-size: 10px; font-weight: 640; }
+.schedule-enable-row small { color: #7e8da2; font-size: 9px; line-height: 1.4; }
+.schedule-enable-row input, .weekday-option input { accent-color: #5aa2f5; }
+.schedule-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.schedule-field { display: grid; gap: 6px; color: #9aa9bd; font-size: 9px; }
+.schedule-field select, .schedule-field input { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid #2a3a50; border-radius: 7px; outline: none; background: #101b2a; color: #dce6f4; font: inherit; color-scheme: dark; }
+.schedule-field select:focus-visible, .schedule-field input:focus-visible { border-color: #5a9ce6; box-shadow: 0 0 0 2px rgba(67, 139, 221, 0.2); }
+.schedule-field :disabled, .schedule-weekdays:disabled { opacity: 0.5; }
+.schedule-weekdays { min-width: 0; margin: 0; padding: 0; border: 0; }
+.schedule-weekdays legend { margin-bottom: 8px; color: #9aa9bd; font-size: 9px; }
+.weekday-options { display: flex; flex-wrap: wrap; gap: 7px; }
+.weekday-option { position: relative; display: grid; min-width: 46px; min-height: 34px; place-items: center; cursor: pointer; }
+.weekday-option input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.weekday-option span { display: grid; width: 100%; height: 100%; place-items: center; border: 1px solid #293950; border-radius: 7px; background: rgba(13, 23, 36, 0.84); color: #91a0b5; font-size: 9px; }
+.weekday-option input:checked + span { border-color: #3979bd; background: rgba(48, 119, 203, 0.2); color: #bddbff; }
+.weekday-option input:focus-visible + span { outline: 2px solid #76b6ff; outline-offset: 2px; }
+.schedule-weekdays:disabled .weekday-option { opacity: 0.5; cursor: not-allowed; }
+.schedule-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.schedule-summary > div { display: grid; min-width: 0; gap: 5px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: rgba(7, 13, 22, 0.34); }
+.schedule-summary span { color: #7c8da4; font-size: 8px; }
+.schedule-summary strong { overflow: hidden; color: #cbd8e8; font-size: 9px; font-weight: 580; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.schedule-footer .helper-note { max-width: 300px; margin: 0; line-height: 1.5; }
+.schedule-footer .button { flex: 0 0 auto; }
 .scan-scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .scope-card { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 1px 11px; padding: 14px; border: 1px solid #263950; border-radius: 10px; background: rgba(16, 29, 46, 0.76); cursor: pointer; text-align: left; }
 .scope-card:hover:not(:disabled) { border-color: #4c78ad; background: rgba(22, 43, 69, 0.86); }
@@ -434,6 +463,9 @@ button:focus-visible, textarea:focus-visible {
   .metric-card { min-height: 105px; padding: 12px; }
   .metric-value { font-size: 22px; }
   .scan-actions, .scan-scope-grid { grid-template-columns: 1fr; }
+  .schedule-fields, .schedule-summary { grid-template-columns: 1fr; }
+  .schedule-footer { align-items: stretch; flex-direction: column; }
+  .schedule-footer .button { width: 100%; }
   .scan-action-card { min-height: 60px; }
   .detection-state { display: none; }
   .quarantine-row { flex-wrap: wrap; }

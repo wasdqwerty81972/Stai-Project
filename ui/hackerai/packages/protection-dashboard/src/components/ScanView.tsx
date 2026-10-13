@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { AlertCircle, CheckCircle2, Clock3, HardDrive, LoaderCircle, XCircle } from "lucide-react";
-import type { ScanJob, ScanScope } from "../protection-api";
+import type { ScanJob, ScanSchedule, ScanScheduleInput, ScanScope } from "../protection-api";
 import { EmptyState } from "./EmptyState";
 import { PageHeading } from "./PageHeading";
+import { ScanSchedulePanel } from "./ScanSchedulePanel";
 
 export function ScanView({
   scan,
@@ -10,12 +11,22 @@ export function ScanView({
   onStart,
   onCancel,
   unavailable,
+  schedule,
+  scheduleLoading,
+  scheduleSaving,
+  scheduleError,
+  onSaveSchedule,
 }: {
   scan: ScanJob | null;
   scanError: string | null;
   onStart: (scope: ScanScope) => Promise<void>;
   onCancel: () => Promise<void>;
   unavailable: boolean;
+  schedule: ScanSchedule | null;
+  scheduleLoading: boolean;
+  scheduleSaving: boolean;
+  scheduleError: string | null;
+  onSaveSchedule: (input: ScanScheduleInput) => Promise<void>;
 }) {
   const [starting, setStarting] = useState<ScanScope | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -125,6 +136,15 @@ export function ScanView({
           </div>
         )}
       </section>
+
+      <ScanSchedulePanel
+        schedule={schedule}
+        loading={scheduleLoading}
+        saving={scheduleSaving}
+        error={scheduleError}
+        unavailable={unavailable}
+        onSave={onSaveSchedule}
+      />
     </>
   );
 }
