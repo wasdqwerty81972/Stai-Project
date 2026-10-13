@@ -1,8 +1,8 @@
-# SVS Cyber Real Protection Demo Implementation Plan
+# SVS Cyber Real Protection Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the existing user-mode scanner and dashboard usable in the Windows Tauri app while reporting the limited rule coverage and unavailable service/driver accurately.
+**Goal:** Make the existing real user-mode scanner and protection dashboard work reliably in the Windows Tauri app while reporting limited rule coverage and unavailable service/driver accurately.
 
 **Architecture:** Keep the Tauri protection pipe as the primary client when it is reachable. Add one typed loopback HTTP adapter for the local scanner API and use it from browser mode or as Tauri's fallback when the pipe is unavailable. The API verifies rules against the pinned repository key and reports scanner/rules/service/driver as separate capabilities.
 
@@ -17,6 +17,7 @@
 - Label the bundled `svs-eicar-demo-1` package as test-only and limited to the EICAR test file.
 - Keep local user-mode scanner status separate from Windows service and minifilter driver status.
 - Use harmless inert markers in automated tests; do not install or execute malware.
+- Test fixtures and inert markers stay in automated tests; product flows must invoke the real scanner and must never show a scripted or canned detection as a real threat.
 - Scheduled scans remain explicitly unavailable in local API mode unless the Windows service is reachable.
 - The AI Agent sidebar integration with the existing `StaiChatWorkspace` is a separate follow-up after this plan.
 
