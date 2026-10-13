@@ -1,54 +1,66 @@
-# SVS Cyber Demo Reliability Design
+# SVS Cyber Real Protection Demo Design
 
 ## Goal
 
-Make tomorrow's Windows demonstration start consistently and show an honest, repeatable protection workflow. The dashboard must open even when this machine lacks the native build toolchain, and it must distinguish an available API from active protection. The demo must use a harmless marker and must not require installing malware.
+Make the real protection features that can run in this checkout reliable and usable for tomorrow's presentation. Launch must open a dashboard that can actually call the local protection API and perform scans. The UI must accurately distinguish the user-mode scanner and its rule trust from the Windows service and kernel driver. Do not simulate a threat event or imply protection that is unavailable.
 
-## Current constraints
+## Current constraints and evidence
 
-- `cyber_main.py` defaults to the native Windows dashboard. This checkout has no release executable or Cargo command; it does have a recent debug executable, which the launcher currently ignores.
-- The launcher treats `/health` as ready even though that endpoint does not initialize or inspect the protection service.
-- The API currently looks for `.protection/manifest.json`, `.protection/manifest.sig`, and `.protection/public.key`. They are absent, so the local service uses an empty ruleset and reports degraded status.
-- The repository has a signed demo manifest and pinned public key, containing one exact SHA-256 rule for EICAR. That known sample can be removed by host security software before SVS Cyber sees it.
-- The installed Windows service and kernel driver are not available on this host. A user-mode demo result cannot be described as proof of minifilter enforcement or production-grade protection.
+- `cyber_main.py` defaults to Tauri on Windows. There is no Cargo command or release executable here. A recent debug executable exists, but the launch flow ignores it.
+- The local dashboard is a Vite app. In browser context, its current protection client uses Tauri `invoke`, so it cannot call the API from browser mode.
+- `/health` only reports API liveness. It does not initialize the scanner or establish that rules are available.
+- The API looks for a manifest, signature, and public key under `.protection`. Those files are absent here, so it creates an empty ruleset and reports degraded protection. The repository has a signed EICAR hash demo package and a pinned public key under `cyber_os/protection/resources`.
+- The scanner runs SHA-256 rules and optional YARA. Inspection found YARA runtime/compile/match failure can return `unknown/allow` before a matching SHA-256 block rule is evaluated.
+- The Windows protection service is not installed on this host, and no driver package is available for installation. Source-level or user-mode tests cannot establish kernel enforcement.
 
 ## Approaches considered
 
-1. Require installation/build of the native app, service, and driver before the demo. This matches the intended product deployment but cannot be completed and validated reliably on this machine by tomorrow.
-2. Keep the current launch flow and rely on `/health`. This opens a dashboard when the API answers, but can show an empty protection engine as ready.
-3. Recommended: select an available dashboard launch mode, surface the real protection status, and add a safe demo path using an explicitly labeled inert marker. Keep the kernel service and driver status visible as unavailable where they are not installed.
+1. Require a signed native release, installed service, and loaded minifilter before opening the app. This gives the intended deployment path but cannot be assembled and validated on this host by tomorrow.
+2. Open the existing native debug app and leave its Tauri-only IPC unchanged. This gives a desktop window, but with no installed service its protection actions cannot reach a working scanner.
+3. Recommended: connect browser mode to the real local API, load the repository's signed rules through a pinned trust root when no installed rules are present, fix scanner verdict precedence, and show user-mode/service/driver states separately. Keep native launch when it is operational; use the browser UI as a functional fallback.
 
 ## Design
 
-### Launcher
+### Dashboard access to protection
 
-`cyber_main.py` starts the API, then selects the native dashboard when a release app exists, when a complete Tauri development toolchain is available, or when the existing debug app is present. If no native app can run but the local Vite dashboard is available, it starts that through the local Node/Vite installation and opens the browser. Startup errors must name the missing component. The launcher continues to supervise child processes and shuts down children on exit.
+The protection client selects Tauri IPC in the native app and HTTP requests to the loopback API in browser mode. Both adapters implement the same typed client contract for status, scans, threats, quarantine, and restore. HTTP calls stay on loopback and use the API's existing validation and response models. Browser startup uses the installed local Vite package directly, avoiding dependence on a global pnpm shim.
 
-The launcher probes both API liveness and protection status. A protection-degraded result is not a launch failure: the dashboard should still open, while its status remains visibly degraded. The launcher must not print that protection is ready merely because `/health` returns 200.
+### Launcher and readiness
 
-### Protection status and rules
+`cyber_main.py` starts the API and selects a dashboard path that can reach protection operations. Use the native Tauri app only when its local protection service pipe is reachable; otherwise start the browser dashboard through the local Vite dependencies and its HTTP adapter to the local scanner API. The launcher announces the selected mode and names missing prerequisites if no mode can start. API liveness and protection readiness remain distinct; a degraded scanner does not prevent the dashboard from opening, and API liveness is never reported as AV readiness.
 
-The API reports ruleset version, trust state, scanner availability, Windows service state, and driver state through its existing protection status contract. Demo rules are loaded from the repository's signed manifest and verified against the pinned `trusted-rules.pub`; an editable key next to an editable manifest cannot establish trust. A missing or invalid bundle remains degraded and reports a concrete reason rather than silently acting like a healthy AV engine.
+### Trusted rules and accurate status
 
-### Safe demonstration path
+When no installed rule package exists, load the repository's signed rule manifest and verify it against the pinned `trusted-rules.pub`. Do not treat an editable public key beside an editable manifest as a trust root. Missing or invalid rules stay degraded and include a useful reason.
 
-Add an explicitly labeled demo workflow based on an inert marker and a demo-only rule. It must exercise the real user-mode scanner, quarantine storage, event persistence, and dashboard refresh. The UI labels the result as a demo detection and states that it validates the user-mode path only. It must not claim that an unsigned demo rule is trusted or that a driver blocked the file. The fixture is generated in a temporary demo location and removed during cleanup; it must not resemble an executable payload or run code.
+Protection status reports scanner availability and rules version/trust separately from the installed Windows service and minifilter driver. Local user-mode scanning must not be represented as service or kernel protection. The dashboard exposes the current limitation without showing a green protected state when the service or driver is missing.
 
-### Failure handling and observability
+### Scanner verdict handling
 
-Startup errors and dashboard states distinguish API unavailable, rules missing/invalid, scanner unavailable, service unavailable, and driver unavailable. The launcher gives a concise fallback instruction when a mode cannot start. Existing scan and quarantine state is not deleted or reset by demo startup.
+Evaluate trusted SHA-256 matches independently of optional YARA execution. If YARA is unavailable, invalid, or times out but a trusted hash block rule matches, preserve the block verdict and record the YARA limitation. If no deterministic rule matches and YARA cannot run, report `unknown` rather than `clean`. Keep current timeouts and quarantine policy; do not broaden signature semantics in this change.
+
+### Safe validation
+
+Use tests with a harmless inert marker and an explicit test ruleset to exercise the real scanner, quarantine, persistence, API responses, and browser client refresh. Do not put this test-only signature in the trusted production rules or add a synthetic detection button to the user-facing app. The signed bundled EICAR rule remains the only production demo signature until a separately signed rule update is available. Never install or execute malware for the demonstration.
+
+## Failure handling
+
+The UI and launcher distinguish API unavailable, scanner unavailable, rules absent/invalid, Windows service unavailable, and driver unavailable. Scan failures remain visible and do not become a clean result. Existing quarantine and scan history are not cleared at startup. A test result demonstrates the tested user-mode path only; it does not establish live service or kernel enforcement.
 
 ## Verification and acceptance criteria
 
-- Unit tests cover mode selection with native app present, development toolchain present, and browser fallback; backend health alone cannot mark protection ready.
-- API tests cover missing, invalid, and pinned demo rule packages and verify the resulting status/trust fields.
-- An integration test with an inert marker proves scan detection, quarantine, durable event history, and dashboard-visible status without a malware payload.
-- On the target Windows machine, `python cyber_main.py` opens a dashboard; protection status accurately identifies missing service/driver; and the safe demo workflow completes. If no native app or native build prerequisites are available, browser fallback is automatic and clearly announced.
-- Results must distinguish automated/source-level checks from live Windows service or driver enforcement. No claim of production-grade equivalence to Bitdefender is made by this demo hardening.
+- Launcher tests prove the selected mode for a usable native app, complete Tauri dev prerequisites, browser fallback, and no runnable UI; `/health` alone cannot mark protection ready.
+- API tests prove pinned signed-rule fallback, rejection of invalid/untrusted packages, and separate scanner/service/driver status.
+- Scanner tests first reproduce the YARA-failure plus matching SHA-256 case, then prove the block verdict remains; unmatched files with unavailable YARA remain unknown.
+- Integration tests with a harmless inert marker verify detection, quarantine, persistence, and API/browser-visible refresh using the actual scanner and test-only rule.
+- Frontend tests prove browser-mode HTTP and native-mode Tauri clients satisfy the same operations and report errors without mislabeling detections.
+- On the target Windows machine, `python cyber_main.py` opens a usable dashboard. A scan and quarantine workflow completes through the actual local scanner. The status page accurately reports whether the Windows service and driver are installed/loaded.
+- Report automated test evidence separately from live Windows service/driver evidence. Do not claim equivalence to Bitdefender or production readiness while signing, deployment, and kernel validation gates remain unmet.
 
 ## Out of scope
 
-- Adding Sigma ingestion or a broad third-party threat intelligence database.
-- Installing or executing real malware for a demonstration.
-- Building/signing/installing a Windows minifilter driver or claiming production readiness without the required publisher, altitude, signing, and clean-machine validation.
-- Replacing the existing dashboard design or adding unrelated AV features.
+- Sigma ingestion, broad third-party threat-intelligence feeds, or expansion of the trusted production ruleset.
+- Installing or executing real malware.
+- Building, signing, or installing the minifilter driver, allocating a production altitude, or changing driver fail-open behavior.
+- Adding a synthetic threat event or demo-only detection button to the product UI.
+- Unrelated dashboard redesign or new network/process monitoring features.
