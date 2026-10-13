@@ -206,11 +206,14 @@ def test_sensor_status_and_lifecycle_routes_use_the_managed_cyberos_service(monk
         cyberos_stop=lambda: calls.append("stop") or status.update(running=False),
     )
     monkeypatch.setattr(server, "_get_agent", lambda: agent)
+    monkeypatch.setattr(server, "_windows_sensor_service_manages_sensors", lambda: False)
+    monkeypatch.setattr(server, "_require_loopback", lambda _request: None)
 
     with TestClient(server.app) as client:
-        initial = client.get("/api/sensors/status")
-        started = client.post("/api/sensors/start")
-        stopped = client.post("/api/sensors/stop")
+        headers = {"Origin": "http://127.0.0.1:1420"}
+        initial = client.get("/api/sensors/status", headers=headers)
+        started = client.post("/api/sensors/start", headers=headers)
+        stopped = client.post("/api/sensors/stop", headers=headers)
 
     assert initial.status_code == started.status_code == stopped.status_code == 200
     assert initial.json()["queue"]["capacity"] == 128

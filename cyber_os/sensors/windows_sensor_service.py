@@ -120,9 +120,12 @@ class SensorEvent:
     remote_ip: str = ""
     network: Dict[str, Any] = field(default_factory=dict)
     file: Dict[str, Any] = field(default_factory=dict)
+    _protection_target: str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("_protection_target", None)
+        return payload
 
 
 @dataclass
@@ -262,6 +265,7 @@ def normalize_windows_event(
     remote_ip = ""
     network: Dict[str, Any] = {}
     file_data: Dict[str, Any] = {}
+    protection_target = ""
     details: Dict[str, Any] = {"windows_event_id": event_id, "record_id": raw.record_id}
 
     if channel == SECURITY and event_id == 4688:
@@ -300,6 +304,7 @@ def normalize_windows_event(
             if capability_names:
                 event_type, category = "file_activity", "file"
                 path = _first(values, "ObjectName")
+                protection_target = path
                 file_data = {"path_hash": _digest(path) if path else ""}
                 if collect_file_paths and path:
                     file_data.update({"path": path, "filename": _basename(path)})
@@ -400,6 +405,7 @@ def normalize_windows_event(
         remote_ip=remote_ip,
         network=network,
         file=file_data,
+        _protection_target=protection_target,
     )
 
 
@@ -609,6 +615,7 @@ class WindowsSensorService:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._source: Any = None
+        self._transient_targets: Dict[str, str] = {}
         self._last_event_time = ""
         self._last_error = ""
         self._channel_status: Dict[str, Dict[str, str]] = {}
@@ -702,6 +709,8 @@ class WindowsSensorService:
             conn.commit()
         with self._lock:
             self._last_event_time = event.timestamp
+            if event._protection_target:
+                self._transient_targets[event.event_id] = event._protection_target
         return "enqueued"
 
     def _enqueue(self, event: SensorEvent) -> bool:
@@ -828,12 +837,16 @@ class WindowsSensorService:
             try:
                 payload = json.loads(row["payload"])
                 event = SensorEvent(**payload)
+                with self._lock:
+                    event._protection_target = self._transient_targets.get(event.event_id, "")
                 self.callback(event)
             except Exception as exc:
                 self._last_error = f"Event callback failed ({type(exc).__name__})."
                 break
             with self._connection() as conn:
                 conn.execute("DELETE FROM queued_events WHERE event_id=?", (row["event_id"],))
+            with self._lock:
+                self._transient_targets.pop(event.event_id, None)
             delivered += 1
         return delivered
 

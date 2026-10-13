@@ -46,6 +46,8 @@ pub(crate) struct ProtectionStatus {
     pub counts: Option<ProtectionCounts>,
     pub windows_security: Option<WindowsSecurityStatus>,
     pub sensor_coverage: Option<Value>,
+    pub sensors: Option<Value>,
+    pub sensor_error: Option<String>,
     pub last_error: Option<String>,
 }
 

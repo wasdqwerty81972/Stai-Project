@@ -398,11 +398,10 @@
     "tier": "consumer",
     "access_class": "package_visibility",
     "access_requirements": [
-      "Use PackageManager queries limited by Android package-visibility rules on Android 11/API 30 and later.",
-      "Request QUERY_ALL_PACKAGES only if broad installed-app visibility is core, necessary and approved under Google Play policy; otherwise query declared packages."
+      "The scan is user initiated and limited to launchable packages visible under Android package-visibility rules; no QUERY_ALL_PACKAGES permission is declared."
     ],
-    "evidence_source": "PackageManager/PackageInfo metadata for packages visible to this app; this is a scoped snapshot, not AppOps or runtime behavior.",
-    "implementation": "planned",
+    "evidence_source": "PackageManager launcher activity query and PackageInfo package name for visible launchable applications.",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -411,22 +410,22 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Google Play treats QUERY_ALL_PACKAGES as sensitive: justify the security use case and declare it; prefer narrow package visibility when sufficient."
     ],
     "limitations": [
-      "Coverage is limited to visible packages; Google Play may reject broad inventory access or require a declaration.",
-      "Snapshot comparisons can identify observed metadata changes only between successful scans; they are not guaranteed real-time install/update events.",
-      "Declared permissions, services or install sources do not prove current app behavior."
+      "Android may filter package visibility; this snapshot includes launchable applications only and may omit non-launchable or otherwise invisible packages.",
+      "Missing or inaccessible package metadata remains unknown and is never treated as a clean security result."
     ],
-    "android_api_min": 30,
+    "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [
-      "Android 11 / API 30 and later: package visibility filtering applies."
+      "Inventory is limited to launcher activities returned by a declared intent query.",
+      "On Android 11 / API 30 and later, package visibility filtering may omit other installed applications."
     ],
-    "collector_dependency": "planned_android_collector:application_installation_and_inventory",
+    "collector_dependency": "android_visible_app_inventory_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -438,11 +437,10 @@
     "tier": "consumer",
     "access_class": "package_visibility",
     "access_requirements": [
-      "Use PackageManager queries limited by Android package-visibility rules on Android 11/API 30 and later.",
-      "Request QUERY_ALL_PACKAGES only if broad installed-app visibility is core, necessary and approved under Google Play policy; otherwise query declared packages."
+      "Installer source is returned only where Android exposes it for a package visible to this app."
     ],
-    "evidence_source": "PackageManager/PackageInfo metadata for packages visible to this app; this is a scoped snapshot, not AppOps or runtime behavior.",
-    "implementation": "planned",
+    "evidence_source": "PackageManager InstallSourceInfo or legacy installer package metadata for visible launchable applications.",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -451,22 +449,22 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Google Play treats QUERY_ALL_PACKAGES as sensitive: justify the security use case and declare it; prefer narrow package visibility when sufficient."
     ],
     "limitations": [
-      "Coverage is limited to visible packages; Google Play may reject broad inventory access or require a declaration.",
-      "Snapshot comparisons can identify observed metadata changes only between successful scans; they are not guaranteed real-time install/update events.",
-      "Declared permissions, services or install sources do not prove current app behavior."
+      "Installer metadata may be absent or unavailable and is not proof that an application is trusted.",
+      "Missing or inaccessible package metadata remains unknown and is never treated as a clean security result."
     ],
-    "android_api_min": 30,
+    "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [
-      "Android 11 / API 30 and later: package visibility filtering applies."
+      "Inventory is limited to launcher activities returned by a declared intent query.",
+      "On Android 11 / API 30 and later, package visibility filtering may omit other installed applications."
     ],
-    "collector_dependency": "planned_android_collector:application_installation_and_inventory",
+    "collector_dependency": "android_visible_app_inventory_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -558,11 +556,10 @@
     "tier": "consumer",
     "access_class": "package_visibility",
     "access_requirements": [
-      "Use PackageManager queries limited by Android package-visibility rules on Android 11/API 30 and later.",
-      "Request QUERY_ALL_PACKAGES only if broad installed-app visibility is core, necessary and approved under Google Play policy; otherwise query declared packages."
+      "The scan is user initiated and limited to launchable packages visible under Android package-visibility rules."
     ],
-    "evidence_source": "PackageManager/PackageInfo metadata for packages visible to this app; this is a scoped snapshot, not AppOps or runtime behavior.",
-    "implementation": "planned",
+    "evidence_source": "PackageManager ApplicationInfo system and updated-system flags for visible launchable applications.",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -571,22 +568,22 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Google Play treats QUERY_ALL_PACKAGES as sensitive: justify the security use case and declare it; prefer narrow package visibility when sufficient."
     ],
     "limitations": [
-      "Coverage is limited to visible packages; Google Play may reject broad inventory access or require a declaration.",
-      "Snapshot comparisons can identify observed metadata changes only between successful scans; they are not guaranteed real-time install/update events.",
-      "Declared permissions, services or install sources do not prove current app behavior."
+      "The system flag classifies package origin only; it does not establish safety or integrity.",
+      "Missing or inaccessible package metadata remains unknown and is never treated as a clean security result."
     ],
-    "android_api_min": 30,
+    "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [
-      "Android 11 / API 30 and later: package visibility filtering applies."
+      "Inventory is limited to launcher activities returned by a declared intent query.",
+      "On Android 11 / API 30 and later, package visibility filtering may omit other installed applications."
     ],
-    "collector_dependency": "planned_android_collector:application_installation_and_inventory",
+    "collector_dependency": "android_visible_app_inventory_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -594,14 +591,14 @@
     "id": "AND-017",
     "name": "Suspicious APK Metadata",
     "category": "Malware and application-risk indicators",
-    "description": "Examines accessible APK manifests and package metadata for risk indicators.",
+    "description": "Reads bounded package metadata and signer fingerprints from a user-selected APK.",
     "tier": "consumer",
     "access_class": "user_consent",
     "access_requirements": [
       "The user must select an APK or grant a SAF URI/tree; parse only bytes actually readable through that grant."
     ],
     "evidence_source": "User-selected APK bytes via ContentResolver/Storage Access Framework; inspect manifest and signing metadata locally.",
-    "implementation": "planned",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -610,19 +607,20 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Review Google Play declaration/disclosure requirements if this capability uses package visibility, notification access, VPN or other sensitive APIs."
     ],
     "limitations": [
       "Only user-selected or explicitly granted APK content is in scope; installed packages are not generally readable as arbitrary files.",
+      "The current implementation reports package metadata and signer fingerprints only; it does not establish whether an APK is safe or malicious.",
       "Analysis is a bounded foreground scan; do not execute inspected content."
     ],
     "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [],
-    "collector_dependency": "planned_android_collector:malware_and_application_risk_indicators",
+    "collector_dependency": "android_selected_apk_inspection_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -895,11 +893,10 @@
     "tier": "consumer",
     "access_class": "package_visibility",
     "access_requirements": [
-      "Use PackageManager queries limited by Android package-visibility rules on Android 11/API 30 and later.",
-      "Request QUERY_ALL_PACKAGES only if broad installed-app visibility is core, necessary and approved under Google Play policy; otherwise query declared packages."
+      "Permission declarations are read only for launchable packages visible to this app; no runtime permission is requested."
     ],
-    "evidence_source": "PackageManager/PackageInfo metadata for packages visible to this app; this is a scoped snapshot, not AppOps or runtime behavior.",
-    "implementation": "planned",
+    "evidence_source": "PackageManager PackageInfo.requestedPermissions for visible launchable applications.",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -908,22 +905,22 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Google Play treats QUERY_ALL_PACKAGES as sensitive: justify the security use case and declare it; prefer narrow package visibility when sufficient."
     ],
     "limitations": [
-      "Coverage is limited to visible packages; Google Play may reject broad inventory access or require a declaration.",
-      "Snapshot comparisons can identify observed metadata changes only between successful scans; they are not guaranteed real-time install/update events.",
-      "Declared permissions, services or install sources do not prove current app behavior."
+      "Declared permissions are not evidence that an app exercised them; Android may filter packages or permission details.",
+      "Missing or inaccessible package metadata remains unknown and is never treated as a clean security result."
     ],
-    "android_api_min": 30,
+    "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [
-      "Android 11 / API 30 and later: package visibility filtering applies."
+      "Inventory is limited to launcher activities returned by a declared intent query.",
+      "On Android 11 / API 30 and later, package visibility filtering may omit other installed applications."
     ],
-    "collector_dependency": "planned_android_collector:application_permissions_and_elevated_access",
+    "collector_dependency": "android_visible_app_inventory_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -935,11 +932,10 @@
     "tier": "consumer",
     "access_class": "package_visibility",
     "access_requirements": [
-      "Use PackageManager queries limited by Android package-visibility rules on Android 11/API 30 and later.",
-      "Request QUERY_ALL_PACKAGES only if broad installed-app visibility is core, necessary and approved under Google Play policy; otherwise query declared packages."
+      "Grant state is queried only for permissions declared by packages visible to this app; no runtime permission is requested."
     ],
-    "evidence_source": "PackageManager/PackageInfo metadata for packages visible to this app; this is a scoped snapshot, not AppOps or runtime behavior.",
-    "implementation": "planned",
+    "evidence_source": "PackageManager.checkPermission results for permissions declared by visible launchable applications.",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -948,22 +944,22 @@
       "sensitive_access"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [
       "Google Play treats QUERY_ALL_PACKAGES as sensitive: justify the security use case and declare it; prefer narrow package visibility when sufficient."
     ],
     "limitations": [
-      "Coverage is limited to visible packages; Google Play may reject broad inventory access or require a declaration.",
-      "Snapshot comparisons can identify observed metadata changes only between successful scans; they are not guaranteed real-time install/update events.",
-      "Declared permissions, services or install sources do not prove current app behavior."
+      "Grant state is a point-in-time snapshot and does not prove actual permission use; details can be unavailable or filtered.",
+      "Missing or inaccessible package metadata remains unknown and is never treated as a clean security result."
     ],
-    "android_api_min": 30,
+    "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [
-      "Android 11 / API 30 and later: package visibility filtering applies."
+      "Inventory is limited to launcher activities returned by a declared intent query.",
+      "On Android 11 / API 30 and later, package visibility filtering may omit other installed applications."
     ],
-    "collector_dependency": "planned_android_collector:application_permissions_and_elevated_access",
+    "collector_dependency": "android_visible_app_inventory_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },
@@ -3027,15 +3023,15 @@
     "id": "AND-081",
     "name": "User-Submitted URL Scanner",
     "category": "Website, URL and phishing protection",
-    "description": "Checks links submitted directly to SVS-Cyber for suspicious destinations.",
+    "description": "Checks the structure of links submitted directly to SVS-Cyber using local heuristics.",
     "tier": "consumer",
     "access_class": "user_consent",
     "access_requirements": [
-      "The user must enter/share the URL or scan it inside SVS-Cyber; this does not monitor browsing in other apps.",
-      "Local syntax and homograph checks can run offline; redirect resolution or remote reputation requires Internet access and an explicit network request."
+      "The user must enter the URL in the Tools screen; Android share-sheet and QR flows are not wired yet, and browsing in other apps is not monitored.",
+      "The current offline implementation checks URL structure only; it does not compare homograph/confusable characters, resolve redirects, or query remote reputation."
     ],
     "evidence_source": "A URL explicitly submitted/shared to SVS-Cyber or extracted by its in-app QR scanner; remote lookup results are optional and time-stamped.",
-    "implementation": "planned",
+    "implementation": "partial",
     "availability": "not_checked",
     "operation": "disabled",
     "freshness": "never_observed",
@@ -3044,17 +3040,19 @@
       "network_indicator"
     ],
     "derived": false,
-    "background_execution": "none_until_collector_exists",
+    "background_execution": "user_initiated_snapshot_only",
     "battery_impact": "unknown_until_measured",
     "distribution_restrictions": [],
     "limitations": [
       "Does not read URLs visited in Chrome or other apps.",
+      "The implemented local check does not compare Unicode confusables or provide destination reputation.",
+      "The current implementation checks URL structure only; it does not fetch the destination or verify reputation.",
       "Online resolution/reputation may be unavailable, stale or rate limited; never imply an offline check verified remote reputation."
     ],
     "android_api_min": 29,
     "android_api_max": null,
     "android_api_conditions": [],
-    "collector_dependency": "planned_android_collector:website_url_and_phishing_protection",
+    "collector_dependency": "mobile_url_local_check_v1",
     "collection_health": "not_evaluated",
     "last_successful_observation": null
   },

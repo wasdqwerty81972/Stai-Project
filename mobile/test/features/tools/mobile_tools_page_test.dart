@@ -22,6 +22,10 @@ void main() {
         invokeMethod: (method, arguments) async {
           platformCalls.add(method);
           if (collectionError != null) throw collectionError!;
+          if (method == 'selectAndInspectFile') {
+            final args = arguments! as Map<Object?, Object?>;
+            return _selectedFileResponse(apk: args['apk']! as bool);
+          }
           return response;
         },
         receiveEvents: () => const Stream<Object?>.empty(),
@@ -44,9 +48,11 @@ void main() {
       expect(find.text(tool.name), findsOneWidget);
       expect(find.text(tool.summary), findsOneWidget);
       final card = find.ancestor(of: find.text(tool.name), matching: find.byType(Card));
-      final status = tool.implementationStatus == MobileToolImplementationStatus.partial
-          ? 'Partial implementation'
-          : 'Planned';
+      final status = switch (tool.implementationStatus) {
+        MobileToolImplementationStatus.partial => 'Partial implementation',
+        MobileToolImplementationStatus.planned => 'Planned',
+        MobileToolImplementationStatus.implemented => 'Implemented',
+      };
       expect(find.descendant(of: card, matching: find.text(status)), findsOneWidget);
       expect(find.descendant(of: card, matching: find.byType(FilledButton)), findsNothing);
     }
@@ -182,15 +188,81 @@ void main() {
     expect(find.text('System app: No'), findsOneWidget);
     expect(find.text('Declared permissions'), findsOneWidget);
     expect(find.text('Granted permissions'), findsOneWidget);
+    expect(find.text('Grant state: Available'), findsOneWidget);
     expect(find.text('android.permission.READ_CONTACTS'), findsOneWidget);
     expect(find.textContaining('does not prove it was used'), findsOneWidget);
     expect(find.textContaining('malicious'), findsNothing);
     expect(find.text('Remediate'), findsNothing);
   });
 
+  testWidgets('checks URL structure locally and clears submitted URL text',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: MobileToolsPage(session: session)),
+    ));
+
+    await tester.ensureVisible(find.byKey(const ValueKey('mobile-url-input')));
+    await tester.enterText(find.byKey(const ValueKey('mobile-url-input')),
+        'https://alice:secret@example.com/path?token=private');
+    await tester.tap(find.text('Check URL structure'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Host: example.com'), findsOneWidget);
+    expect(find.textContaining('credentials present'), findsOneWidget);
+    expect(find.textContaining('secret'), findsNothing);
+    expect(find.textContaining('private'), findsNothing);
+    expect(find.text('No safe or malicious verdict is produced.'), findsOneWidget);
+    expect(platformCalls, isEmpty);
+    final field = tester.widget<TextField>(
+      find.byKey(const ValueKey('mobile-url-input')),
+    );
+    expect(field.controller!.text, isEmpty);
+  });
+
+  testWidgets('opens the selected APK flow only on user action and shows bounded metadata',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: MobileToolsPage(session: session)),
+    ));
+    expect(platformCalls, isEmpty);
+
+    await tester.ensureVisible(find.text('Choose APK'));
+    await tester.tap(find.text('Choose APK'));
+    await tester.pumpAndSettle();
+
+    expect(platformCalls, ['selectAndInspectFile']);
+    expect(find.text('APK inspection result'), findsOneWidget);
+    expect(find.text('Status: Complete'), findsOneWidget);
+    expect(find.text('Package: org.example.testapp'), findsOneWidget);
+    expect(find.textContaining('Certificate SHA-256:'), findsOneWidget);
+    expect(find.textContaining('not a safe or malicious verdict'), findsOneWidget);
+    expect(find.textContaining('content://'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('runs permission review only from the current visible snapshot',
+      (tester) async {
+    await session.collectVisibleApplications();
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: MobileToolsPage(session: session)),
+    ));
+
+    await tester.ensureVisible(find.text('Review permission posture'));
+    await tester.tap(find.text('Review permission posture'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Permission review · 1 visible apps'), findsOneWidget);
+    expect(find.textContaining('Contacts permission declared'), findsOneWidget);
+    expect(find.textContaining('review; they do not show how an app used'), findsOneWidget);
+    expect(find.textContaining('malicious'), findsNothing);
+    expect(platformCalls, ['collectVisibleApplications']);
+  });
+
   testWidgets('labels a truncated inventory and distinguishes an empty snapshot',
       (tester) async {
     response['truncated'] = true;
+    final packageEvent = response['events']![0] as Map<String, Object?>;
+    (packageEvent['evidence'] as Map<String, Object?>)['truncated'] = true;
     await session.collectVisibleApplications();
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(body: MobileToolsPage(session: session)),
@@ -235,6 +307,7 @@ Map<String, Object?> _inventoryResponse({List<Map<String, Object?>>? application
     'scope': 'launchable_packages_visible_to_this_app',
     'visibilityMayBeFiltered': true,
     'truncated': false,
+    'permissionsTruncated': false,
     'observedAtEpochMs': observedAt,
     'applications': applications ?? [
       {
@@ -249,24 +322,76 @@ Map<String, Object?> _inventoryResponse({List<Map<String, Object?>>? application
           'android.permission.READ_CONTACTS',
         ],
         'grantedPermissions': ['android.permission.INTERNET'],
+        'permissionGrantStateAvailable': true,
       },
     ],
     'events': [
-      {
-        'contractVersion': 1,
-        'eventId': 'visible-app-test',
-        'capabilityId': 'AND-012',
-        'eventType': 'observation',
-        'occurredAtEpochMs': observedAt,
-        'observedAtEpochMs': observedAt,
-        'availability': 'available',
-        'operation': 'completed',
-        'freshness': 'fresh',
-        'continuous': false,
-        'evidence': {'applicationCount': applications?.length ?? 1},
-      },
+      for (final capabilityId in ['AND-012', 'AND-013', 'AND-016', 'AND-025', 'AND-026'])
+        {
+          'contractVersion': 1,
+          'eventId': 'visible-app-test-$capabilityId',
+          'capabilityId': capabilityId,
+          'eventType': 'observation',
+          'occurredAtEpochMs': observedAt,
+          'observedAtEpochMs': observedAt,
+          'availability': 'available',
+          'operation': 'completed',
+          'freshness': 'fresh',
+          'continuous': false,
+          'evidence': capabilityId == 'AND-012'
+              ? {
+                  'scope': 'launchable_packages_visible_to_this_app',
+                  'inventorySchemaVersion': 1,
+                  'visibilityMayBeFiltered': true,
+                  'truncated': false,
+                  'permissionsTruncated': false,
+                  'packageCount': applications?.length ?? 1,
+                  'applications': applications ?? [
+                    {
+                      'packageName': 'org.example.calendar',
+                      'label': 'Example calendar',
+                      'versionName': '2.1',
+                      'versionCode': 21,
+                      'installerPackageName': null,
+                      'isSystemApp': false,
+                      'requestedPermissions': [
+                        'android.permission.INTERNET',
+                        'android.permission.READ_CONTACTS',
+                      ],
+                      'grantedPermissions': ['android.permission.INTERNET'],
+                      'permissionGrantStateAvailable': true,
+                    },
+                  ],
+                }
+              : {
+                  'scope': 'launchable_packages_visible_to_this_app',
+                  'packageCount': applications?.length ?? 1,
+                },
+        },
     ],
   };
 }
+
+Map<String, Object?> _selectedFileResponse({required bool apk}) => {
+      'contractVersion': 1,
+      'apkRequested': apk,
+      'status': 'complete',
+      'contentType': apk ? 'application/vnd.android.package-archive' : 'text/plain',
+      'byteSize': 24,
+      'bytesRead': 24,
+      'maxBytes': 64 * 1024 * 1024,
+      'sha256': 'a' * 64,
+      'metadataTruncated': false,
+      'apkMetadata': apk
+          ? {
+              'packageName': 'org.example.testapp',
+              'versionName': '1.2',
+              'versionCode': 12,
+              'requestedPermissions': ['android.permission.CAMERA'],
+              'signatureStatus': 'available',
+              'certificateSha256': ['b' * 64],
+            }
+          : null,
+    };
 import 'dart:async';
 

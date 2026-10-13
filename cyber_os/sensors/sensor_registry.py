@@ -258,6 +258,10 @@ def build_runtime_registry(
     normalized_platform = platform_name.casefold()
     phase1_runtime: dict[int, Mapping[str, Any]] = {}
     for runtime in runtime_capabilities:
+        registry_id = runtime.get("registry_id")
+        if isinstance(registry_id, int) and 1 <= registry_id <= 256:
+            phase1_runtime[registry_id] = runtime
+            continue
         phase1_id = runtime.get("id")
         if isinstance(phase1_id, int) and phase1_id in PHASE1_TO_REGISTRY_ID:
             phase1_runtime[PHASE1_TO_REGISTRY_ID[phase1_id]] = runtime

@@ -1,0 +1,1 @@
+{"version":"svs-eicar-demo-1","rules":[{"id":"eicar-test-file","kind":"sha256","value":"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f","action":"block","confidence":"high"}]}

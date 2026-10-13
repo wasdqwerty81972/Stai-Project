@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../core/platform/mobile_platform_client.dart';
+import '../../core/apps/application_permission_analyzer.dart';
+import '../../core/apps/visible_application.dart';
+import '../../core/files/selected_file_inspection.dart';
+import '../../core/links/mobile_url_local_check.dart';
 import '../../core/platform/mobile_security_session.dart';
 import '../../core/tools/mobile_tool_definition.dart';
 import '../../core/tools/mobile_tool_registry.dart';
@@ -24,6 +27,44 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
   bool _reviewing = false;
   bool _collecting = false;
   String? _scanError;
+  final _urlController = TextEditingController();
+  MobileUrlCheckResult? _urlResult;
+  ApplicationPermissionAnalysis? _permissionAnalysis;
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  void _checkUrl() {
+    final result = MobileUrlLocalCheck.analyze(_urlController.text);
+    setState(() {
+      _urlResult = result;
+      // URL contents may contain private paths or tokens. Keep only the
+      // structural result in memory and clear the submitted string promptly.
+      _urlController.clear();
+    });
+  }
+
+  void _reviewPermissionPosture() {
+    final session = widget.session;
+    final observedAt = session.visibleApplicationsObservedAt;
+    if (observedAt == null) return;
+    final snapshot = VisibleApplicationCollection(
+      contractVersion: 1,
+      observedAt: observedAt,
+      scope: VisibleApplicationCollection.supportedScope,
+      visibilityMayBeFiltered: session.visibleApplicationsVisibilityMayBeFiltered,
+      truncated: session.visibleApplicationsTruncated,
+      permissionsTruncated: session.visibleApplicationsPermissionsTruncated,
+      applications: session.visibleApplications,
+      events: const [],
+    );
+    setState(() {
+      _permissionAnalysis = const ApplicationPermissionAnalyzer().analyze(snapshot);
+    });
+  }
 
   Future<void> _reviewInventory() async {
     if (_reviewing || _collecting) return;
@@ -76,6 +117,7 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
     setState(() {
       _collecting = false;
       _scanError = error;
+      if (error == null) _permissionAnalysis = null;
     });
   }
 
@@ -124,7 +166,7 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
                         style: TextStyle(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 5),
                     Text(
-                      'The baseline and one local posture check are partially available from Home. Review visible apps below to collect a limited inventory. Other tools remain planned.',
+                      'The device baseline and visible app inventory are partially available. The inventory also includes a limited permission snapshot for the launchable apps Android makes visible.',
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                         fontSize: 13,
@@ -137,6 +179,10 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
             ),
             const SizedBox(height: 12),
             _buildInventory(context),
+            const SizedBox(height: 12),
+            _buildSelectedFileInspection(context),
+            const SizedBox(height: 12),
+            _buildUrlCheck(context),
             const SizedBox(height: 12),
             for (final tool in mobileToolRegistry) ...[
               _ToolCard(tool: tool),
@@ -188,12 +234,188 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
                 const SizedBox(height: 4),
                 const Text('Collection limit reached; this snapshot is truncated.'),
               ],
+              if (session.visibleApplicationsPermissionsTruncated) ...[
+                const SizedBox(height: 4),
+                const Text('Some applications declared more permissions than the display limit.'),
+              ],
               if (session.visibleApplications.isEmpty) ...[
                 const SizedBox(height: 8),
                 const Text('No launchable apps were returned in this visible scope.'),
               ],
               for (final application in session.visibleApplications)
                 _VisibleApplicationTile(application: application),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _reviewPermissionPosture,
+                  icon: const Icon(Icons.rule_outlined),
+                  label: const Text('Review permission posture'),
+                ),
+              ),
+              if (_permissionAnalysis?.observedAt == observedAt)
+                _PermissionAnalysisView(analysis: _permissionAnalysis!),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUrlCheck(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final result = _urlResult;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Check a URL', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(
+              'Checks URL structure on this device. It does not open the link, resolve its host, or verify reputation. The submitted text is cleared after analysis.',
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey('mobile-url-input'),
+              controller: _urlController,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: 'URL to inspect',
+                hintText: 'https://example.com',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _checkUrl,
+                icon: const Icon(Icons.manage_search),
+                label: const Text('Check URL structure'),
+              ),
+            ),
+            if (result != null) ...[
+              const Divider(height: 24),
+              Text(result.isValid ? 'Structure parsed' : 'Could not parse URL',
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              if (result.host != null) Text('Host: ${result.host}'),
+              if (result.scheme != null) Text('Scheme: ${result.scheme}'),
+              const SizedBox(height: 4),
+              Text(result.explanation, style: TextStyle(color: colors.onSurfaceVariant, height: 1.4)),
+              for (final signal in result.signals) ...[
+                const SizedBox(height: 8),
+                Text(signal.code.replaceAll('_', ' '), style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text(signal.explanation, style: TextStyle(color: colors.onSurfaceVariant, height: 1.4)),
+              ],
+              const SizedBox(height: 6),
+              const Text('No safe or malicious verdict is produced.',
+                  style: TextStyle(fontSize: 12)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSelectedFileInspection(BuildContext context) {
+    final session = widget.session;
+    final result = session.selectedFileInspection;
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Inspect a selected file',
+                style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(
+              'Choose one file in Android’s system picker. Analysis in SVS-Cyber is bounded to 64 MiB and stays on-device. A cloud-backed provider may download the selected document. APKs are parsed as data only; nothing is installed, executed, or uploaded by SVS-Cyber.',
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: session.inspectingSelectedFile
+                      ? null
+                      : () => session.selectAndInspectFile(apk: false),
+                  icon: const Icon(Icons.insert_drive_file_outlined),
+                  label: const Text('Choose file'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: session.inspectingSelectedFile
+                      ? null
+                      : () => session.selectAndInspectFile(apk: true),
+                  icon: const Icon(Icons.android),
+                  label: const Text('Choose APK'),
+                ),
+              ],
+            ),
+            if (session.inspectingSelectedFile) ...[
+              const SizedBox(height: 8),
+              const LinearProgressIndicator(),
+              const SizedBox(height: 5),
+              const Text('Waiting for selection or bounded local inspection…'),
+            ],
+            if (session.selectedFileInspectionError case final error?) ...[
+              const SizedBox(height: 8),
+              Text(error, style: TextStyle(color: colors.error)),
+              if (result != null)
+                const Text('The previous inspection result is still shown below.'),
+            ],
+            if (result != null) ...[
+              const Divider(height: 24),
+              Text(
+                session.selectedFileInspectionWasApk == true
+                    ? 'APK inspection result'
+                    : 'File inspection result',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 5),
+              Text('Status: ${_fileInspectionStatus(result.status)}'),
+              if (result.contentType != null) Text('Content type: ${result.contentType}'),
+              if (result.byteSize != null)
+                Text('Bytes read: ${result.byteSize}')
+              else
+                Text('Bytes read before limit or timeout: ${result.bytesRead}'),
+              if (result.sha256 != null) ...[
+                const SizedBox(height: 8),
+                const Text('SHA-256', style: TextStyle(fontWeight: FontWeight.w600)),
+                SelectableText(result.sha256!, style: const TextStyle(fontSize: 12)),
+              ],
+              if (result.apkMetadata case final metadata?) ...[
+                const SizedBox(height: 10),
+                const Text('Package metadata', style: TextStyle(fontWeight: FontWeight.w600)),
+                Text('Package: ${metadata.packageName}'),
+                Text('Version: ${metadata.versionName ?? 'Unknown'} (${metadata.versionCode})'),
+                Text('Signer information: ${metadata.signatureStatus}'),
+                for (final digest in metadata.certificateSha256)
+                  SelectableText('Certificate SHA-256: $digest', style: const TextStyle(fontSize: 12)),
+                if (metadata.requestedPermissions.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  const Text('Declared permissions'),
+                  for (final permission in metadata.requestedPermissions)
+                    Text(permission, style: const TextStyle(fontSize: 12)),
+                ],
+                if (result.metadataTruncated)
+                  const Text('Some APK metadata was omitted at the display limit.'),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                result.status == SelectedFileInspectionStatus.unsupported
+                    ? 'The file was hashed, but Android could not parse supported APK metadata.'
+                    : 'A digest or signer fingerprint is identifying data, not a safe or malicious verdict.',
+                style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12, height: 1.4),
+              ),
             ],
           ],
         ),
@@ -201,6 +423,73 @@ class _MobileToolsPageState extends State<MobileToolsPage> {
     );
   }
 }
+
+String _fileInspectionStatus(SelectedFileInspectionStatus status) => switch (status) {
+      SelectedFileInspectionStatus.complete => 'Complete',
+      SelectedFileInspectionStatus.unsupported => 'Metadata unsupported',
+      SelectedFileInspectionStatus.overLimit => 'Stopped at the size limit',
+      SelectedFileInspectionStatus.timedOut => 'Stopped at the time limit',
+    };
+
+class _PermissionAnalysisView extends StatelessWidget {
+  const _PermissionAnalysisView({required this.analysis});
+
+  final ApplicationPermissionAnalysis analysis;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Permission review · ${analysis.applications.length} visible app${analysis.applications.length == 1 ? '' : 's'}',
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('Based on snapshot at ${analysis.observedAt.toLocal()}'),
+            const SizedBox(height: 5),
+            const Text('Signals describe declared access for review; they do not show how an app used a permission or establish that it is unsafe.'),
+            for (final caveat in analysis.caveats)
+              Text('Scope note: ${_permissionCaveatLabel(caveat)}'),
+            const SizedBox(height: 8),
+            for (final review in analysis.applications)
+              if (review.signals.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(review.label, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      for (final signal in review.signals)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text('${signal.title} · ${_grantStateLabel(signal.grantState)}. ${signal.explanation}'),
+                        ),
+                      for (final caveat in review.caveats)
+                        Text('Scope note: ${_permissionCaveatLabel(caveat)}'),
+                    ],
+                  ),
+                ),
+            if (analysis.applications.every((review) => review.signals.isEmpty))
+              const Text('No permissions in the reviewed groups were returned for these visible apps.'),
+          ],
+        ),
+      );
+}
+
+String _grantStateLabel(PermissionGrantState state) => switch (state) {
+      PermissionGrantState.granted => 'Listed permissions granted',
+      PermissionGrantState.partiallyGranted => 'Partially granted',
+      PermissionGrantState.notGranted => 'None of the listed permissions granted',
+      PermissionGrantState.unknown => 'Grant state unknown',
+    };
+
+String _permissionCaveatLabel(ApplicationPermissionCaveat caveat) => switch (caveat) {
+      ApplicationPermissionCaveat.grantStateUnavailable => 'some grant states are unavailable',
+      ApplicationPermissionCaveat.packageVisibilityMayBeFiltered => 'Android may hide apps from this inventory',
+      ApplicationPermissionCaveat.applicationListTruncated => 'the app list is truncated',
+      ApplicationPermissionCaveat.permissionListTruncated => 'some permission lists are truncated',
+      ApplicationPermissionCaveat.installerUnknown => 'installer metadata is unavailable for some apps',
+      ApplicationPermissionCaveat.specialAccessStateUnavailable => 'special app access state is unknown',
+    };
 
 class _VisibleApplicationTile extends StatelessWidget {
   const _VisibleApplicationTile({required this.application});
@@ -221,6 +510,8 @@ class _VisibleApplicationTile extends StatelessWidget {
           Text('Installer: ${application.installerPackageName ?? 'Unknown or unavailable'}'),
           const SizedBox(height: 4),
           Text('System app: ${application.isSystemApp ? 'Yes' : 'No'}'),
+          const SizedBox(height: 4),
+          Text('Grant state: ${application.permissionGrantStateAvailable ? 'Available' : 'Unknown'}'),
           const SizedBox(height: 12),
           const Text('Declared permissions', style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),

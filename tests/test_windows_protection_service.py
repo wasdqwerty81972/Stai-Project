@@ -59,12 +59,12 @@ def test_quarantine_count_requires_verified_move(tmp_path: Path) -> None:
     assert (verdict.status, verdict.action) == ("detected", "block")
 
     detection = store.list_threats()[0]
-    result = svc.quarantine_detection(detection.detection_id)
+    items = svc.list_quarantine()
 
-    assert result.success is True
+    assert len(items) == 1
     assert store.get_status().counts == {"detected": 1, "blocked": 0, "quarantined": 1}
     assert not sample.exists()  # moved out of its original location
-    assert result.item is not None and Path(result.item.quarantined_path).exists()
+    assert Path(items[0].quarantined_path).exists()
 
 
 def test_detection_callback_runs_after_detection_is_durable(tmp_path: Path) -> None:
@@ -148,13 +148,13 @@ def test_failed_move_does_not_count_as_quarantined(
     sample = tmp_path / "sample.exe"
     sample.write_bytes(_MARKER)
     svc, store = _service(tmp_path, _block_ruleset(_MARKER))
-    svc.scan_file(sample)
-    detection = store.list_threats()[0]
-
     def _boom(src: Path, dst: Path) -> None:
         raise OSError("simulated move failure")
 
     monkeypatch.setattr(quarantine_mod, "_atomic_move", _boom)
+
+    svc.scan_file(sample)
+    detection = store.list_threats()[0]
 
     result = svc.quarantine_detection(detection.detection_id)
 
@@ -168,10 +168,9 @@ def test_restore_rescans_and_refuses_detected_file(tmp_path: Path) -> None:
     sample.write_bytes(_MARKER)
     svc, store = _service(tmp_path, _block_ruleset(_MARKER))
     svc.scan_file(sample)
-    detection = store.list_threats()[0]
-    quarantined = svc.quarantine_detection(detection.detection_id)
-    assert quarantined.success is True
-    item_id = quarantined.item.item_id
+    quarantined = svc.list_quarantine()
+    assert len(quarantined) == 1
+    item_id = quarantined[0].item_id
 
     # The ruleset still flags the content as a high-confidence block, so a
     # restore must rescan and refuse (never re-expose malware).

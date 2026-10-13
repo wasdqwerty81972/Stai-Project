@@ -44,8 +44,8 @@ export function Navigation({
           <span />
         </div>
         <div className="brand-copy">
-          <span className="brand-name">STAI</span>
-          <span className="brand-product">PROTECTION</span>
+          <span className="brand-name">SVS</span>
+          <span className="brand-product">CYBER</span>
         </div>
       </div>
 
@@ -77,7 +77,7 @@ export function Navigation({
           <span>Device data stays here</span>
         </div>
       </div>
-      <div className="sidebar-version">STAI · WINDOWS</div>
+      <div className="sidebar-version">SVS CYBER · WINDOWS</div>
     </aside>
   );
 }

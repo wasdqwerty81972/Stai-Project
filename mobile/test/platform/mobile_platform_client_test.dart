@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:svs_cyber_mobile/core/detection/detection_models.dart';
+import 'package:svs_cyber_mobile/core/files/selected_file_inspection.dart';
 import 'package:svs_cyber_mobile/core/platform/mobile_platform_client.dart';
 
 const _nativeEvent = <String, Object?>{
@@ -29,6 +30,31 @@ void main() {
       invokeMethod: transport.invoke,
       receiveEvents: transport.receive,
     );
+  });
+
+  test('selected document cancellation is distinct from platform failure', () async {
+    expect(await client.selectAndInspectFile(apk: true), isNull);
+    expect(transport.lastArguments, {'apk': true});
+    transport.error = PlatformException(code: 'FILE_INSPECTION_FAILED', message: 'private URI');
+    await expectLater(client.selectAndInspectFile(apk: false),
+      throwsA(isA<MobilePlatformException>()
+        .having((error) => error.code, 'code', 'file_inspection_failed')
+        .having((error) => error.message, 'message', isNot(contains('private URI')))));
+  });
+
+  test('selected file uses strict bounded result parsing', () async {
+    transport.responses['selectAndInspectFile'] = {
+      'contractVersion': 1, 'apkRequested': false, 'status': 'complete',
+      'contentType': null, 'byteSize': 0, 'bytesRead': 0, 'maxBytes': 67108864,
+      'sha256': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      'apkMetadata': null, 'metadataTruncated': false,
+    };
+    final result = await client.selectAndInspectFile(apk: false);
+    expect(result!.status, SelectedFileInspectionStatus.complete);
+    expect(result.byteSize, 0);
+    await expectLater(client.selectAndInspectFile(apk: true), throwsFormatException);
+    transport.responses['selectAndInspectFile'] = {'contractVersion': 1};
+    await expectLater(client.selectAndInspectFile(apk: false), throwsFormatException);
   });
 
   test('validates the native v1 contract and rejects version mismatch', () async {
@@ -63,34 +89,48 @@ void main() {
 
   test('parses a bounded visible-app inventory and its durable observation events',
       () async {
+    const apps = [
+      {
+        'packageName': 'com.example.reader',
+        'label': 'Reader',
+        'versionName': '2.4',
+        'versionCode': 24,
+        'installerPackageName': 'com.android.vending',
+        'isSystemApp': false,
+        'requestedPermissions': ['android.permission.CAMERA'],
+        'grantedPermissions': [],
+        'permissionGrantStateAvailable': true,
+      },
+    ];
     transport.responses['collectVisibleApplicationInventory'] = {
       'contractVersion': 1,
       'observedAtEpochMs': 1791763200000,
       'scope': 'launchable_packages_visible_to_this_app',
       'visibilityMayBeFiltered': true,
       'truncated': false,
-      'applications': [
-        {
-          'packageName': 'com.example.reader',
-          'label': 'Reader',
-          'versionName': '2.4',
-          'versionCode': 24,
-          'installerPackageName': 'com.android.vending',
-          'isSystemApp': false,
-          'requestedPermissions': ['android.permission.CAMERA'],
-          'grantedPermissions': [],
-        },
-      ],
+      'permissionsTruncated': false,
+      'applications': apps,
       'events': [
-        {
-          ..._nativeEvent,
-          'eventId': 'inventory-package-identifiers',
-          'capabilityId': 'AND-012',
-          'evidence': {
-            'scope': 'launchable_packages_visible_to_this_app',
-            'packageCount': 1,
+        for (final capabilityId in ['AND-012', 'AND-013', 'AND-016', 'AND-025', 'AND-026'])
+          {
+            ..._nativeEvent,
+            'eventId': 'inventory-$capabilityId',
+            'capabilityId': capabilityId,
+            'evidence': capabilityId == 'AND-012'
+                ? {
+                    'scope': 'launchable_packages_visible_to_this_app',
+                    'inventorySchemaVersion': 1,
+                    'visibilityMayBeFiltered': true,
+                    'truncated': false,
+                    'permissionsTruncated': false,
+                    'packageCount': 1,
+                    'applications': apps,
+                  }
+                : {
+                    'scope': 'launchable_packages_visible_to_this_app',
+                    'packageCount': 1,
+                  },
           },
-        },
       ],
     };
 
@@ -102,7 +142,10 @@ void main() {
     expect(inventory.applications.single.packageName, 'com.example.reader');
     expect(inventory.applications.single.requestedPermissions,
         ['android.permission.CAMERA']);
-    expect(inventory.events.single.capabilityId, 'AND-012');
+    expect(
+      inventory.events.where((event) => event.capabilityId == 'AND-012').single,
+      isA<MobileEvent>(),
+    );
   });
 
   test('rejects inventory records with granted permissions not requested', () async {
@@ -112,6 +155,7 @@ void main() {
       'scope': 'launchable_packages_visible_to_this_app',
       'visibilityMayBeFiltered': true,
       'truncated': false,
+      'permissionsTruncated': false,
       'applications': [
         {
           'packageName': 'com.example.reader',
@@ -122,9 +166,57 @@ void main() {
           'isSystemApp': false,
           'requestedPermissions': [],
           'grantedPermissions': ['android.permission.CAMERA'],
+          'permissionGrantStateAvailable': true,
         },
       ],
       'events': [],
+    };
+
+    await expectLater(
+      client.collectVisibleApplicationInventory(),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('rejects a package event that contradicts the returned snapshot', () async {
+    const app = {
+      'packageName': 'com.example.reader',
+      'label': 'Reader',
+      'versionName': null,
+      'versionCode': 0,
+      'installerPackageName': null,
+      'isSystemApp': false,
+      'requestedPermissions': <String>[],
+      'grantedPermissions': <String>[],
+      'permissionGrantStateAvailable': true,
+    };
+    transport.responses['collectVisibleApplicationInventory'] = {
+      'contractVersion': 1,
+      'observedAtEpochMs': 1791763200000,
+      'scope': 'launchable_packages_visible_to_this_app',
+      'visibilityMayBeFiltered': true,
+      'truncated': false,
+      'permissionsTruncated': false,
+      'applications': [app],
+      'events': [
+        for (final capabilityId in ['AND-012', 'AND-013', 'AND-016', 'AND-025', 'AND-026'])
+          {
+            ..._nativeEvent,
+            'eventId': 'inventory-$capabilityId',
+            'capabilityId': capabilityId,
+            'evidence': {
+              'scope': 'launchable_packages_visible_to_this_app',
+              'packageCount': 1,
+              if (capabilityId == 'AND-012') ...{
+                'inventorySchemaVersion': 1,
+                'visibilityMayBeFiltered': true,
+                'truncated': false,
+                'permissionsTruncated': false,
+                'applications': const <Map<String, Object?>>[],
+              },
+            },
+          },
+      ],
     };
 
     await expectLater(
@@ -212,6 +304,8 @@ Map<String, Object?> _contract() => {
       'methods': [
         'getContract',
         'collectDeviceBaseline',
+        'collectVisibleApplicationInventory',
+        'selectAndInspectFile',
         'readEvents',
         'getJournalStatus',
       ],

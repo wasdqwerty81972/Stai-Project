@@ -4,8 +4,8 @@ import 'investigator_workflow.dart';
 
 const investigatorWorkflowRegistryVersion = 1;
 
-/// Six bounded investigator flows. These are workflow metadata only; app
-/// services must supply implementation in a later, reviewed phase.
+/// Bounded investigator workflows. Metadata records the required user steps;
+/// runtime support is provided only by the explicitly wired mobile services.
 const investigatorWorkflowRegistry = <InvestigatorWorkflowDefinition>[
   InvestigatorWorkflowDefinition(
     id: 'mobile.workflow.device_posture_review',
@@ -53,11 +53,11 @@ const investigatorWorkflowRegistry = <InvestigatorWorkflowDefinition>[
   InvestigatorWorkflowDefinition(
     id: 'mobile.workflow.selected_file_triage',
     name: 'Selected file triage',
-    summary: 'Hash and inspect one user-selected file within fixed resource limits.',
+    summary: 'Compute a bounded local SHA-256 digest for one user-selected file.',
     phase: InvestigatorWorkflowPhase.consumerMvp,
     steps: [
       InvestigatorWorkflowStep(id: 'select_file', summary: 'User chooses one file URI.', requiresUserSelection: true),
-      InvestigatorWorkflowStep(id: 'inspect_file', summary: 'Run bounded local checks.', toolId: 'mobile.selected_file_inspection'),
+      InvestigatorWorkflowStep(id: 'inspect_file', summary: 'Compute a bounded digest; do not extract or execute content.', toolId: 'mobile.selected_file_inspection'),
     ],
     networkPolicy: InvestigatorNetworkPolicy.localOnly,
     dataSensitivity: MobileDataSensitivity.high,
@@ -67,10 +67,10 @@ const investigatorWorkflowRegistry = <InvestigatorWorkflowDefinition>[
   InvestigatorWorkflowDefinition(
     id: 'mobile.workflow.link_triage',
     name: 'Link triage',
-    summary: 'Check a URL supplied directly or through Android share; do not fetch it.',
+    summary: 'Check a URL entered in the app; no browser or share-sheet integration is active.',
     phase: InvestigatorWorkflowPhase.consumerMvp,
     steps: [
-      InvestigatorWorkflowStep(id: 'submit_url', summary: 'User submits or shares the link.', requiresUserSelection: true),
+      InvestigatorWorkflowStep(id: 'submit_url', summary: 'User enters the URL in the Tools screen.', requiresUserSelection: true),
       InvestigatorWorkflowStep(id: 'local_url_check', summary: 'Run local URL structure checks.', toolId: 'mobile.url_local_check'),
     ],
     networkPolicy: InvestigatorNetworkPolicy.localOnly,

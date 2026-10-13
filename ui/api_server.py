@@ -17,6 +17,7 @@ import ipaddress
 import json
 import os
 import threading
+import uuid
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,70 @@ _agent_lock = threading.Lock()
 _active_runs: dict[str, threading.Event] = {}
 _active_runs_lock = threading.Lock()
 _agent_run_lock = threading.Lock()
+_sensor_ai_task: asyncio.Task[Any] | None = None
+
+
+def _windows_sensor_service_manages_sensors() -> bool:
+    return os.name == "nt"
+
+
+def _protection_pipe_request(operation: str, payload: dict[str, Any]) -> Any:
+    from cyber_os.protection.windows_pipe_client import request_protection_service
+
+    return request_protection_service(operation, payload)
+
+
+async def _consume_sensor_ai_escalations() -> None:
+    """Deliver durable service warnings to configured, tool-free AI analysis."""
+    worker_id = f"api-{uuid.uuid4().hex}"
+    while True:
+        try:
+            claimed = await asyncio.to_thread(
+                _protection_pipe_request,
+                "claim_sensor_ai_escalations",
+                {"worker_id": worker_id},
+            )
+            for warning in claimed if isinstance(claimed, list) else []:
+                try:
+                    agent = await asyncio.to_thread(_get_agent)
+                    result = await asyncio.to_thread(agent.analyze_sensor_warning, warning)
+                    await asyncio.to_thread(
+                        _protection_pipe_request,
+                        "complete_sensor_ai_escalation",
+                        {"event_id": warning["event_id"], "worker_id": worker_id, "result": result},
+                    )
+                except Exception as exc:
+                    event_bus.publish(AgentEvent(
+                        type="sensor_ai_analysis_error",
+                        source="sensor_response",
+                        status="retry_pending",
+                        message="Sensor warning AI analysis will retry when available.",
+                        data={"error_type": type(exc).__name__},
+                    ))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The durable service queue owns retry; a broken API or unavailable
+            # AI provider cannot interrupt sensor collection.
+            pass
+        await asyncio.sleep(2.0)
+
+
+async def _start_sensor_ai_consumer() -> None:
+    global _sensor_ai_task
+    if os.name == "nt" and (_sensor_ai_task is None or _sensor_ai_task.done()):
+        _sensor_ai_task = asyncio.create_task(_consume_sensor_ai_escalations())
+
+
+async def _stop_sensor_ai_consumer() -> None:
+    global _sensor_ai_task
+    if _sensor_ai_task is not None:
+        _sensor_ai_task.cancel()
+        try:
+            await _sensor_ai_task
+        except asyncio.CancelledError:
+            pass
+        _sensor_ai_task = None
 
 
 def _get_agent() -> Any:
@@ -205,6 +270,8 @@ def _session_conversation_history(session_id: str) -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="CyberAgent API")
+app.on_event("startup")(_start_sensor_ai_consumer)
+app.on_event("shutdown")(_stop_sensor_ai_consumer)
 
 COMMUNICATIONS_ALLOWED_ORIGINS = {
     "http://localhost:3000",
@@ -213,6 +280,8 @@ COMMUNICATIONS_ALLOWED_ORIGINS = {
     "http://127.0.0.1:3000",
     "http://127.0.0.1:6763",
     "http://127.0.0.1:8080",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
 }
 
 SUPPORTED_CHAT_MODELS = {
@@ -832,14 +901,27 @@ def _sensor_status_with_registry(service: Any) -> dict[str, Any]:
 
 
 @app.get("/api/sensors/status")
-def sensor_status() -> dict[str, Any]:
+def sensor_status(request: Request) -> dict[str, Any]:
     """Report Phase 1 runtime health and the complete logical sensor registry."""
+    _require_loopback(request)
+    if _windows_sensor_service_manages_sensors():
+        try:
+            protection = _protection_pipe_request("get_status", {})
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Windows sensor service is unavailable") from exc
+        sensors = protection.get("sensors") if isinstance(protection, dict) else None
+        if not isinstance(sensors, dict):
+            raise HTTPException(status_code=503, detail="Windows sensor status is unavailable")
+        return sensors
     return _sensor_status_with_registry(_get_sensor_service())
 
 
 @app.post("/api/sensors/start")
-def start_sensor_monitoring() -> dict[str, Any]:
+def start_sensor_monitoring(request: Request) -> dict[str, Any]:
     """Start passive telemetry collection through CyberOS's managed lifecycle."""
+    _require_loopback(request)
+    if _windows_sensor_service_manages_sensors():
+        raise HTTPException(status_code=409, detail="Windows sensor lifecycle is managed by STAIProtection")
     agent = _get_agent()
     if not getattr(agent, "cyberos_available", False):
         raise HTTPException(status_code=503, detail="CyberOS is unavailable")
@@ -848,8 +930,11 @@ def start_sensor_monitoring() -> dict[str, Any]:
 
 
 @app.post("/api/sensors/stop")
-def stop_sensor_monitoring() -> dict[str, Any]:
+def stop_sensor_monitoring(request: Request) -> dict[str, Any]:
     """Stop sensor collection and wait for its managed workers to close."""
+    _require_loopback(request)
+    if _windows_sensor_service_manages_sensors():
+        raise HTTPException(status_code=409, detail="Windows sensor lifecycle is managed by STAIProtection")
     agent = _get_agent()
     if not getattr(agent, "cyberos_available", False):
         raise HTTPException(status_code=503, detail="CyberOS is unavailable")

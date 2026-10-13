@@ -73,8 +73,19 @@ class ProtectionService:
         return self._config.quarantine_root
 
     def scan_file(self, path: Path) -> ScanVerdict:
-        """Scan a single file and record detection if found."""
-        verdict, _detection_id = self.scan_file_for_filter(path)
+        """Scan a file and immediately quarantine signed high-confidence blocks."""
+        verdict, detection_id = self.scan_file_for_filter(path)
+        if (
+            verdict.status == "detected"
+            and verdict.action == "block"
+            and detection_id is not None
+        ):
+            result = self.quarantine_scanned_detection(detection_id, Path(path), verdict)
+            if not result.success:
+                LOGGER.warning(
+                    "high-confidence detection remains flagged but quarantine failed (%s)",
+                    result.error or "unknown error",
+                )
         return verdict
 
     def scan_file_for_filter(self, path: Path) -> tuple[ScanVerdict, str | None]:
@@ -117,6 +128,91 @@ class ProtectionService:
                     LOGGER.exception("failed to enqueue protection detection for triage")
 
         return verdict, detection_id
+
+    def scan_file_for_sensor(self, path: Path) -> tuple[ScanVerdict, str]:
+        """Scan a transient sensor path without sending the file to Level 2 AI."""
+        target = Path(path)
+        verdict = scan_path(
+            target,
+            self._config.rules,
+            yara_timeout_seconds=self._config.yara_timeout_seconds,
+        )
+        if verdict.status == "clean":
+            return verdict, "clean"
+        if verdict.status != "detected" or verdict.action != "block" or not verdict.sha256:
+            return verdict, "unknown"
+
+        detection_id = str(uuid.uuid4())
+        file_type = target.suffix.lower() if target.suffix else None
+        try:
+            stat_result = target.stat()
+            size_bytes = stat_result.st_size
+        except OSError:
+            size_bytes = None
+        self._config.store.record_detection(DetectionRecord(
+            detection_id=detection_id,
+            sha256=verdict.sha256,
+            rule_id=verdict.rule_id or "unknown",
+            rule_version=verdict.rule_version,
+            action="block",
+            confidence="high",
+            severity="critical",
+            file_type=file_type,
+            size_bytes=size_bytes,
+            file_path=str(target),
+            created_at=datetime.now().isoformat(),
+            triage_enqueued=False,
+        ))
+        quarantined = self.quarantine_scanned_detection(detection_id, target, verdict)
+        if quarantined.success:
+            return verdict, "contained"
+        LOGGER.warning("sensor-triggered detection remains flagged; quarantine failed")
+        return verdict, "failed"
+
+    def quarantine_ai_assessed_file(
+        self,
+        path: Path,
+        event_id: str,
+        expected_sha256: str,
+    ) -> QuarantineResult:
+        """Quarantine only the same locally re-scanned file an AI warning referenced."""
+        target = Path(path)
+        current = scan_path(
+            target,
+            self._config.rules,
+            yara_timeout_seconds=self._config.yara_timeout_seconds,
+        )
+        if current.status != "clean" or current.sha256 != expected_sha256:
+            return QuarantineResult(success=False, error="file identity changed or local rules now report it")
+        detection_id = str(uuid.uuid4())
+        rule_id = "ai-sensor-assessment"
+        try:
+            size_bytes = target.stat().st_size
+        except OSError:
+            return QuarantineResult(success=False, error="file is no longer available")
+        self._config.store.record_detection(DetectionRecord(
+            detection_id=detection_id,
+            sha256=expected_sha256,
+            rule_id=rule_id,
+            rule_version="ai-sensor-v1",
+            action="block",
+            confidence="high",
+            severity="critical",
+            file_type=target.suffix.lower() if target.suffix else None,
+            size_bytes=size_bytes,
+            file_path=str(target),
+            created_at=datetime.now().isoformat(),
+            triage_enqueued=False,
+        ))
+        ai_verdict = ScanVerdict(
+            status="detected",
+            action="block",
+            rule_id=rule_id,
+            rule_version="ai-sensor-v1",
+            sha256=expected_sha256,
+            reason=f"AI-assisted sensor assessment for event {event_id}",
+        )
+        return self.quarantine_scanned_detection(detection_id, target, ai_verdict)
 
     def quarantine_scanned_detection(
         self,

@@ -5,13 +5,20 @@ let workosClient: WorkOS | null = null;
 export function getWorkOS(): WorkOS {
   if (workosClient) return workosClient;
 
-  const apiKey = process.env.WORKOS_API_KEY;
-  const clientId = process.env.WORKOS_CLIENT_ID;
-  if (!apiKey || !clientId) {
-    throw new Error("WORKOS_API_KEY and WORKOS_CLIENT_ID must be configured");
+  const apiKey = process.env.WORKOS_API_KEY ?? process.env.NEXT_PUBLIC_WORKOS_API_KEY;
+  const clientId =
+    process.env.WORKOS_CLIENT_ID ?? process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID;
+
+  if (!apiKey && !clientId) {
+    throw new Error(
+      "WorkOS must be configured with either WORKOS_API_KEY or WORKOS_CLIENT_ID (or their NEXT_PUBLIC_* equivalents)",
+    );
   }
 
-  workosClient = new WorkOS(apiKey, { clientId });
+  workosClient = new WorkOS({
+    ...(apiKey ? { apiKey } : {}),
+    ...(clientId ? { clientId } : {}),
+  });
   return workosClient;
 }
 

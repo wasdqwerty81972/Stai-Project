@@ -75,6 +75,109 @@ class _Service:
         return _Store().get_status(**kwargs)
 
 
+class _SensorService:
+    def __init__(self, *, starts=True):
+        self.starts = starts
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.status = {"running": False, "queue": {"depth": 0}, "capabilities": []}
+
+    def start(self):
+        self.start_calls += 1
+        self.status["running"] = self.starts
+        return self.starts
+
+    def stop(self, timeout=5.0):
+        self.stop_calls += 1
+        self.status["running"] = False
+        return True
+
+    def get_status(self):
+        return dict(self.status)
+
+
+class _FileMonitor:
+    def __init__(self):
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self):
+        self.start_calls += 1
+        return True
+
+    def stop(self, timeout=5.0):
+        self.stop_calls += 1
+        return True
+
+    def get_status(self):
+        return {"state": "running", "roots": ["C:/Users/demo/Downloads"]}
+
+
+def test_host_starts_and_stops_sensor_service_idempotently():
+    sensors = _SensorService()
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        pipe_server=_PipeServer(),
+        sensor_service=sensors,
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+
+    host.start()
+    host.start()
+    status = host.get_status()
+    host.stop()
+
+    assert sensors.start_calls == 1
+    assert sensors.stop_calls == 1
+    assert status["sensors"]["running"] is True
+
+
+def test_sensor_start_failure_is_reported_without_stopping_protection_host():
+    sensors = _SensorService(starts=False)
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        pipe_server=_PipeServer(),
+        sensor_service=sensors,
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+
+    host.start()
+    status = host.get_status()
+    host.stop()
+
+    assert status["service_state"] == "running"
+    assert status["sensors"]["running"] is False
+    assert status["sensor_error"] == "sensor runtime did not start"
+
+
+def test_host_owns_drop_folder_monitor_lifecycle_and_reports_its_status():
+    monitor = _FileMonitor()
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        pipe_server=_PipeServer(),
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+        file_monitor=monitor,
+    )
+
+    host.start()
+    host.start()
+    status = host.get_status()
+    host.stop()
+
+    assert monitor.start_calls == 1
+    assert monitor.stop_calls == 1
+    assert status["sensors"]["drop_folder_watch"]["state"] == "running"
+
+
 def test_service_status_is_unavailable_before_driver_and_rules_are_ready():
     host = ProtectionServiceHost(
         store=_Store(),

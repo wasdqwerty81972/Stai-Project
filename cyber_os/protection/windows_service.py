@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -76,7 +77,7 @@ def _require_identifier(value: Any, name: str) -> str:
     return value
 
 
-_EMPTY_OPERATIONS = {"get_status", "list_threats", "list_quarantine"}
+_EMPTY_OPERATIONS = {"get_status", "list_threats", "list_quarantine", "list_sensor_warnings"}
 _SINGLE_ID_OPERATIONS = {
     "get_scan": ("job_id",),
     "cancel_scan": ("job_id",),
@@ -86,7 +87,7 @@ _SINGLE_ID_OPERATIONS = {
     "restore_quarantine": ("item_id",),
 }
 _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
-    "start_scan", "send_agent_message"
+    "start_scan", "send_agent_message", "claim_sensor_ai_escalations", "complete_sensor_ai_escalation"
 }
 
 
@@ -133,6 +134,29 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
         detection_id = parsed["detection_id"]
         if detection_id is not None:
             _require_identifier(detection_id, "detection_id")
+    elif operation == "claim_sensor_ai_escalations":
+        parsed = _require_payload(payload, {"worker_id"})
+        _require_identifier(parsed["worker_id"], "worker_id")
+    elif operation == "complete_sensor_ai_escalation":
+        parsed = _require_payload(payload, {"event_id", "worker_id", "result"})
+        _require_identifier(parsed["event_id"], "event_id")
+        _require_identifier(parsed["worker_id"], "worker_id")
+        result = parsed["result"]
+        allowed_result_fields = {
+            "analysis", "error", "classification", "confidence",
+            "recommended_action", "protection_action",
+        }
+        if not isinstance(result, dict) or set(result) - allowed_result_fields:
+            raise PipeProtocolError("AI result fields do not match the operation schema")
+        for key in ("analysis", "error", "classification", "recommended_action", "protection_action"):
+            value = result.get(key)
+            if value is not None and (not isinstance(value, str) or len(value.encode("utf-8")) > 4000):
+                raise PipeProtocolError("AI result text exceeds the size limit")
+        confidence = result.get("confidence")
+        if confidence is not None and (
+            isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1
+        ):
+            raise PipeProtocolError("AI confidence must be between zero and one")
     return request_id, operation, payload
 
 
@@ -504,6 +528,9 @@ class ProtectionServiceHost:
         client_sid: str | None = None,
         windows_security_reader: Callable[[], Any] | None = None,
         health_refresh_seconds: float = 60.0,
+        sensor_service: Any | None = None,
+        response_coordinator: Any | None = None,
+        file_monitor: Any | None = None,
     ) -> None:
         self.store = store
         self.service = service
@@ -513,6 +540,9 @@ class ProtectionServiceHost:
         self.client_sid = client_sid
         self.pipe_server = pipe_server
         self._windows_security_reader = windows_security_reader
+        self.sensor_service = sensor_service
+        self.response_coordinator = response_coordinator
+        self.file_monitor = file_monitor
         self._health_refresh_seconds = max(1.0, health_refresh_seconds)
         self._health_stop_event = threading.Event()
         self._health_lock = threading.Lock()
@@ -525,12 +555,30 @@ class ProtectionServiceHost:
         self._started = False
         self._service_state = "stopped"
         self._last_error: str | None = None
+        self._sensor_error: str | None = None
 
     def start(self) -> None:
+        if self._started:
+            return
         self._started = True
         self._service_state = "running"
         self._stop_event.clear()
         self._start_health_refresh()
+        if self.sensor_service is not None:
+            try:
+                started = self.sensor_service.start()
+                self._sensor_error = None if started is not False else "sensor runtime did not start"
+            except Exception:
+                LOGGER.exception("unable to start Windows sensor runtime")
+                self._sensor_error = "sensor runtime startup failed"
+        if self.file_monitor is not None:
+            try:
+                started = self.file_monitor.start()
+                if started is False:
+                    self._sensor_error = self._sensor_error or "drop-folder file monitor did not start"
+            except Exception:
+                LOGGER.exception("unable to start Windows drop-folder file monitor")
+                self._sensor_error = self._sensor_error or "drop-folder file monitor startup failed"
         if not self.rules_trusted or self.service is None:
             self._last_error = "trusted rule package is unavailable"
         elif self.filter_client is not None:
@@ -618,6 +666,18 @@ class ProtectionServiceHost:
     def stop(self) -> None:
         self._stop_event.set()
         self._health_stop_event.set()
+        if self.sensor_service is not None:
+            try:
+                self.sensor_service.stop(timeout=5.0)
+            except Exception:
+                LOGGER.exception("failed to stop Windows sensor runtime")
+                self._sensor_error = "sensor runtime shutdown failed"
+        if self.file_monitor is not None:
+            try:
+                self.file_monitor.stop(timeout=5.0)
+            except Exception:
+                LOGGER.exception("failed to stop Windows drop-folder file monitor")
+                self._sensor_error = self._sensor_error or "drop-folder file monitor shutdown failed"
         if self.pipe_server is not None:
             try:
                 self.pipe_server.close()
@@ -687,6 +747,38 @@ class ProtectionServiceHost:
                 else "degraded"
             ),
         )
+        if self.sensor_service is not None:
+            try:
+                sensor_status = _to_jsonable(self.sensor_service.get_status())
+                if isinstance(sensor_status, dict):
+                    from cyber_os.sensors.sensor_registry import REGISTRY_VERSION, build_runtime_registry
+
+                    sensor_status["registry_version"] = REGISTRY_VERSION
+                    sensor_status["registry"] = build_runtime_registry(
+                        str(sensor_status.get("platform") or "unknown"),
+                        sensor_status.get("capabilities") or (),
+                    )
+                    sensor_status["warnings"] = (
+                        self.response_coordinator.get_warnings(limit=100)
+                        if self.response_coordinator is not None
+                        else []
+                    )
+                    result["sensors"] = sensor_status
+                else:
+                    result["sensors"] = {"running": False, "capabilities": [], "registry": []}
+            except Exception:
+                LOGGER.exception("unable to read Windows sensor runtime status")
+                result["sensors"] = {"running": False, "capabilities": []}
+                self._sensor_error = "sensor runtime status unavailable"
+        else:
+            result["sensors"] = {"running": False, "capabilities": []}
+        if self.file_monitor is not None:
+            try:
+                result["sensors"]["drop_folder_watch"] = _to_jsonable(self.file_monitor.get_status())
+            except Exception:
+                result["sensors"]["drop_folder_watch"] = {"state": "error", "errors": {"status": "unavailable"}}
+        if self._sensor_error:
+            result["sensor_error"] = self._sensor_error
         if self._last_error:
             result["last_error"] = self._last_error
         return result
@@ -703,6 +795,20 @@ class ProtectionServiceHost:
             from .quarantine import list_quarantine_items
 
             return list_quarantine_items(self.store)
+        if operation == "list_sensor_warnings":
+            if self.response_coordinator is None:
+                return []
+            return self.response_coordinator.get_warnings(limit=100)
+        if operation == "claim_sensor_ai_escalations":
+            if self.response_coordinator is None:
+                return []
+            return self.response_coordinator.claim_ai_escalations(payload["worker_id"])
+        if operation == "complete_sensor_ai_escalation":
+            if self.response_coordinator is None:
+                raise ProtectionServiceUnavailable("sensor response coordinator is unavailable")
+            return self.response_coordinator.complete_ai_escalation(
+                payload["event_id"], payload["worker_id"], payload["result"]
+            )
         if operation == "get_scan":
             job = self.store.get_scan_job(payload["job_id"])
             if job is None:
@@ -779,6 +885,47 @@ def _read_installed_client_sid() -> str | None:
         return None
 
 
+def _read_installed_user_profile_root(client_sid: str | None) -> Path | None:
+    """Resolve only the enrolled dashboard user's profile from ProfileList."""
+    if os.name != "nt" or not client_sid or not _valid_sid_text(client_sid):
+        return None
+    try:
+        import winreg
+
+        key_path = rf"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{client_sid}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ) as key:
+            profile, _kind = winreg.QueryValueEx(key, "ProfileImagePath")
+        resolved = Path(os.path.expandvars(str(profile))).expanduser()
+        return resolved if resolved.is_dir() else None
+    except (OSError, ImportError, TypeError, ValueError):
+        return None
+
+
+def _read_installed_user_known_folders(client_sid: str | None) -> dict[str, str]:
+    """Read Downloads/Desktop redirections only from the enrolled user's hive."""
+    if os.name != "nt" or not client_sid or not _valid_sid_text(client_sid):
+        return {}
+    try:
+        import winreg
+
+        key_path = rf"{client_sid}\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+        with winreg.OpenKey(winreg.HKEY_USERS, key_path, 0, winreg.KEY_READ) as key:
+            values: dict[str, str] = {}
+            for name, value_name in (
+                ("Downloads", "{374DE290-123F-4565-9164-39C4925E467B}"),
+                ("Desktop", "Desktop"),
+            ):
+                try:
+                    value, _kind = winreg.QueryValueEx(key, value_name)
+                    if isinstance(value, str):
+                        values[name] = value
+                except OSError:
+                    continue
+        return values
+    except (OSError, ImportError):
+        return {}
+
+
 def create_default_host() -> ProtectionServiceHost:
     """Build a host only from installed data and the embedded trusted public key."""
     data_root = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "STAI" / "Protection"
@@ -789,6 +936,10 @@ def create_default_host() -> ProtectionServiceHost:
     manifest_path = data_root / "rules" / "manifest.json"
     signature_path = data_root / "rules" / "manifest.sig"
     try:
+        if not manifest_path.exists() and not signature_path.exists():
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(_RESOURCE_ROOT / "resources" / "demo-manifest.json", manifest_path)
+            shutil.copyfile(_RESOURCE_ROOT / "resources" / "demo-manifest.sig", signature_path)
         public_key = public_key_path.read_bytes()
         if len(public_key) != 32:
             raise InvalidRulePackage("embedded trusted public key has invalid length")
@@ -820,6 +971,30 @@ def create_default_host() -> ProtectionServiceHost:
         filter_client = create_filter_client()
 
     client_sid = _read_installed_client_sid()
+    sensor_service = None
+    response_coordinator = None
+    file_monitor = None
+    if os.name == "nt":
+        from cyber_os.sensors.windows_sensor_service import WindowsSensorService
+        from cyber_os.sensors.warnings import SensorResponseCoordinator, SensorWarningStore
+        from cyber_os.sensors.windows_file_watch import WindowsFileActivityMonitor, monitored_user_roots
+
+        response_coordinator = SensorResponseCoordinator(
+            SensorWarningStore(str(data_root / "sensor-warnings.sqlite3")),
+            protection_service=service,
+        )
+        sensor_service = WindowsSensorService(
+            callback=response_coordinator.submit_event,
+            database_path=str(data_root / "sensor-queue.sqlite3"),
+        )
+        profile_root = _read_installed_user_profile_root(client_sid)
+        roots = (
+            monitored_user_roots(profile_root, _read_installed_user_known_folders(client_sid))
+            if profile_root is not None
+            else []
+        )
+        file_monitor = WindowsFileActivityMonitor(roots, response_coordinator.submit_event)
+
     host = ProtectionServiceHost(
         store=store,
         service=service,
@@ -827,6 +1002,9 @@ def create_default_host() -> ProtectionServiceHost:
         triage=triage,
         rules_trusted=rules is not None,
         client_sid=client_sid,
+        sensor_service=sensor_service,
+        response_coordinator=response_coordinator,
+        file_monitor=file_monitor,
     )
     if last_error:
         host._last_error = last_error

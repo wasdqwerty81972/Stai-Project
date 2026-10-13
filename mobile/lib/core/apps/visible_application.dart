@@ -13,6 +13,7 @@ class VisibleApplication {
     required this.isSystemApp,
     required this.requestedPermissions,
     required this.grantedPermissions,
+    required this.permissionGrantStateAvailable,
   });
 
   final String packageName;
@@ -23,28 +24,47 @@ class VisibleApplication {
   final bool isSystemApp;
   final List<String> requestedPermissions;
   final List<String> grantedPermissions;
+  final bool permissionGrantStateAvailable;
 
   factory VisibleApplication.fromMap(Map<String, Object?> map) {
     final requested = _stringList(map, 'requestedPermissions');
     final granted = _stringList(map, 'grantedPermissions');
+    final grantStateAvailable = _requiredBool(map, 'permissionGrantStateAvailable');
     final packageName = _requiredString(map, 'packageName');
-    if (!_packagePattern.hasMatch(packageName) || packageName.contains('..')) {
+    final label = _requiredString(map, 'label');
+    final versionName = _nullableString(map, 'versionName');
+    final installerPackageName = _nullableString(map, 'installerPackageName');
+    if (!_packagePattern.hasMatch(packageName) ||
+        packageName.contains('..') ||
+        packageName.length > maxPackageNameLength) {
       throw const FormatException('Application has an invalid package name.');
+    }
+    if (label.length > maxLabelLength ||
+        (versionName?.length ?? 0) > maxVersionNameLength ||
+        (installerPackageName?.length ?? 0) > maxPackageNameLength) {
+      throw const FormatException('Application metadata exceeds its size limits.');
     }
     if (granted.any((permission) => !requested.contains(permission))) {
       throw const FormatException(
         'Granted permissions must also appear in the requested permission list.',
       );
     }
+    if (requested.any((permission) => permission.length > maxPermissionNameLength)) {
+      throw const FormatException('Application permission metadata exceeds its limits.');
+    }
+    if (!grantStateAvailable && granted.isNotEmpty) {
+      throw const FormatException('Unknown grant state cannot include granted permissions.');
+    }
     return VisibleApplication(
       packageName: packageName,
-      label: _requiredString(map, 'label'),
-      versionName: _nullableString(map, 'versionName'),
+      label: label,
+      versionName: versionName,
       versionCode: _requiredInt(map, 'versionCode'),
-      installerPackageName: _nullableString(map, 'installerPackageName'),
+      installerPackageName: installerPackageName,
       isSystemApp: _requiredBool(map, 'isSystemApp'),
       requestedPermissions: List<String>.unmodifiable(requested),
       grantedPermissions: List<String>.unmodifiable(granted),
+      permissionGrantStateAvailable: grantStateAvailable,
     );
   }
 }
@@ -57,18 +77,25 @@ class VisibleApplicationCollection {
     required this.scope,
     required this.visibilityMayBeFiltered,
     required this.truncated,
+    required this.permissionsTruncated,
     required this.applications,
     required this.events,
   });
 
   static const supportedScope = 'launchable_packages_visible_to_this_app';
   static const maxApplications = 200;
+  static const maxPermissionsPerApplication = 32;
+  static const maxPermissionNameLength = 255;
+  static const maxLabelLength = 120;
+  static const maxVersionNameLength = 100;
+  static const maxPackageNameLength = 255;
 
   final int contractVersion;
   final DateTime observedAt;
   final String scope;
   final bool visibilityMayBeFiltered;
   final bool truncated;
+  final bool permissionsTruncated;
   final List<VisibleApplication> applications;
   final List<MobileEvent> events;
 
@@ -90,6 +117,9 @@ class VisibleApplicationCollection {
     if (applicationsRaw.length > maxApplications) {
       throw const FormatException('Application inventory exceeds its item limit.');
     }
+    if (eventsRaw.length != 5) {
+      throw const FormatException('Application inventory must contain exactly five events.');
+    }
 
     final applications = applicationsRaw.map((value) {
       if (value is! Map<Object?, Object?>) {
@@ -110,10 +140,50 @@ class VisibleApplicationCollection {
       if (event.contractVersion != 1 || event.continuous) {
         throw const FormatException('Application inventory event contract is unsupported.');
       }
+      if (event.observedAt.millisecondsSinceEpoch != observedAtEpochMs) {
+        throw const FormatException('Application inventory event timestamps do not match the snapshot.');
+      }
       return event;
     }).toList(growable: false);
-    if (!events.any((event) => event.capabilityId == 'AND-012')) {
-      throw const FormatException('Application inventory is missing package identifier provenance.');
+    if (events.map((event) => event.eventId).toSet().length != events.length) {
+      throw const FormatException('Application inventory contains duplicate event IDs.');
+    }
+    const expectedCapabilities = {'AND-012', 'AND-013', 'AND-016', 'AND-025', 'AND-026'};
+    final eventCapabilities = events.map((event) => event.capabilityId).toSet();
+    if (events.length != expectedCapabilities.length ||
+        eventCapabilities.length != events.length ||
+        !eventCapabilities.containsAll(expectedCapabilities)) {
+      throw const FormatException('Application inventory is missing capability evidence.');
+    }
+    for (final event in events) {
+      if (event.evidence['scope'] != scope ||
+          event.evidence['packageCount'] != applications.length) {
+        throw const FormatException('Application inventory event summary contradicts the snapshot.');
+      }
+    }
+    final packageEvent = events.singleWhere((event) => event.capabilityId == 'AND-012');
+    if (packageEvent.evidence['inventorySchemaVersion'] != 1 ||
+        packageEvent.evidence['visibilityMayBeFiltered'] !=
+            _requiredBool(map, 'visibilityMayBeFiltered') ||
+        packageEvent.evidence['truncated'] != _requiredBool(map, 'truncated') ||
+        packageEvent.evidence['permissionsTruncated'] !=
+            _requiredBool(map, 'permissionsTruncated')) {
+      throw const FormatException('Package inventory event metadata contradicts the snapshot.');
+    }
+    final eventApplications = packageEvent.evidence['applications'];
+    if (eventApplications is! List<Object?> ||
+        eventApplications.length != applications.length) {
+      throw const FormatException('Package inventory event is missing its application snapshot.');
+    }
+    for (var index = 0; index < applications.length; index++) {
+      final value = eventApplications[index];
+      if (value is! Map<Object?, Object?> ||
+          !_sameApplication(
+            applications[index],
+            VisibleApplication.fromMap(_stringMap(value)),
+          )) {
+        throw const FormatException('Package inventory event contradicts its application snapshot.');
+      }
     }
 
     return VisibleApplicationCollection(
@@ -122,11 +192,23 @@ class VisibleApplicationCollection {
       scope: scope,
       visibilityMayBeFiltered: _requiredBool(map, 'visibilityMayBeFiltered'),
       truncated: _requiredBool(map, 'truncated'),
+      permissionsTruncated: _requiredBool(map, 'permissionsTruncated'),
       applications: List<VisibleApplication>.unmodifiable(applications),
       events: List<MobileEvent>.unmodifiable(events),
     );
   }
 }
+
+bool _sameApplication(VisibleApplication left, VisibleApplication right) =>
+    left.packageName == right.packageName &&
+    left.label == right.label &&
+    left.versionName == right.versionName &&
+    left.versionCode == right.versionCode &&
+    left.installerPackageName == right.installerPackageName &&
+    left.isSystemApp == right.isSystemApp &&
+    listEquals(left.requestedPermissions, right.requestedPermissions) &&
+    listEquals(left.grantedPermissions, right.grantedPermissions) &&
+    left.permissionGrantStateAvailable == right.permissionGrantStateAvailable;
 
 final _packagePattern = RegExp(r'^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$');
 
@@ -167,7 +249,9 @@ bool _requiredBool(Map<String, Object?> map, String key) {
 
 List<String> _stringList(Map<String, Object?> map, String key) {
   final value = map[key];
-  if (value is! List<Object?> || value.any((item) => item is! String || item.isEmpty)) {
+  if (value is! List<Object?> ||
+      value.length > VisibleApplicationCollection.maxPermissionsPerApplication ||
+      value.any((item) => item is! String || item.isEmpty)) {
     throw FormatException('Application inventory field "$key" is invalid.');
   }
   final list = value.cast<String>();

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../apps/visible_application.dart';
 import '../detection/detection_models.dart';
+import '../files/selected_file_inspection.dart';
 
 const mobilePlatformMethodChannelName = 'svs_cyber/mobile/platform/v1';
 const mobilePlatformEventChannelName = 'svs_cyber/mobile/events/v1';
@@ -18,6 +19,7 @@ typedef NativeMethodInvoker = Future<Object?> Function(
 typedef NativeEventReceiver = Stream<Object?> Function();
 
 abstract interface class MobilePlatformClient {
+  Future<SelectedFileInspection?> selectAndInspectFile({required bool apk});
   Future<NativePlatformContract> getContract();
   Future<BaselineCollection> collectDeviceBaseline();
   Future<VisibleApplicationCollection> collectVisibleApplicationInventory({int limit = 100});
@@ -49,6 +51,19 @@ class MethodChannelMobilePlatformClient implements MobilePlatformClient {
   final NativeEventReceiver _receiveEvents;
 
   @override
+  Future<SelectedFileInspection?> selectAndInspectFile({required bool apk}) async {
+    final raw = await _invoke('selectAndInspectFile', {'apk': apk});
+    if (raw == null) return null;
+    final map = _objectMap(raw, 'selected file response');
+    _requireVersion(map);
+    final result = SelectedFileInspection.fromMap(map);
+    if (result.apkRequested != apk) {
+      throw const FormatException('Selected file response does not match the requested mode.');
+    }
+    return result;
+  }
+
+  @override
   Future<NativePlatformContract> getContract() async {
     final raw = await _invoke('getContract');
     final map = _objectMap(raw, 'platform contract');
@@ -68,6 +83,8 @@ class MethodChannelMobilePlatformClient implements MobilePlatformClient {
         !contract.methods.containsAll(const {
           'getContract',
           'collectDeviceBaseline',
+          'collectVisibleApplicationInventory',
+          'selectAndInspectFile',
           'readEvents',
           'getJournalStatus',
         })) {
@@ -344,6 +361,10 @@ MobilePlatformException _sanitizePlatformError(Object error) {
       'JOURNAL_READ_FAILED' => 'journal_read_failed',
       'JOURNAL_STATUS_FAILED' => 'journal_status_failed',
       'BASELINE_COLLECTION_FAILED' => 'baseline_collection_failed',
+      'APP_INVENTORY_COLLECTION_FAILED' => 'application_inventory_failed',
+      'FILE_INSPECTION_FAILED' => 'file_inspection_failed',
+      'FILE_SELECTION_UNAVAILABLE' => 'file_selection_unavailable',
+      'FILE_INSPECTION_BUSY' => 'file_inspection_busy',
       _ => 'platform_call_failed',
     };
     final message = switch (code) {
@@ -351,6 +372,10 @@ MobilePlatformException _sanitizePlatformError(Object error) {
       'journal_read_failed' => 'Saved local events could not be read.',
       'journal_status_failed' => 'Local event storage status is unavailable.',
       'baseline_collection_failed' => 'The device baseline could not be collected.',
+      'application_inventory_failed' => 'The visible app inventory could not be collected.',
+      'file_inspection_failed' => 'The selected document could not be read or inspected.',
+      'file_selection_unavailable' => 'Document selection is unavailable on this device.',
+      'file_inspection_busy' => 'A document selection or inspection is already in progress.',
       _ => 'The Android platform request failed.',
     };
     return MobilePlatformException(code, message);

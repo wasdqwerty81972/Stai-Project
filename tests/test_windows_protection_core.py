@@ -66,6 +66,7 @@ def test_signed_detection_is_durable_and_reproducible(tmp_path: Path) -> None:
 
     first = service.scan_file(sample)
     assert (first.status, first.action, first.rule_id) == ("detected", "block", "hash-1")
+    assert not sample.exists()
 
     # Durable: a fresh store over the same database still sees the detection.
     reopened = ProtectionStore(tmp_path / "p.db")
@@ -75,10 +76,13 @@ def test_signed_detection_is_durable_and_reproducible(tmp_path: Path) -> None:
     assert threats[0].sha256 == hashlib.sha256(_MARKER).hexdigest()
     counts = reopened.get_status().counts
     assert counts["detected"] == 1
-    assert counts["blocked"] == 0  # no confirmed denied I/O happened
+    assert counts["blocked"] == 0  # no denied kernel I/O happened
+    assert counts["quarantined"] == 1
 
     # Reproducible: scanning the same bytes against the same rules is deterministic.
-    second = scan_path(sample, rules)
+    sample_again = tmp_path / "sample-again.exe"
+    sample_again.write_bytes(_MARKER)
+    second = scan_path(sample_again, rules)
     assert (second.status, second.action, second.rule_id, second.sha256) == (
         first.status,
         first.action,

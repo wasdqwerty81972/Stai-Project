@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -19,6 +20,12 @@ const mockNextResponseRedirect = jest.fn((url: URL, init?: unknown) =>
   mockCreateResponse("redirect", url, init),
 );
 const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
+const originalNodeEnv = process.env.NODE_ENV;
+const originalWorkOSApiKey = process.env.WORKOS_API_KEY;
+const originalWorkOSClientId = process.env.WORKOS_CLIENT_ID;
+const originalNextPublicWorkOSApiKey = process.env.NEXT_PUBLIC_WORKOS_API_KEY;
+const originalNextPublicWorkOSClientId =
+  process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID;
 
 function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
   return {
@@ -98,6 +105,35 @@ describe("proxy", () => {
     }
   });
 
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    if (originalWorkOSApiKey === undefined) {
+      delete process.env.WORKOS_API_KEY;
+    } else {
+      process.env.WORKOS_API_KEY = originalWorkOSApiKey;
+    }
+    if (originalWorkOSClientId === undefined) {
+      delete process.env.WORKOS_CLIENT_ID;
+    } else {
+      process.env.WORKOS_CLIENT_ID = originalWorkOSClientId;
+    }
+    if (originalNextPublicWorkOSApiKey === undefined) {
+      delete process.env.NEXT_PUBLIC_WORKOS_API_KEY;
+    } else {
+      process.env.NEXT_PUBLIC_WORKOS_API_KEY = originalNextPublicWorkOSApiKey;
+    }
+    if (originalNextPublicWorkOSClientId === undefined) {
+      delete process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID;
+    } else {
+      process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID =
+        originalNextPublicWorkOSClientId;
+    }
+  });
+
   beforeEach(() => {
     jest.resetModules();
     mockAuthkit.mockReset();
@@ -106,6 +142,9 @@ describe("proxy", () => {
     mockNextResponseRedirect.mockClear();
     process.env.WORKOS_COOKIE_PASSWORD =
       "test-cookie-password-with-32-characters";
+    process.env.WORKOS_CLIENT_ID = "client_test";
+    delete process.env.NEXT_PUBLIC_WORKOS_API_KEY;
+    delete process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID;
   });
 
   it.each([
@@ -151,6 +190,55 @@ describe("proxy", () => {
     expect(mockNextResponseNext).toHaveBeenCalledWith();
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it("keeps public pages available and fails closed without WorkOS config in development", async () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    const { default: proxy } = await import("../proxy");
+
+    const publicResponse = await proxy(
+      createRequest({
+        pathname: "/pricing",
+        accept: "text/html",
+      }),
+    );
+    const protectedResponse = await proxy(
+      createRequest({ pathname: "/api/chat" }),
+    );
+
+    expect(publicResponse).toMatchObject({ kind: "next" });
+    expect(protectedResponse).toMatchObject({ kind: "json" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).toHaveBeenCalledWith(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      expect.objectContaining({ status: 401 }),
+    );
+  });
+
+  it("does not bypass authentication for public-page server actions without WorkOS config", async () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    const { default: proxy } = await import("../proxy");
+
+    const response = await proxy(
+      createRequest({
+        pathname: "/",
+        method: "POST",
+        accept: "text/x-component",
+        headers: { "next-action": "action-id" },
+      }),
+    );
+
+    expect(response).toMatchObject({ kind: "redirect" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseRedirect).toHaveBeenCalledTimes(1);
   });
 
   it("does not bypass AuthKit for sibling internal API paths", async () => {

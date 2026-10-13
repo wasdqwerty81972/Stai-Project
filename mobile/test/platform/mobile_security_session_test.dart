@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:svs_cyber_mobile/core/apps/visible_application.dart';
 import 'package:svs_cyber_mobile/core/detection/detection_models.dart';
 import 'package:svs_cyber_mobile/core/detection/local_detection_engine.dart';
+import 'package:svs_cyber_mobile/core/files/selected_file_inspection.dart';
 import 'package:svs_cyber_mobile/core/platform/mobile_platform_client.dart';
 import 'package:svs_cyber_mobile/core/platform/mobile_security_session.dart';
 
@@ -46,6 +48,29 @@ void main() {
     expect(session.lastError, isNull);
   });
 
+  test('rejects conflicting duplicate event IDs without publishing either event', () async {
+    client.baseline = BaselineCollection(
+      contractVersion: 1,
+      collectedAt: now,
+      continuousMonitoring: false,
+      events: [
+        _event('duplicate-event', now),
+        _event(
+          'duplicate-event',
+          now,
+          capabilityId: 'AND-001',
+          evidence: const {'androidApiLevel': 35},
+        ),
+      ],
+    );
+
+    await session.collectBaseline();
+
+    expect(session.events, isEmpty);
+    expect(session.findings, isEmpty);
+    expect(session.lastError, isNotNull);
+  });
+
   test('collects visible applications only after request and publishes journal events',
       () async {
     client.visibleAppInventory = VisibleApplicationCollection(
@@ -54,6 +79,7 @@ void main() {
       scope: 'launchable_packages_visible_to_this_app',
       visibilityMayBeFiltered: true,
       truncated: false,
+      permissionsTruncated: false,
       applications: const [
         VisibleApplication(
           packageName: 'com.example.reader',
@@ -64,6 +90,7 @@ void main() {
           isSystemApp: false,
           requestedPermissions: ['android.permission.CAMERA'],
           grantedPermissions: [],
+          permissionGrantStateAvailable: true,
         ),
       ],
       events: [_event('inventory', now, capabilityId: 'AND-012')],
@@ -132,6 +159,60 @@ void main() {
     expect(session.findings.single.evidenceReferences.single.eventId, 'in-window');
   });
 
+  test('restores the latest persisted visible-app snapshot from AND-012 evidence',
+      () async {
+    client.journal = const MobileJournalStatus(
+      contractVersion: 1,
+      available: true,
+      eventCount: 1,
+      sizeBytes: 512,
+      encryptedAtRest: true,
+      retentionDays: 30,
+      maxBytes: 8388608,
+      warning: null,
+    );
+    client.eventsToRead = [
+      MobileEvent(
+        contractVersion: 1,
+        eventId: 'restored-app-inventory',
+        capabilityId: 'AND-012',
+        eventType: 'observation',
+        occurredAt: now,
+        observedAt: now,
+        availability: 'available',
+        operation: 'completed',
+        freshness: 'fresh',
+        continuous: false,
+        evidence: {
+          'scope': VisibleApplicationCollection.supportedScope,
+          'inventorySchemaVersion': 1,
+          'visibilityMayBeFiltered': true,
+          'truncated': false,
+          'permissionsTruncated': false,
+          'applications': [
+            {
+              'packageName': 'com.example.reader',
+              'label': 'Reader',
+              'versionName': '2.4',
+              'versionCode': 24,
+              'installerPackageName': null,
+              'isSystemApp': false,
+              'requestedPermissions': <String>[],
+              'grantedPermissions': <String>[],
+              'permissionGrantStateAvailable': true,
+            },
+          ],
+        },
+      ),
+    ];
+
+    await session.restoreJournal();
+
+    expect(session.visibleApplications.single.packageName, 'com.example.reader');
+    expect(session.visibleApplicationsObservedAt, now);
+    expect(session.visibleApplicationsVisibilityMayBeFiltered, isTrue);
+  });
+
   test('unavailable journal reports an error and keeps state empty', () async {
     client.journal = const MobileJournalStatus(
       contractVersion: 1,
@@ -177,7 +258,8 @@ void main() {
 }
 
 MobileEvent _event(String id, DateTime observedAt,
-        {String capabilityId = 'AND-008'}) =>
+        {String capabilityId = 'AND-008',
+        Map<String, Object?> evidence = const {'secureLockConfigured': false}}) =>
     MobileEvent(
       contractVersion: 1,
       eventId: id,
@@ -189,10 +271,12 @@ MobileEvent _event(String id, DateTime observedAt,
       operation: 'completed',
       freshness: 'fresh',
       continuous: false,
-      evidence: const {'secureLockConfigured': false},
+      evidence: evidence,
     );
 
 class _FakePlatformClient implements MobilePlatformClient {
+  @override
+  Future<SelectedFileInspection?> selectAndInspectFile({required bool apk}) => throw UnimplementedError();
   int baselineCalls = 0;
   int visibleApplicationInventoryCalls = 0;
   int journalStatusCalls = 0;

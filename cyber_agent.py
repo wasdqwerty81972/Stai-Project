@@ -8,6 +8,7 @@ vulnerability detection, security monitoring, WSL tool dispatching, and secure r
 import os
 import sys
 import json
+import hashlib
 import shutil
 import subprocess
 import threading
@@ -2108,6 +2109,65 @@ class CyberAgent:
         )
 
     # --- CyberOS Live Defense System ---
+
+    def analyze_sensor_warning(self, warning: Dict[str, Any]) -> Dict[str, str]:
+        """Analyze a redacted sensor warning through the configured SOC AI role.
+
+        This path is analysis-only: it does not expose tool execution or permit
+        the model to directly perform remediation.
+        """
+        if not isinstance(warning, dict):
+            raise ValueError("sensor warning must be an object")
+        event_id = str(warning.get("event_id") or "")
+        summary = str(warning.get("summary") or "")
+        if not event_id or not summary:
+            raise ValueError("sensor warning is missing its stable event ID or summary")
+        evidence_package = {
+            "event_id": event_id,
+            "sensor_ids": [int(value) for value in warning.get("sensor_ids", []) if isinstance(value, int)],
+            "timestamp": str(warning.get("timestamp") or ""),
+            "severity": str(warning.get("severity") or "unknown"),
+            "summary": summary[:500],
+            "evidence": [str(value)[:240] for value in warning.get("evidence", [])[:20]],
+            "protection_state": str(warning.get("protection_state") or "unknown"),
+        }
+        prompt = (
+            "Analyze this redacted endpoint sensor warning as a defensive antivirus triage. "
+            "Return concise JSON with keys classification (malicious, suspicious, benign, or inconclusive), "
+            "confidence (0 to 1), rationale, and recommended_action. Do not claim that a file was scanned, "
+            "blocked, or quarantined unless the evidence says so. This is advisory analysis and you cannot "
+            "run tools or execute actions. Evidence:\n" + json.dumps(evidence_package, separators=(",", ":"))
+        )
+        analysis = self.soc_orchestrator._call_agent("investigator", prompt)
+        if str(analysis).startswith("[AI ERROR]"):
+            raise RuntimeError(str(analysis)[:300])
+        stable_id = "sensor-" + hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:24]
+        text = str(analysis)[:4000]
+        parsed: Dict[str, Any] = {}
+        try:
+            start = text.index("{")
+            end = text.rindex("}") + 1
+            candidate = json.loads(text[start:end])
+            if isinstance(candidate, dict):
+                parsed = candidate
+        except (ValueError, json.JSONDecodeError):
+            pass
+        classification = str(parsed.get("classification") or "inconclusive").casefold()
+        if classification not in {"malicious", "suspicious", "benign", "inconclusive"}:
+            classification = "inconclusive"
+        try:
+            confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        rationale = str(parsed.get("rationale") or text)[:3500]
+        recommended_action = str(parsed.get("recommended_action") or "monitor")[:200]
+        return {
+            "investigation_id": stable_id,
+            "analysis": rationale,
+            "classification": classification,
+            "confidence": confidence,
+            "recommended_action": recommended_action,
+        }
 
     def cyberos_start(self) -> Dict[str, Any]:
         """Start CyberOS live defense monitoring."""

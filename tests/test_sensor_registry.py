@@ -73,6 +73,19 @@ class SensorRegistryTests(unittest.TestCase):
         self.assertEqual(file_create["runtime_state"], "partial")
         self.assertEqual(file_create["runtime_error"], "audit policy unverified")
 
+    def test_runtime_canonical_registry_id_takes_precedence_over_legacy_alias(self):
+        registry = build_runtime_registry(
+            "Windows",
+            [{"id": 17, "registry_id": 50, "state": "partial", "error": "source partial"}],
+        )
+        file_modify = registry[49]
+        cross_process = registry[16]
+
+        self.assertEqual(file_modify["runtime_state"], "partial")
+        self.assertEqual(file_modify["runtime_error"], "source partial")
+        self.assertEqual(cross_process["runtime_state"], "stopped")
+        self.assertNotIn("runtime_error", cross_process)
+
 
 if __name__ == "__main__":
     unittest.main()

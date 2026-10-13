@@ -6,12 +6,13 @@ Launches the complete SVS-Cyber agent system:
 2. Resilient Multi-Step Agent Runtime (multi-turn loop, doom-loop protection, compaction)
 3. Subagents Framework (13 specialists)
 4. Local FastAPI / WebSocket API server (real-time telemetry, tasks, notes, approval routing)
-5. HackerAI Next.js web interface
+5. SVS Cyber Protection Dashboard on Windows, with an explicit AI Agent tab
 
 Usage:
-    python cyber_main.py                # Launch with HackerAI web UI (recommended)
+    python cyber_main.py                # Launch the SVS Cyber dashboard (native on Windows)
     python cyber_main.py --web          # Headless web server only (accessible via browser)
     python cyber_main.py --port 8080    # Custom port for the web server
+    python cyber_main.py --browser      # Open the protection dashboard in a browser
 """
 
 from __future__ import annotations
@@ -64,8 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frontend-port",
         type=int,
-        default=6763,
-        help="Port for the HackerAI Next.js frontend (default: 6763)",
+        default=1420,
+        help="Loopback port for the browser dashboard (default: 1420)",
     )
     parser.add_argument(
         "--no-open",
@@ -75,14 +76,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--desktop",
         action="store_true",
-        help="Open the HackerAI-style Tauri desktop app instead of a browser",
+        help="Open the native SVS Cyber protection dashboard",
     )
     parser.add_argument(
         "--browser",
         action="store_true",
-        help="Open the frontend in a browser (default when --desktop is omitted)",
+        help="Open the SVS Cyber protection dashboard in a browser",
     )
     return parser
+
+
+def should_launch_desktop(args: argparse.Namespace, platform_name: str | None = None) -> bool:
+    """Choose the native protection dashboard by default on Windows."""
+    current_platform = platform_name or os.name
+    return bool(args.desktop or (current_platform == "nt" and not args.browser))
 
 
 def main() -> int:
@@ -114,13 +121,13 @@ def main() -> int:
             print("\n[*] Server stopped.")
             return 0
     else:
-        # HackerAI Web UI Mode. The desktop-facing launcher owns both child
-        # processes so closing this process cannot leave the local stack behind.
-        print(
-            f"[*] Mode: {'HackerAI-style desktop app' if args.desktop else 'HackerAI Web UI'}"
-        )
+        launch_desktop = should_launch_desktop(args)
+        if args.desktop and args.browser:
+            parser.error("--desktop and --browser cannot be used together")
+        # Windows opens the protection dashboard first; AI Agent is a separate tab.
+        print(f"[*] Mode: {'SVS Cyber desktop dashboard' if launch_desktop else 'SVS Cyber browser dashboard'}")
         print(f"[*] Backend API: {backend_url}")
-        print(f"[*] HackerAI UI: {frontend_url}")
+        print(f"[*] Protection dashboard: {frontend_url}")
 
         children: list[subprocess.Popen[bytes]] = []
         child_env = {**os.environ, "NEXT_PUBLIC_BACKEND_ORIGIN": backend_url}
@@ -182,58 +189,48 @@ def main() -> int:
                 wait_ready(backend_health_url, backend)
 
             node = shutil.which("node") or shutil.which("node.exe")
-            next_cli = os.path.join(
-                project_root, "ui", "hackerai", "node_modules", "next", "dist", "bin", "next",
-            )
-            if not node or not os.path.isfile(next_cli):
-                raise RuntimeError("Node.js or the local Next.js installation is unavailable")
-            if is_ready(frontend_url):
-                print("[*] Frontend is already running; reusing it.")
-            else:
-                frontend = start_process(
-                    [node, next_cli, "dev", "-p", str(args.frontend_port), "--turbopack"],
-                    os.path.join(project_root, "ui", "hackerai"),
-                )
-                # Probe the app root, not an incidental SEO route. A 404 on
-                # /robots.txt previously held the launcher for the full
-                # 360s timeout even though the dev server was serving; the
-                # root is the page the UI is actually opened on.
-                wait_ready(
-                    f"{frontend_url}/",
-                    frontend,
-                    timeout_seconds=360,
-                )
-
-            if args.desktop:
+            dashboard_dir = os.path.join(project_root, "ui", "hackerai", "packages", "protection-dashboard")
+            desktop_dir = os.path.join(project_root, "ui", "hackerai", "packages", "desktop")
+            if launch_desktop:
                 cargo = shutil.which("cargo")
                 tauri_cli = os.path.join(
-                    project_root,
-                    "ui",
-                    "hackerai",
-                    "packages",
-                    "desktop",
-                    "node_modules",
-                    ".bin",
-                    "tauri.cmd",
+                    desktop_dir, "node_modules", ".bin", "tauri.cmd",
                 )
-                if not cargo or not os.path.isfile(tauri_cli):
+                if os.name != "nt" or not cargo or not os.path.isfile(tauri_cli):
                     raise RuntimeError(
-                        "Desktop mode requires Rust/Cargo and the local Tauri CLI. "
+                        "The Windows desktop dashboard requires Windows, Rust/Cargo, and the local Tauri CLI. "
                         "Install Rust, then run `pnpm install` in ui/hackerai."
                     )
                 desktop = start_process(
-                    [tauri_cli, "dev", "-c", "src-tauri/tauri.dev.conf.json"],
-                    os.path.join(project_root, "ui", "hackerai", "packages", "desktop"),
+                    [tauri_cli, "dev", "--config", "src-tauri/tauri.windows.conf.json"],
+                    desktop_dir,
                 )
                 if desktop.poll() is not None:
                     raise RuntimeError(
                         f"Desktop app exited during startup with code {desktop.returncode}"
                     )
-                print("[*] Native HackerAI-style desktop window is ready.")
-            elif not args.no_open:
+                print("[*] Native SVS Cyber protection dashboard is starting.")
+            else:
+                pnpm = shutil.which("pnpm", path=child_env["PATH"]) or shutil.which("pnpm.cmd", path=child_env["PATH"])
+                if not node or not pnpm:
+                    raise RuntimeError("Node.js and pnpm are required to launch the protection dashboard")
+                # Probe the dashboard root explicitly; a 2xx on "/" means the UI
+                # is serving. Gating on an incidental route (e.g. /robots.txt),
+                # which a Next.js dev server 404s, would hang startup for the
+                # full timeout.
+                frontend_ready_url = f"{frontend_url}/"
+                if is_ready(frontend_ready_url):
+                    print("[*] Protection dashboard is already running; reusing it.")
+                else:
+                    frontend = start_process(
+                        [pnpm, "run", "dev", "--", "--port", str(args.frontend_port)],
+                        dashboard_dir,
+                    )
+                    wait_ready(frontend_ready_url, frontend, timeout_seconds=120)
+            if not launch_desktop and not args.no_open:
                 import webbrowser
                 webbrowser.open(frontend_url)
-            print("[*] Frontend and backend are ready. Press Ctrl+C to terminate.")
+            print("[*] Dashboard and backend are ready. Use its AI Agent tab to open the assistant.")
             while True:
                 for process in children:
                     if process.poll() is not None:

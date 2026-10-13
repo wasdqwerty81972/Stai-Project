@@ -14,6 +14,7 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
         val scope: String,
         val visibilityMayBeFiltered: Boolean,
         val truncated: Boolean,
+        val permissionsTruncated: Boolean,
         val applications: List<Map<String, Any?>>,
         val events: List<NativeEvent>,
     )
@@ -22,13 +23,16 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
         val limit = requestedLimit.coerceIn(1, MAX_APPLICATIONS)
         val packageManager = context.packageManager
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val packageNames = packageManager.queryIntentActivities(query, PackageManager.MATCH_DEFAULT_ONLY)
+        // The intent already specifies CATEGORY_LAUNCHER. MATCH_DEFAULT_ONLY
+        // would additionally require CATEGORY_DEFAULT and can hide launcher apps.
+        val discoveredPackageNames = packageManager.queryIntentActivities(query, 0)
             .mapNotNull { it.activityInfo?.packageName }
             .distinct()
             .sorted()
+        val packageNames = discoveredPackageNames.filter { it.length <= MAX_PACKAGE_NAME_LENGTH }
         val truncated = packageNames.size > limit
         val selected = packageNames.take(limit)
-        var inaccessiblePackages = 0
+        var inaccessiblePackages = discoveredPackageNames.size - packageNames.size
         var permissionsTruncated = false
         val observedAt = System.currentTimeMillis()
         val applications = selected.mapNotNull { packageName ->
@@ -38,19 +42,31 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
                     inaccessiblePackages++
                     return@mapNotNull null
                 }
-                val requestedPermissions = packageInfo.requestedPermissions.orEmpty()
-                    .asSequence()
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                    .sorted()
-                    .toList()
-                if (requestedPermissions.size > MAX_PERMISSIONS_PER_APP) {
+                val requestedNames = packageInfo.requestedPermissions.orEmpty()
+                val permissionFlags = packageInfo.requestedPermissionsFlags
+                val permissionGrantStateAvailable = requestedNames.isEmpty() ||
+                    permissionFlags?.size == requestedNames.size
+                val permissionEntries = requestedNames.mapIndexedNotNull { index, permission ->
+                    if (permission.isNullOrBlank()) {
+                        null
+                    } else if (permission.length > MAX_PERMISSION_NAME_LENGTH) {
+                        permissionsTruncated = true
+                        null
+                    } else {
+                        permission to (
+                        permissionFlags?.getOrNull(index)?.and(PackageInfo.REQUESTED_PERMISSION_GRANTED) ==
+                            PackageInfo.REQUESTED_PERMISSION_GRANTED
+                        )
+                    }
+                }.distinctBy { it.first }.sortedBy { it.first }
+                if (permissionEntries.size > MAX_PERMISSIONS_PER_APP) {
                     permissionsTruncated = true
                 }
-                val boundedRequested = requestedPermissions.take(MAX_PERMISSIONS_PER_APP)
-                val grantedPermissions = boundedRequested.filter { permission ->
-                    packageManager.checkPermission(permission, packageName) == PackageManager.PERMISSION_GRANTED
-                }
+                val boundedEntries = permissionEntries.take(MAX_PERMISSIONS_PER_APP)
+                val boundedRequested = boundedEntries.map { it.first }
+                val grantedPermissions = boundedEntries
+                    .filter { permissionGrantStateAvailable && it.second }
+                    .map { it.first }
                 val installer = installerPackageName(packageManager, packageName)
                 mapOf(
                     "packageName" to packageName,
@@ -61,6 +77,7 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
                     "isSystemApp" to isSystemApp(appInfo),
                     "requestedPermissions" to boundedRequested,
                     "grantedPermissions" to grantedPermissions,
+                    "permissionGrantStateAvailable" to permissionGrantStateAvailable,
                 )
             } catch (_: PackageManager.NameNotFoundException) {
                 // Apps can disappear between the launcher query and metadata read.
@@ -123,6 +140,7 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
             scope = scope,
             visibilityMayBeFiltered = visibilityMayBeFiltered,
             truncated = truncated,
+            permissionsTruncated = permissionsTruncated,
             applications = applications,
             events = events,
         )
@@ -164,7 +182,7 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
             packageManager.getInstallSourceInfo(packageName).installingPackageName
         } else {
             packageManager.getInstallerPackageName(packageName)
-        }?.take(MAX_PACKAGE_NAME_LENGTH)
+        }?.takeIf { it.length <= MAX_PACKAGE_NAME_LENGTH }
     } catch (_: PackageManager.NameNotFoundException) {
         null
     } catch (_: SecurityException) {
@@ -175,7 +193,10 @@ class AndroidVisibleAppInventoryCollector(private val context: Context) {
         const val SCOPE = "launchable_packages_visible_to_this_app"
         const val INVENTORY_SCHEMA_VERSION = 1
         const val MAX_APPLICATIONS = 200
-        private const val MAX_PERMISSIONS_PER_APP = 128
+        // Keep the largest journal event bounded even when a device has many
+        // launcher apps with unusually large permission declarations.
+        private const val MAX_PERMISSIONS_PER_APP = 32
+        private const val MAX_PERMISSION_NAME_LENGTH = 255
         private const val MAX_LABEL_LENGTH = 120
         private const val MAX_VERSION_LENGTH = 100
         private const val MAX_PACKAGE_NAME_LENGTH = 255

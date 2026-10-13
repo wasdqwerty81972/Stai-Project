@@ -189,6 +189,19 @@ button:focus-visible, textarea:focus-visible {
 .health-list > div:last-child { border-bottom: 0; }
 .health-list > div > span { color: #8593a7; font-size: 9px; }
 .health-list strong { max-width: 58%; overflow: hidden; color: #d0d9e6; font-size: 9px; font-weight: 570; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.sensor-category-list { display: grid; gap: 7px; margin-top: 15px; }
+.sensor-category { overflow: hidden; border: 1px solid rgba(130, 150, 180, 0.12); border-radius: 8px; background: rgba(11, 17, 27, 0.45); }
+.sensor-category summary { display: flex; min-height: 36px; align-items: center; justify-content: space-between; padding: 0 12px; color: #bdc9d8; cursor: pointer; font-size: 10px; font-weight: 620; text-transform: capitalize; }
+.sensor-category summary span { color: #8593a7; font-variant-numeric: tabular-nums; }
+.sensor-category .health-list { padding: 0 12px 8px; }
+.sensor-category .health-list > div > span { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sensor-ai-review-panel { margin-bottom: 14px; }
+.sensor-warning-list { display: grid; gap: 9px; }
+.sensor-warning { padding: 12px; border: 1px solid rgba(110, 134, 169, 0.15); border-radius: 8px; background: rgba(11, 17, 27, 0.45); }
+.sensor-warning-heading { display: flex; justify-content: space-between; gap: 12px; color: #e3eaf4; font-size: 11px; }
+.sensor-warning-heading span { color: #6fe1b0; font-size: 9px; text-transform: capitalize; }
+.sensor-warning p { margin: 8px 0; color: #a9b6c7; font-size: 10px; line-height: 1.6; white-space: pre-wrap; }
+.sensor-warning-meta { color: #758399; font-size: 9px; }
 .recent-panel { padding-bottom: 10px; }
 .panel-heading-wide { margin-bottom: 11px; }
 .panel-heading-wide .text-button { font-size: 9px; }

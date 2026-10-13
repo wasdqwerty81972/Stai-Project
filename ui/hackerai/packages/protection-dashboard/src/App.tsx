@@ -92,6 +92,12 @@ export default function App() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (page !== "AI Agent" && page !== "System Status") return;
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => window.clearInterval(timer);
+  }, [page, refresh]);
+
   const activeScan = scan?.state === "running" || scan?.state === "queued";
   useEffect(() => {
     if (!activeScan || !scan) return;
@@ -311,6 +317,7 @@ export default function App() {
                 history={history}
                 historyError={historyError}
                 onSend={handleSendAgentMessage}
+                sensorWarnings={status?.sensors?.warnings ?? []}
               />
             )}
             {page === "System Status" && <SystemStatus status={status} error={statusError} />}
@@ -329,7 +336,7 @@ export default function App() {
             )}
             {page === "Settings" && <SettingsView status={status} />}
           </div>
-          <footer className="page-footer">STAI Protection · Local Windows dashboard · Status reflects service-reported evidence</footer>
+          <footer className="page-footer">SVS Cyber · Local Windows dashboard · Status reflects service-reported evidence</footer>
         </div>
       </main>
     </div>

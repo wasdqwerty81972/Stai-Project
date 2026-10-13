@@ -3,6 +3,8 @@ package com.svscyber.mobile
 import android.os.Handler
 import android.os.Looper
 import android.content.Context
+import android.net.Uri
+import android.os.CancellationSignal
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -10,11 +12,16 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
-/** Version 1 Flutter bridge. Every event is journaled before a method/event response is delivered. */
+/** Version 1 Flutter bridge. Observation events are journaled before delivery. */
 class MobilePlatformChannels(
     binaryMessenger: BinaryMessenger,
     context: Context,
+    private val selectDocument: ((Boolean, (Uri?, Boolean) -> Unit) -> Unit)? = null,
+    private val getVpnStatus: (() -> Map<String, Any>)? = null,
+    private val requestVpnConsent: (((Map<String, Any>) -> Unit) -> Unit)? = null,
 ) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = STORAGE_WORKER
@@ -22,6 +29,10 @@ class MobilePlatformChannels(
     private val collector = AndroidDeviceBaselineCollector(context.applicationContext)
     private val appInventoryCollector = AndroidVisibleAppInventoryCollector(context.applicationContext)
     private val credentialVault = AndroidCredentialVault(context.applicationContext)
+    private val selectedFileInspector = AndroidSelectedFileInspector(context.applicationContext)
+    private var inspectionCancellation: CancellationSignal? = null
+    private var inspectionRunning = false
+    private var inspectionTimeout: Runnable? = null
     private val privacyPreferences = context.applicationContext.getSharedPreferences(
         PRIVACY_PREFERENCES,
         Context.MODE_PRIVATE,
@@ -44,6 +55,11 @@ class MobilePlatformChannels(
 
     fun detach() {
         attached = false
+        inspectionTimeout?.let { mainHandler.removeCallbacks(it) }
+        inspectionTimeout = null
+        inspectionCancellation?.let { signal -> CANCELLATION_WORKER.execute { signal.cancel() } }
+        if (inspectionCancellation != null && !inspectionRunning) FILE_BUSY.set(false)
+        inspectionCancellation = null
         methods.setMethodCallHandler(null)
         credentialMethods.setMethodCallHandler(null)
         privacySetupMethods.setMethodCallHandler(null)
@@ -66,15 +82,130 @@ class MobilePlatformChannels(
                     "methodChannel" to METHOD_CHANNEL,
                     "eventChannel" to EVENT_CHANNEL,
                     "credentialVaultChannel" to CREDENTIAL_CHANNEL,
-                    "methods" to listOf("getContract", "collectDeviceBaseline", "readEvents", "getJournalStatus"),
+                    "methods" to listOf("getContract", "collectDeviceBaseline", "collectVisibleApplicationInventory", "selectAndInspectFile", "readEvents", "getJournalStatus", "getVpnStatus", "requestVpnConsent"),
                     "continuousMonitoring" to false,
                 ),
             )
             "collectDeviceBaseline" -> collectBaseline(result)
             "collectVisibleApplicationInventory" -> collectVisibleApplications(call, result)
+            "selectAndInspectFile" -> selectAndInspectFile(call, result)
             "readEvents" -> readEvents(call, result)
             "getJournalStatus" -> getJournalStatus(result)
+            "getVpnStatus" -> result.success(getVpnStatus?.invoke() ?: unavailableVpnStatus())
+            "requestVpnConsent" -> {
+                val requester = requestVpnConsent
+                if (requester == null) result.success(unavailableVpnStatus())
+                else requester { status -> if (attached) result.success(status) }
+            }
             else -> result.notImplemented()
+        }
+    }
+
+    private fun unavailableVpnStatus(): Map<String, Any> = mapOf(
+        "contractVersion" to NativeEvent.CONTRACT_VERSION,
+        "enabledForBuild" to false,
+        "consentGranted" to false,
+        "tunnelActive" to false,
+        "monitoringActive" to false,
+        "state" to "unavailable",
+        "torState" to "unavailable",
+        "bridgeReady" to false,
+        "dnsReady" to false,
+        "coverage" to "none",
+        "reasonCode" to "vpn_not_enabled_for_build",
+    )
+
+    private fun selectAndInspectFile(call: MethodCall, result: MethodChannel.Result) {
+        val apk = (call.arguments as? Map<*, *>)?.get("apk") as? Boolean
+        if (apk == null) {
+            result.error("INVALID_ARGUMENTS", "An APK mode is required.", null)
+            return
+        }
+        val selector = selectDocument
+        if (selector == null) {
+            result.error("FILE_SELECTION_UNAVAILABLE", "Document selection is unavailable.", null)
+            return
+        }
+        if (!FILE_BUSY.compareAndSet(false, true)) {
+            result.error("FILE_INSPECTION_BUSY", "Inspection is already in progress.", null)
+            return
+        }
+        val cancellation = CancellationSignal()
+        inspectionCancellation = cancellation
+        try {
+            selector(apk) { uri, cancelled ->
+                if (!attached) return@selector
+                if (cancelled || uri == null || uri.scheme != "content") {
+                    inspectionCancellation = null
+                    FILE_BUSY.set(false)
+                    if (cancelled) result.success(null)
+                    else result.error("FILE_INSPECTION_FAILED", "No readable document was selected.", null)
+                    return@selector
+                }
+                inspectionRunning = true
+                // Exactly one outward completion. A blocked provider/parser may
+                // take longer to release resources; keep the global slot occupied
+                // until its finally block finishes rather than queue more work.
+                val completed = AtomicBoolean(false)
+                val bytesRead = AtomicLong(0)
+                val timeout = Runnable {
+                    if (attached && completed.compareAndSet(false, true)) {
+                        result.success(mapOf(
+                            "contractVersion" to NativeEvent.CONTRACT_VERSION,
+                            "apkRequested" to apk, "status" to "timedOut",
+                            "contentType" to null, "byteSize" to null,
+                            "bytesRead" to bytesRead.get(), "maxBytes" to AndroidSelectedFileInspector.MAX_BYTES,
+                            "sha256" to null, "apkMetadata" to null, "metadataTruncated" to false,
+                        ))
+                    }
+                    CANCELLATION_WORKER.execute { cancellation.cancel() }
+                }
+                inspectionTimeout = timeout
+                mainHandler.postDelayed(timeout, AndroidSelectedFileInspector.TIMEOUT_MS)
+                FILE_WORKER.execute {
+                    try {
+                        val payload = selectedFileInspector.inspect(uri, apk, cancellation) { bytesRead.set(it) }
+                        // The APK catalogue supports this compact observation.
+                        // Generic hashing is not a malware hash match capability.
+                        if (apk && payload["status"] == "complete" && !cancellation.isCanceled) {
+                            val now = System.currentTimeMillis()
+                            val metadata = payload["apkMetadata"] as? Map<*, *>
+                            val observation = NativeEvent(
+                                capabilityId = "AND-017", occurredAtEpochMs = now, observedAtEpochMs = now,
+                                availability = "available", operation = "completed", freshness = "fresh",
+                                evidence = mapOf("scope" to "user_selected_apk", "inspectionSchemaVersion" to 1,
+                                    "status" to payload["status"], "byteSize" to payload["byteSize"],
+                                    "sha256" to payload["sha256"], "packageName" to metadata?.get("packageName"),
+                                    "metadataTruncated" to payload["metadataTruncated"]),
+                            )
+                            // Serialize all journal access through its existing worker.
+                            worker.submit { journal.append(observation) }.get()
+                            deliver { if (!completed.get()) eventSink?.success(observation.toChannelMap()) }
+                        }
+                        deliver { if (completed.compareAndSet(false, true)) result.success(payload) }
+                    } catch (_: Exception) {
+                        deliver {
+                            if (completed.compareAndSet(false, true)) {
+                                result.error("FILE_INSPECTION_FAILED", "The selected document could not be inspected.", null)
+                            }
+                        }
+                    } finally {
+                        FILE_BUSY.set(false)
+                        mainHandler.post {
+                            mainHandler.removeCallbacks(timeout)
+                            if (inspectionCancellation === cancellation) {
+                                inspectionCancellation = null
+                                inspectionTimeout = null
+                                inspectionRunning = false
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            inspectionCancellation = null
+            FILE_BUSY.set(false)
+            result.error("FILE_SELECTION_UNAVAILABLE", "Document selection is unavailable.", null)
         }
     }
 
@@ -146,6 +277,7 @@ class MobilePlatformChannels(
                     "scope" to collected.scope,
                     "visibilityMayBeFiltered" to collected.visibilityMayBeFiltered,
                     "truncated" to collected.truncated,
+                    "permissionsTruncated" to collected.permissionsTruncated,
                     "applications" to collected.applications,
                     "events" to collected.events.map { it.toChannelMap() },
                 )
@@ -247,6 +379,9 @@ class MobilePlatformChannels(
     }
 
     companion object {
+        private val FILE_BUSY = AtomicBoolean(false)
+        private val FILE_WORKER = Executors.newSingleThreadExecutor { task -> Thread(task, "mobile-selected-file") }
+        private val CANCELLATION_WORKER = Executors.newSingleThreadExecutor { task -> Thread(task, "mobile-file-cancellation") }
         // Serialize journal/vault work across Activity/engine recreation so an
         // old engine cannot compact the same file while its successor appends.
         private val STORAGE_WORKER: ExecutorService = Executors.newSingleThreadExecutor { task ->

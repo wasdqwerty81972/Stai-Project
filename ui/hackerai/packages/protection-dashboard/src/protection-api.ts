@@ -22,7 +22,56 @@ export interface ProtectionStatus {
     query_available: boolean;
   } | null;
   sensor_coverage: Record<string, string | boolean | null> | null;
+  sensors: SensorRuntimeStatus | null;
+  sensor_error: string | null;
   last_error: string | null;
+}
+
+export interface SensorRegistryEntry {
+  id: number;
+  key: string;
+  name: string;
+  category: string;
+  layer: string;
+  runtime_state: string;
+  runtime_error?: string | null;
+  host_support: string;
+}
+
+export interface SensorRuntimeStatus {
+  running: boolean;
+  platform: string;
+  registry_version: string;
+  registry: SensorRegistryEntry[];
+  capabilities: Array<{ id: number; registry_id: number; key: string; name: string; state: string; error: string }>;
+  queue: { depth: number; capacity: number; dropped: number; deduplicated: number; backpressure: number };
+  last_event_time: string | null;
+  last_error: string | null;
+  privacy: Record<string, boolean>;
+  warnings: SensorWarning[];
+  drop_folder_watch?: {
+    state: "running" | "error" | "unavailable" | string;
+    roots: string[];
+    active_roots: number;
+    errors: Record<string, string>;
+    coverage: string;
+  };
+}
+
+export interface SensorWarning {
+  event_id: string;
+  sensor_ids: number[];
+  timestamp: string;
+  severity: string;
+  summary: string;
+  evidence: string[];
+  protection_state: string;
+  ai_state: string;
+  ai_analysis: string | null;
+  classification?: string | null;
+  ai_confidence?: number | null;
+  protection_action?: string | null;
+  recommended_action?: string | null;
 }
 
 export interface ScanJob {

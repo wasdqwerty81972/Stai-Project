@@ -5,6 +5,7 @@ import type {
   AgentReply,
   DetectionRecord,
   TriageRecord,
+  SensorWarning,
 } from "../protection-api";
 import { DetectionRow } from "./DetectionRow";
 import { EmptyState } from "./EmptyState";
@@ -22,6 +23,7 @@ export function AgentView({
   history,
   historyError,
   onSend,
+  sensorWarnings,
 }: {
   threats: DetectionRecord[] | null;
   threatsError: string | null;
@@ -34,6 +36,7 @@ export function AgentView({
   history: AgentHistory | null;
   historyError: string | null;
   onSend: (message: string) => Promise<AgentReply>;
+  sensorWarnings: SensorWarning[];
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -68,6 +71,30 @@ export function AgentView({
         title="AI Agent"
         description="Review stored analysis for a detection and ask evidence-scoped follow-up questions."
       />
+      <section className="panel sensor-ai-review-panel">
+        <div className="panel-heading">
+          <div><div className="eyebrow">CYBEROS SENSOR TRIAGE</div><h2>Autonomous warning review</h2></div>
+          <span className="panel-icon"><Sparkles size={18} aria-hidden="true" /></span>
+        </div>
+        {sensorWarnings.length === 0 ? (
+          <EmptyState title="No sensor warnings" description="Rule-matched warnings are saved by the Windows service and reviewed by the configured AI provider when available." />
+        ) : (
+          <div className="sensor-warning-list">
+            {sensorWarnings.map((warning) => (
+              <article className="sensor-warning" key={warning.event_id}>
+                <div className="sensor-warning-heading"><strong>{warning.summary}</strong><span>{warning.ai_state.replaceAll("_", " ")}</span></div>
+                <p>{warning.ai_analysis || "AI analysis is queued or unavailable; the warning remains stored for retry."}</p>
+                <div className="sensor-warning-meta">
+                  {warning.severity} · sensors {warning.sensor_ids.join(", ")} · protection {warning.protection_state}
+                  {warning.classification ? ` · AI ${warning.classification}` : ""}
+                  {warning.ai_confidence !== null && warning.ai_confidence !== undefined ? ` (${Math.round(warning.ai_confidence * 100)}%)` : ""}
+                  {warning.protection_action ? ` · ${warning.protection_action.replaceAll("_", " ")}` : ""}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
       <div className="agent-layout">
         <section className="panel agent-detections-panel">
           <div className="panel-heading">

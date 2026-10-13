@@ -15,7 +15,7 @@ void main() {
 
   CapabilityDefinition capability(String id) => catalog[id]!;
 
-  const baselineIds = {
+  const partiallyImplementedIds = {
     'AND-001',
     'AND-002',
     'AND-003',
@@ -24,6 +24,13 @@ void main() {
     'AND-113',
     'AND-115',
     'AND-116',
+    'AND-012',
+    'AND-013',
+    'AND-016',
+    'AND-025',
+    'AND-026',
+    'AND-017',
+    'AND-081',
   };
 
   group('capability catalogue feasibility metadata', () {
@@ -35,7 +42,7 @@ void main() {
         expect(entry.id, 'AND-${(index + 1).toString().padLeft(3, '0')}');
         expect(
           entry.implementation,
-          baselineIds.contains(entry.id)
+          partiallyImplementedIds.contains(entry.id)
               ? CapabilityImplementationStatus.partial
               : CapabilityImplementationStatus.planned,
         );
@@ -44,7 +51,7 @@ void main() {
         expect(entry.freshness, CapabilityFreshness.neverObserved);
         expect(
           entry.backgroundExecution,
-          baselineIds.contains(entry.id)
+          partiallyImplementedIds.contains(entry.id)
               ? 'user_initiated_snapshot_only'
               : 'none_until_collector_exists',
         );
@@ -98,6 +105,17 @@ void main() {
       expect(inventory.accessRequirements.join(' '), contains('QUERY_ALL_PACKAGES'));
       expect(inventory.limitations.join(' '), contains('snapshot'));
 
+      final visiblePackages = capability('AND-012');
+      expect(visiblePackages.implementation, CapabilityImplementationStatus.partial);
+      expect(visiblePackages.accessClass, CapabilityAccessClass.packageVisibility);
+      expect(visiblePackages.collectorDependency, 'android_visible_app_inventory_v1');
+      expect(visiblePackages.limitations.join(' '), contains('launchable applications'));
+
+      final permissions = capability('AND-025');
+      expect(permissions.implementation, CapabilityImplementationStatus.partial);
+      expect(permissions.accessRequirements.join(' '), contains('no runtime permission'));
+      expect(permissions.limitations.join(' '), contains('not evidence that an app exercised them'));
+
       final usage = capability('AND-033');
       expect(usage.accessRequirements.join(' '), contains('Usage Access'));
       expect(usage.limitations.join(' '), contains('historical'));
@@ -117,6 +135,16 @@ void main() {
       final redirect = capability('AND-085');
       expect(redirect.accessRequirements.join(' '), contains('submit/share'));
       expect(redirect.accessRequirements.join(' '), contains('network'));
+
+      final apkMetadata = capability('AND-017');
+      expect(apkMetadata.implementation, CapabilityImplementationStatus.partial);
+      expect(apkMetadata.collectorDependency, 'android_selected_apk_inspection_v1');
+      expect(apkMetadata.limitations.join(' '), contains('does not establish'));
+
+      final localUrl = capability('AND-081');
+      expect(localUrl.implementation, CapabilityImplementationStatus.partial);
+      expect(localUrl.collectorDependency, 'mobile_url_local_check_v1');
+      expect(localUrl.limitations.join(' '), contains('does not fetch'));
     });
 
     test('classifies lock activity and sensitive device states by their actual access', () {

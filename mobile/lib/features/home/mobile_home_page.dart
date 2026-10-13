@@ -100,7 +100,7 @@ class _MobileHomePageState extends State<MobileHomePage> {
             const _InfoCard(
               icon: Icons.hourglass_empty_rounded,
               title: 'Monitoring is not enabled',
-              detail: 'This build performs a one-time device baseline only. No continuous collectors are active.',
+              detail: 'This build performs user-requested point-in-time checks only. No continuous collectors are active.',
               badge: 'POINT-IN-TIME',
             ),
             const SizedBox(height: 14),

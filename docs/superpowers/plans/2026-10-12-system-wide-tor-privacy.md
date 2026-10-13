@@ -39,6 +39,7 @@
 - Before the gate can pass, the VM must capture traffic on every relevant egress interface and prove IPv4, IPv6, DNS (including TCP fallback), unsupported UDP/QUIC/ICMP blocking, Tor/TUN/broker crash behavior, reboot behavior, UAC denial, VPN/network-change handling, and restoration. Preserve the captures, initial/final route and DNS state, WFP policy inventory, and recovery result in the evidence artifact.
 - Specify and test persistent WFP provider/sublayer/filter/session semantics, compartments and interfaces, and crash/reboot behavior. The Tor process bypass must be narrowly constrained and validated; an application-wide Tor executable exception is not sufficient evidence. Validate driver signature, provenance, supported Windows versions, install/update/rollback lifecycle, and licenses before packaging.
 - The elevated broker must use protected pipe creation, reject remote clients, impersonate and validate caller identity for every request, use bounded framing/timeouts, and never accept caller-supplied paths, executables, interfaces, routes, or exemptions. UAC at broker launch alone is not consent for later state changes. Recovery snapshots and partial install/remove behavior must be durable and crash-safe.
+- Current development state: a pure Python status model and read-only runtime/config prototype exist in the isolated `codex/tor-privacy-foundation` worktree. The approved runtime manifest remains unset; there is no enable path, WFP policy, broker, UI, or device protection yet.
 
 ---
 
@@ -80,6 +81,12 @@
 - [ ] **Step 5: Verify restoration** — confirm an explicit stop restores the VM's captured original connectivity without removing unrelated rules.
 - [ ] **Step 6: Record and review decision** — mark each check pass/fail with packet capture and state evidence; if any critical check fails or evidence is incomplete, revise the design and stop before product integration.
 
+### Candidate artifact research (not yet approved for packaging)
+
+- Tor Expert Bundle Windows x86-64 `15.0.24`: official archive SHA-256 `e9dc6ccc93cd6afa507193f4de284d6424233ff5102155cd2c94b259e8a22b65`, listed in Tor Project's [signed build checksums](https://dist.torproject.org/torbrowser/15.0.24/sha256sums-signed-build.txt). Tor documents detached-signature verification and the Tor Browser Developers fingerprint `EF6E286DDA85EA2A4BA7DE684E2C6E8793298290` [here](https://support.torproject.org/tor-browser/getting-started/verifying-tor-browser/). The artifact signature has not yet been verified locally.
+- sing-box Windows amd64 `1.14.2`: official release asset SHA-256 `c2d8bfff918755808781dfdeeb8581b6c91eb3a243d9a7b55483cfc0c0684d32`, listed on the [upstream release assets](https://github.com/SagerNet/sing-box/releases/expanded_assets/v1.14.2). The upstream repository declares GPL-3.0-or-later. Release provenance, license notices for the full dependency set, and Windows behavior still require review.
+- These are research candidates only. Do not set `APPROVED_RUNTIME_MANIFEST` or bundle the artifacts until the signature/provenance and VM gates pass.
+
 ## Task 2: Model Privacy State and Validate Runtime Configuration
 
 **Files:**
@@ -98,9 +105,9 @@
 - [x] **Step 1: Write failing state-model tests** — assert valid state values, defaults, JSON serialization, sanitized errors, and unsupported-platform status.
 - [x] **Step 2: Run the focused tests and confirm failure** — `pytest tests/test_tor_privacy_models.py -q` must fail because the types do not exist.
 - [x] **Step 3: Implement the models** — use immutable dataclasses and a `str, Enum` state enum; do not represent unknown coverage as true.
-- [ ] **Step 4: Write failing runtime validation tests** — cover missing runtime, wrong executable names, checksum mismatch, signature failure, unsupported versions, unsafe config paths, and loopback-only SOCKS binding.
-- [ ] **Step 5: Implement read-only discovery/config generation** — use pinned manifest values from Task 1; reject path traversal, unverified binaries, direct DNS, direct application outbounds, non-loopback SOCKS binds, and unrecognized config fields.
-- [ ] **Step 6: Run focused tests** — `pytest tests/test_tor_privacy_models.py tests/test_tor_privacy_runtime.py -q` must pass.
+- [x] **Step 4: Write runtime validation tests** — cover fixed paths, missing binaries, hash/version/provenance pin mismatch, path escape, and the loopback Tor SOCKS/TCP-only/DNS/UDP-block config shape. Cryptographic artifact signature verification remains part of Task 1.
+- [ ] **Step 5: Implement read-only discovery/config generation** — an initial prototype exists, but the approved manifest is deliberately unset and release-time signature verification is not implemented. Keep this task open until the exact verified artifacts and required config validation are approved in Task 1.
+- [x] **Step 6: Run focused tests** — `pytest tests/test_tor_privacy_models.py tests/test_tor_privacy_runtime.py -q` passes (39 tests).
 
 ## Task 3: Add a Narrow, Elevated Windows Policy Broker
 

@@ -16,6 +16,21 @@ const _baselineCapabilityIds = {
   'AND-116',
 };
 
+const _visibleAppInventoryCapabilityIds = {
+  'AND-012',
+  'AND-013',
+  'AND-016',
+  'AND-025',
+  'AND-026',
+};
+
+const _partialCapabilityIds = {
+  ..._baselineCapabilityIds,
+  ..._visibleAppInventoryCapabilityIds,
+  'AND-017',
+  'AND-081',
+};
+
 /// The bundled catalogue is metadata, not a collector or live status source.
 class CapabilityCatalog {
   CapabilityCatalog._(List<CapabilityDefinition> entries)
@@ -69,7 +84,7 @@ class CapabilityCatalog {
         throw FormatException('$expectedId has an invalid tier.');
       }
 
-      final expectedImplementation = _baselineCapabilityIds.contains(entry.id)
+      final expectedImplementation = _partialCapabilityIds.contains(entry.id)
           ? CapabilityImplementationStatus.partial
           : CapabilityImplementationStatus.planned;
       if (entry.implementation != expectedImplementation ||
@@ -86,7 +101,7 @@ class CapabilityCatalog {
           entry.collectorDependency.isEmpty) {
         throw FormatException('$expectedId has invalid platform dependencies.');
       }
-      final expectedBackground = _baselineCapabilityIds.contains(entry.id)
+      final expectedBackground = _partialCapabilityIds.contains(entry.id)
           ? 'user_initiated_snapshot_only'
           : 'none_until_collector_exists';
       if (entry.backgroundExecution != expectedBackground) {

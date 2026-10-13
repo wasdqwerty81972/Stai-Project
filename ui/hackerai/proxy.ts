@@ -315,6 +315,12 @@ function logMalformedAction(request: NextRequest): void {
 
 export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const isWorkOSConfigured = Boolean(
+    process.env.WORKOS_API_KEY ||
+      process.env.WORKOS_CLIENT_ID ||
+      process.env.NEXT_PUBLIC_WORKOS_API_KEY ||
+      process.env.NEXT_PUBLIC_WORKOS_CLIENT_ID,
+  );
   if (
     pathname === "/api/analytics-consent" ||
     pathname === "/api/health/connectivity" ||
@@ -330,13 +336,21 @@ export default async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  if (!isWorkOSConfigured) {
+    if (isPublicRequest(request) && !isServerAction(request)) {
+      const response = NextResponse.next();
+      captureAttribution(request, response);
+      return response;
+    }
+    return unauthorized(request);
+  }
+
   // Public pages should remain usable in a fresh local checkout before an
   // operator configures AuthKit. Protected routes still fail closed below.
   if (
     process.env.NODE_ENV === "development" &&
-    !process.env.WORKOS_API_KEY &&
-    !process.env.WORKOS_CLIENT_ID &&
-    isPublicRequest(request)
+    isPublicRequest(request) &&
+    !isServerAction(request)
   ) {
     const response = NextResponse.next();
     captureAttribution(request, response);
@@ -369,6 +383,10 @@ export default async function proxy(request: NextRequest) {
       },
       { status: 400 },
     );
+  }
+
+  if (process.env.NODE_ENV === "development" && !isWorkOSConfigured) {
+    return unauthorized(request);
   }
 
   let endedSession = false;
