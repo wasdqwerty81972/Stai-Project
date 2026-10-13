@@ -7,7 +7,7 @@ Scope: source and tests in the current `codex/mobile-phase2-tools` worktree. Run
 
 SVS-Cyber already has a custom user-mode scanner, a signed rule package, SQLite persistence, a Windows service and named-pipe bridge, a selected-folder file watcher, a minifilter source tree, and a native protection dashboard. These components are not equivalent to a complete or production-ready antivirus. The current detection content is a single exact SHA-256 EICAR rule; broad file analysis, archive inspection, complete scan coverage, process/network views, and signed-driver runtime validation remain absent or incomplete.
 
-Three correctness and safety defects were fixed during this audit:
+Correctness and safety defects fixed during this audit:
 
 - A verified high-confidence SHA-256 block match now survives a YARA timeout or runtime failure. Without such a hash match, the result remains `unknown` when YARA is unavailable.
 - AI classifications from sensor investigations are advisory. They no longer manufacture a high-confidence block verdict or quarantine a file. The existing automatic quarantine path is limited to local high-confidence rule matches; a general approval-gated response controller is still missing.

@@ -10,7 +10,7 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 ## Current verified baseline
 
 - Per-file scanning hashes stable regular files and matches signed SHA-256/YARA rules. The signed demo package recognizes the exact EICAR file.
-- Background Quick and System scans exist but use fixed roots; LocalSystem Quick Scan can select the wrong profile. Full scan only targets `C:\`. Traversal errors and skipped/unknown files are not represented accurately.
+- Background Quick and System scans exist. Windows Quick Scan now selects the enrolled user's local profile roots and saves them per job; scan accounting and traversal coverage remain incomplete. Full scan still targets only `C:\`.
 - SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage; there is no full reputation database or verified update activation system.
 - A Windows service, authenticated named pipe, user-mode folder watcher, and minifilter source exist. The service/driver are not installed and there is no signed production driver package.
 - The sensor catalogue has 256 definitions, of which 2 are source-marked implemented and 12 partial; zero were active on the inspected host. The watcher currently emits file sensor IDs that disagree with the canonical registry.
@@ -24,7 +24,6 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 - [x] Keep an exact signed hash block verdict when optional YARA fails; preserve `unknown` when only YARA/observe evidence exists.
 - [x] Ensure AI-generated classifications remain advisory and cannot manufacture a deterministic block verdict.
 - [x] Align selected-folder watcher event IDs with the canonical file creation/modification sensors 49/50.
-- [x] Resolve Windows Quick Scan roots from the enrolled dashboard user's profile and redirected Downloads/Desktop folders; store each job's immutable root snapshot.
 - [ ] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
 - [ ] Replace the count-then-rescan traversal with one bounded traversal that records root access failures, permission errors, reparse-point skips, locked/oversized files, and cancellation truthfully.
 - [ ] Validate service-start recovery for interrupted jobs; do not show an incomplete job as clean.
