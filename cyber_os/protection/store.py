@@ -15,7 +15,7 @@ from typing import Any, Iterator, Literal, Optional, Sequence
 from .models import DetectionRule, RuleSet, ScanVerdict
 
 
-DB_SCHEMA_VERSION = 4
+DB_SCHEMA_VERSION = 5
 
 CREATE_TABLES_SQL = """
 PRAGMA journal_mode = WAL;
@@ -75,6 +75,21 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_jobs_state ON scan_jobs(state);
+
+CREATE TABLE IF NOT EXISTS scan_schedule (
+    schedule_id INTEGER PRIMARY KEY CHECK(schedule_id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),
+    frequency TEXT NOT NULL DEFAULT 'daily' CHECK(frequency IN ('daily', 'weekly')),
+    scope TEXT NOT NULL DEFAULT 'quick' CHECK(scope IN ('quick', 'system')),
+    local_time TEXT NOT NULL DEFAULT '03:00',
+    weekday INTEGER CHECK(weekday BETWEEN 0 AND 6),
+    next_run_at TEXT,
+    last_run_at TEXT,
+    last_job_id TEXT,
+    last_result TEXT,
+    error_message TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS quarantine_items (
     item_id TEXT PRIMARY KEY,
@@ -570,6 +585,21 @@ class ProtectionStore:
             )
         return job
 
+    def recover_interrupted_scans(self) -> int:
+        """Mark nonterminal jobs left by a prior service process as failed."""
+        completed_at = datetime.now().isoformat()
+        message = "Scan was interrupted when the protection service stopped."
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE scan_jobs
+                SET state = 'failed', completed_at = ?, error_message = ?
+                WHERE state IN ('pending', 'running')
+                """,
+                (completed_at, message),
+            )
+            return cursor.rowcount
+
     def update_scan_job(
         self,
         job_id: str,
@@ -648,6 +678,77 @@ class ProtectionStore:
                 engine_version=row["engine_version"],
                 rules_version=row["rules_version"],
                 duration_ms=row["duration_ms"],
+            )
+
+    def get_scan_schedule(self) -> dict[str, Any]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM scan_schedule WHERE schedule_id = 1").fetchone()
+        if row is None:
+            return {
+                "enabled": False,
+                "frequency": "daily",
+                "scope": "quick",
+                "local_time": "03:00",
+                "weekday": None,
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_job_id": None,
+                "last_result": None,
+                "error_message": None,
+                "updated_at": None,
+            }
+        schedule = dict(row)
+        schedule["enabled"] = bool(schedule["enabled"])
+        return schedule
+
+    def save_scan_schedule(
+        self,
+        *,
+        enabled: bool,
+        frequency: str,
+        scope: str,
+        local_time: str,
+        weekday: int | None,
+        next_run_at: str | None,
+    ) -> dict[str, Any]:
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_schedule
+                (schedule_id, enabled, frequency, scope, local_time, weekday, next_run_at,
+                 last_run_at, last_job_id, last_result, error_message, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, datetime('now'))
+                ON CONFLICT(schedule_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    frequency = excluded.frequency,
+                    scope = excluded.scope,
+                    local_time = excluded.local_time,
+                    weekday = excluded.weekday,
+                    next_run_at = excluded.next_run_at,
+                    error_message = NULL,
+                    updated_at = datetime('now')
+                """,
+                (int(enabled), frequency, scope, local_time, weekday, next_run_at),
+            )
+        return self.get_scan_schedule()
+
+    def update_scan_schedule_run(
+        self,
+        *,
+        next_run_at: str | None,
+        last_run_at: str | None = None,
+        last_job_id: str | None = None,
+        last_result: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                UPDATE scan_schedule SET next_run_at = ?, last_run_at = ?, last_job_id = ?,
+                    last_result = ?, error_message = ?, updated_at = datetime('now')
+                WHERE schedule_id = 1
+                """,
+                (next_run_at, last_run_at, last_job_id, last_result, error_message),
             )
 
     def record_filter_completion(self, request_id: str, final_io_status: str) -> bool:

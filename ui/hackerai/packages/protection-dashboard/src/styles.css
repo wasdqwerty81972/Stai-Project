@@ -240,6 +240,18 @@ button:focus-visible, textarea:focus-visible {
 
 .scan-center-panel { margin-bottom: 13px; }
 .scan-scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.scan-schedule-panel { margin-bottom: 13px; }
+.schedule-form { display: grid; gap: 13px; }
+.schedule-toggle { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 10px; }
+.schedule-toggle input { accent-color: var(--blue); }
+.schedule-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.schedule-fields label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; }
+.schedule-fields input, .schedule-fields select { min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); color: var(--text); font: inherit; font-size: 10px; }
+.schedule-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--line); }
+.schedule-status > div { display: grid; gap: 4px; min-width: 0; }
+.schedule-status span { color: var(--muted); font-size: 8px; }
+.schedule-status strong { overflow-wrap: anywhere; color: var(--text); font-size: 10px; font-weight: 550; }
+.schedule-status p { grid-column: 1 / -1; margin: 0; color: var(--amber); font-size: 9px; line-height: 1.5; }
 .scope-card { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 1px 11px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); cursor: pointer; text-align: left; }
 .scope-card:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-soft); }
 .scope-card:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -392,6 +404,7 @@ button:focus-visible, textarea:focus-visible {
   .metric-card { min-height: 105px; padding: 12px; }
   .metric-value { font-size: 22px; }
   .scan-actions, .scan-scope-grid { grid-template-columns: 1fr; }
+  .schedule-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scan-action-card { min-height: 60px; }
   .detection-state { display: none; }
   .quarantine-row { flex-wrap: wrap; }

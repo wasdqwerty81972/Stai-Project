@@ -50,6 +50,8 @@ Operation names are snake case. Payloads are limited to these typed forms:
 | `get_status` | `{}` |
 | `start_scan` | `{ "scope": "quick" | "system" }` |
 | `get_scan`, `cancel_scan` | `{ "job_id": "..." }` |
+| `get_scan_schedule` | `{}` |
+| `set_scan_schedule` | `{ "enabled": boolean, "frequency": "daily" | "weekly", "scope": "quick" | "system", "local_time": "HH:MM", "weekday": 0..6 | null }` |
 | `list_threats`, `list_quarantine` | `{}` |
 | `get_triage`, `request_triage` | `{ "detection_id": "..." }` |
 | `get_agent_history` | `{ "session_id": "..." }` |

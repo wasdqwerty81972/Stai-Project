@@ -77,7 +77,9 @@ def _require_identifier(value: Any, name: str) -> str:
     return value
 
 
-_EMPTY_OPERATIONS = {"get_status", "list_threats", "list_quarantine", "list_sensor_warnings"}
+_EMPTY_OPERATIONS = {
+    "get_status", "get_scan_schedule", "list_threats", "list_quarantine", "list_sensor_warnings"
+}
 _SINGLE_ID_OPERATIONS = {
     "get_scan": ("job_id",),
     "cancel_scan": ("job_id",),
@@ -87,7 +89,8 @@ _SINGLE_ID_OPERATIONS = {
     "restore_quarantine": ("item_id",),
 }
 _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
-    "start_scan", "send_agent_message", "claim_sensor_ai_escalations", "complete_sensor_ai_escalation"
+    "start_scan", "get_scan_schedule", "set_scan_schedule", "send_agent_message",
+    "claim_sensor_ai_escalations", "complete_sensor_ai_escalation"
 }
 
 
@@ -125,6 +128,22 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
         parsed = _require_payload(payload, {"scope"})
         if parsed["scope"] not in ("quick", "system"):
             raise PipeProtocolError("scan scope must be quick or system")
+    elif operation == "set_scan_schedule":
+        parsed = _require_payload(payload, {"enabled", "frequency", "scope", "local_time", "weekday"})
+        if type(parsed["enabled"]) is not bool:
+            raise PipeProtocolError("schedule enabled must be a boolean")
+        if parsed["frequency"] not in ("daily", "weekly"):
+            raise PipeProtocolError("schedule frequency must be daily or weekly")
+        if parsed["scope"] not in ("quick", "system"):
+            raise PipeProtocolError("schedule scope must be quick or system")
+        if not isinstance(parsed["local_time"], str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", parsed["local_time"]):
+            raise PipeProtocolError("schedule local_time must use HH:MM")
+        weekday = parsed["weekday"]
+        if parsed["frequency"] == "weekly":
+            if type(weekday) is not int or not 0 <= weekday <= 6:
+                raise PipeProtocolError("weekly schedule weekday must be between 0 and 6")
+        elif weekday is not None:
+            raise PipeProtocolError("daily schedules do not accept a weekday")
     elif operation == "send_agent_message":
         parsed = _require_payload(payload, {"session_id", "message", "detection_id"})
         _require_identifier(parsed["session_id"], "session_id")
@@ -543,6 +562,9 @@ class ProtectionServiceHost:
         self.sensor_service = sensor_service
         self.response_coordinator = response_coordinator
         self.file_monitor = file_monitor
+        from .scheduling import ScanScheduleManager
+
+        self.scan_scheduler = ScanScheduleManager(store, service)
         self._health_refresh_seconds = max(1.0, health_refresh_seconds)
         self._health_stop_event = threading.Event()
         self._health_lock = threading.Lock()
@@ -563,6 +585,15 @@ class ProtectionServiceHost:
         self._started = True
         self._service_state = "running"
         self._stop_event.clear()
+        if hasattr(self.store, "get_scan_schedule"):
+            if hasattr(self.store, "recover_interrupted_scans"):
+                try:
+                    recovered = self.store.recover_interrupted_scans()
+                    if recovered:
+                        LOGGER.warning("marked %s scan job(s) interrupted by a prior service stop", recovered)
+                except Exception:
+                    LOGGER.exception("unable to recover interrupted scan jobs")
+            self.scan_scheduler.start()
         self._start_health_refresh()
         if self.sensor_service is not None:
             try:
@@ -666,6 +697,7 @@ class ProtectionServiceHost:
     def stop(self) -> None:
         self._stop_event.set()
         self._health_stop_event.set()
+        self.scan_scheduler.stop(timeout=3.0)
         if self.sensor_service is not None:
             try:
                 self.sensor_service.stop(timeout=5.0)
@@ -789,6 +821,10 @@ class ProtectionServiceHost:
     def dispatch(self, operation: str, payload: dict[str, Any]) -> Any:
         if operation == "get_status":
             return self.get_status()
+        if operation == "get_scan_schedule":
+            return self.scan_scheduler.get_schedule()
+        if operation == "set_scan_schedule":
+            return self.scan_scheduler.configure(**payload)
         if operation == "list_threats":
             return self.store.list_threats(limit=500)
         if operation == "list_quarantine":

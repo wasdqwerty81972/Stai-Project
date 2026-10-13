@@ -7,12 +7,14 @@ import {
   getProtectionStatus,
   getProtectionTriage,
   getScan,
+  getScanSchedule,
   listQuarantine,
   listThreats,
   requestProtectionTriage,
   restoreQuarantine,
   sendAgentMessage,
   startScan,
+  setScanSchedule,
 } from "../protection-api";
 
 jest.mock("../protection-api", () => ({
@@ -21,12 +23,14 @@ jest.mock("../protection-api", () => ({
   getProtectionStatus: jest.fn(),
   getProtectionTriage: jest.fn(),
   getScan: jest.fn(),
+  getScanSchedule: jest.fn(),
   listQuarantine: jest.fn(),
   listThreats: jest.fn(),
   requestProtectionTriage: jest.fn(),
   restoreQuarantine: jest.fn(),
   sendAgentMessage: jest.fn(),
   startScan: jest.fn(),
+  setScanSchedule: jest.fn(),
 }));
 
 const status = {
@@ -110,6 +114,20 @@ const scan = {
   error_message: null,
 };
 
+const scanSchedule = {
+  enabled: false,
+  frequency: "daily",
+  scope: "quick",
+  local_time: "03:00",
+  weekday: null,
+  next_run_at: null,
+  last_run_at: null,
+  last_job_id: null,
+  last_result: null,
+  error_message: null,
+  updated_at: null,
+};
+
 function setupDefaults() {
   jest.mocked(getProtectionStatus).mockResolvedValue(status as never);
   jest.mocked(listThreats).mockResolvedValue(threats as never);
@@ -127,6 +145,14 @@ function setupDefaults() {
   } as never);
   jest.mocked(startScan).mockResolvedValue(scan as never);
   jest.mocked(getScan).mockResolvedValue(scan as never);
+  jest.mocked(getScanSchedule).mockResolvedValue(scanSchedule as never);
+  jest.mocked(setScanSchedule).mockResolvedValue({
+    ...scanSchedule,
+    enabled: true,
+    frequency: "weekly",
+    weekday: 2,
+    next_run_at: "2026-10-14T03:00:00+04:00",
+  } as never);
   jest.mocked(cancelScan).mockResolvedValue(undefined as never);
   jest.mocked(requestProtectionTriage).mockResolvedValue(triage as never);
   jest.mocked(restoreQuarantine).mockResolvedValue({
@@ -187,6 +213,26 @@ test("starts_and_tracks_quick_scan", async () => {
   expect(startScan).toHaveBeenCalledWith("quick");
   await waitFor(() => expect(getScan).toHaveBeenCalledWith("job-1"));
   expect(await screen.findByText(/48 of 48 files scanned/i)).toBeInTheDocument();
+});
+
+test("saves_a_weekly_local_scan_schedule", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await user.click(await screen.findByRole("button", { name: "Scans" }));
+  await user.click(await screen.findByLabelText("Run scans automatically"));
+  await user.selectOptions(screen.getByLabelText("Frequency"), "weekly");
+  await user.selectOptions(screen.getByLabelText("Day"), "2");
+  await user.click(screen.getByRole("button", { name: "Save schedule" }));
+
+  await waitFor(() => expect(setScanSchedule).toHaveBeenCalledWith({
+    enabled: true,
+    frequency: "weekly",
+    scope: "quick",
+    local_time: "03:00",
+    weekday: 2,
+  }));
+  expect(await screen.findByText("Schedule saved on this device.")).toBeInTheDocument();
 });
 
 test("shows_distinct_detection_block_and_quarantine_totals", async () => {

@@ -60,9 +60,36 @@ pub(crate) struct ScanJob {
     pub files_total: Option<u64>,
     pub detections: u64,
     pub errors: u64,
+    #[serde(default)]
+    pub files_skipped: u64,
+    #[serde(default)]
+    pub unknown_verdicts: u64,
+    #[serde(default)]
+    pub engine_version: Option<String>,
+    #[serde(default)]
+    pub rules_version: Option<String>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub root_snapshot: Vec<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ScanSchedule {
+    pub enabled: bool,
+    pub frequency: String,
+    pub scope: String,
+    pub local_time: String,
+    pub weekday: Option<u8>,
+    pub next_run_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_job_id: Option<String>,
+    pub last_result: Option<String>,
+    pub error_message: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +196,8 @@ enum ProtectionOperation {
     StartScan,
     GetScan,
     CancelScan,
+    GetScanSchedule,
+    SetScanSchedule,
     ListThreats,
     GetTriage,
     RequestTriage,
@@ -203,6 +232,15 @@ struct EmptyPayload {}
 #[derive(Debug, Serialize)]
 struct ScopePayload {
     scope: ScanScope,
+}
+
+#[derive(Debug, Serialize)]
+struct ScanSchedulePayload<'a> {
+    enabled: bool,
+    frequency: &'a str,
+    scope: ScanScope,
+    local_time: &'a str,
+    weekday: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -385,6 +423,61 @@ pub(crate) async fn cancel_protection_scan(
 }
 
 #[tauri::command]
+pub(crate) async fn get_protection_scan_schedule(
+    window: WebviewWindow,
+) -> Result<ScanSchedule, String> {
+    ensure_local_dashboard(&window)?;
+    request(ProtectionOperation::GetScanSchedule, EmptyPayload {}).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_protection_scan_schedule(
+    window: WebviewWindow,
+    enabled: bool,
+    frequency: String,
+    scope: String,
+    local_time: String,
+    weekday: Option<u8>,
+) -> Result<ScanSchedule, String> {
+    ensure_local_dashboard(&window)?;
+    if !matches!(frequency.as_str(), "daily" | "weekly") {
+        return Err("schedule frequency must be daily or weekly".to_string());
+    }
+    let scan_scope = validate_scope(&scope)?;
+    if !valid_local_time(&local_time) {
+        return Err("schedule time must use HH:MM".to_string());
+    }
+    if frequency == "weekly" && !matches!(weekday, Some(0..=6)) {
+        return Err("weekly schedules require a weekday from 0 through 6".to_string());
+    }
+    if frequency == "daily" && weekday.is_some() {
+        return Err("daily schedules do not accept a weekday".to_string());
+    }
+    request(
+        ProtectionOperation::SetScanSchedule,
+        ScanSchedulePayload {
+            enabled,
+            frequency: &frequency,
+            scope: scan_scope,
+            local_time: &local_time,
+            weekday,
+        },
+    )
+    .await
+}
+
+fn valid_local_time(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let (Some(hour), Some(minute), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    hour.len() == 2
+        && minute.len() == 2
+        && hour.parse::<u8>().is_ok_and(|number| number <= 23)
+        && minute.parse::<u8>().is_ok_and(|number| number <= 59)
+}
+
+#[tauri::command]
 pub(crate) async fn list_protection_threats(
     window: WebviewWindow,
 ) -> Result<Vec<DetectionRecord>, String> {
@@ -485,6 +578,8 @@ mod tests {
             ProtectionOperation::StartScan,
             ProtectionOperation::GetScan,
             ProtectionOperation::CancelScan,
+            ProtectionOperation::GetScanSchedule,
+            ProtectionOperation::SetScanSchedule,
             ProtectionOperation::ListThreats,
             ProtectionOperation::GetTriage,
             ProtectionOperation::RequestTriage,
@@ -499,7 +594,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!encoded.iter().any(|value| value.contains("shell")));
         assert!(!encoded.iter().any(|value| value.contains("file_command")));
-        assert_eq!(encoded.len(), 11);
+        assert_eq!(encoded.len(), 13);
     }
 
     #[test]
@@ -550,6 +645,48 @@ mod tests {
             "detection_id": "det-1"
         }));
         assert_eq!(value.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn bridge_scan_schedule_payload_is_typed_and_time_is_validated() {
+        let payload = ScanSchedulePayload {
+            enabled: true,
+            frequency: "weekly",
+            scope: ScanScope::Quick,
+            local_time: "09:30",
+            weekday: Some(2),
+        };
+        assert_eq!(serde_json::to_value(payload).unwrap(), json!({
+            "enabled": true,
+            "frequency": "weekly",
+            "scope": "quick",
+            "local_time": "09:30",
+            "weekday": 2
+        }));
+        assert!(valid_local_time("00:00"));
+        assert!(valid_local_time("23:59"));
+        assert!(!valid_local_time("24:00"));
+        assert!(!valid_local_time("9:30"));
+    }
+
+    #[test]
+    fn bridge_scan_job_reads_persisted_outcome_fields_and_legacy_defaults() {
+        let job: ScanJob = serde_json::from_value(json!({
+            "job_id": "job-1",
+            "scope": "quick",
+            "state": "completed",
+            "files_scanned": 2,
+            "files_total": 2,
+            "detections": 0,
+            "errors": 0,
+            "started_at": null,
+            "completed_at": null,
+            "error_message": null
+        }))
+        .unwrap();
+        assert_eq!(job.files_skipped, 0);
+        assert!(job.root_snapshot.is_empty());
+        assert_eq!(job.engine_version, None);
     }
 
     #[test]

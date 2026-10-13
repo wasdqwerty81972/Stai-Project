@@ -1,24 +1,48 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, Clock3, HardDrive, LoaderCircle, XCircle } from "lucide-react";
-import type { ScanJob, ScanScope } from "../protection-api";
+import type { ScanFrequency, ScanJob, ScanSchedule, ScanScope } from "../protection-api";
 import { EmptyState } from "./EmptyState";
 import { PageHeading } from "./PageHeading";
 
 export function ScanView({
   scan,
   scanError,
+  schedule,
+  scheduleError,
   onStart,
   onCancel,
+  onSaveSchedule,
   unavailable,
 }: {
   scan: ScanJob | null;
   scanError: string | null;
+  schedule: ScanSchedule | null;
+  scheduleError: string | null;
   onStart: (scope: ScanScope) => Promise<void>;
   onCancel: () => Promise<void>;
+  onSaveSchedule: (config: Pick<ScanSchedule, "enabled" | "frequency" | "scope" | "local_time" | "weekday">) => Promise<ScanSchedule>;
   unavailable: boolean;
 }) {
   const [starting, setStarting] = useState<ScanScope | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [frequency, setFrequency] = useState<ScanFrequency>("daily");
+  const [scheduleScope, setScheduleScope] = useState<ScanScope>("quick");
+  const [localTime, setLocalTime] = useState("03:00");
+  const [weekday, setWeekday] = useState(0);
+  const [scheduleEditing, setScheduleEditing] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [scheduleActionError, setScheduleActionError] = useState<string | null>(null);
+  const [scheduleSaved, setScheduleSaved] = useState(false);
+
+  useEffect(() => {
+    if (!schedule || scheduleEditing) return;
+    setScheduleEnabled(schedule.enabled);
+    setFrequency(schedule.frequency);
+    setScheduleScope(schedule.scope);
+    setLocalTime(schedule.local_time);
+    setWeekday(schedule.weekday ?? 0);
+  }, [schedule, scheduleEditing]);
   const start = async (scope: ScanScope) => {
     setStarting(scope);
     setActionError(null);
@@ -29,6 +53,37 @@ export function ScanView({
     } finally {
       setStarting(null);
     }
+  };
+  const saveSchedule = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSavingSchedule(true);
+    setScheduleActionError(null);
+    setScheduleSaved(false);
+    try {
+      const saved = await onSaveSchedule({
+        enabled: scheduleEnabled,
+        frequency,
+        scope: scheduleScope,
+        local_time: localTime,
+        weekday: frequency === "weekly" ? weekday : null,
+      });
+      setScheduleEditing(false);
+      setScheduleEnabled(saved.enabled);
+      setFrequency(saved.frequency);
+      setScheduleScope(saved.scope);
+      setLocalTime(saved.local_time);
+      setWeekday(saved.weekday ?? 0);
+      setScheduleSaved(true);
+    } catch (error) {
+      setScheduleActionError(error instanceof Error ? error.message : "Unable to save the schedule.");
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+  const changeSchedule = <T,>(setter: (value: T) => void, value: T) => {
+    setter(value);
+    setScheduleEditing(true);
+    setScheduleSaved(false);
   };
   const busy = scan?.state === "queued" || scan?.state === "running";
   const progress =
@@ -80,6 +135,63 @@ export function ScanView({
         {unavailable && <p className="helper-note">Scans are disabled until the local protection service is available.</p>}
       </section>
 
+      <section className="panel scan-schedule-panel">
+        <div className="panel-heading">
+          <div>
+            <div className="eyebrow">AUTOMATION</div>
+            <h2>Scheduled scan</h2>
+          </div>
+          <span className="panel-icon"><Clock3 size={18} aria-hidden="true" /></span>
+        </div>
+        {scheduleError && <div role="alert" className="inline-alert error-alert">{scheduleError}</div>}
+        <p className="panel-description">The local Windows protection service runs this schedule while it is installed and running.</p>
+        <form className="schedule-form" onSubmit={(event) => void saveSchedule(event)}>
+          <label className="schedule-toggle">
+            <input
+              checked={scheduleEnabled}
+              disabled={unavailable || savingSchedule}
+              onChange={(event) => changeSchedule(setScheduleEnabled, event.target.checked)}
+              type="checkbox"
+            />
+            <span>Run scans automatically</span>
+          </label>
+          <div className="schedule-fields">
+            <label>Frequency
+              <select value={frequency} disabled={unavailable || savingSchedule} onChange={(event) => changeSchedule(setFrequency, event.target.value as ScanFrequency)}>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </label>
+            <label>Scan type
+              <select value={scheduleScope} disabled={unavailable || savingSchedule} onChange={(event) => changeSchedule(setScheduleScope, event.target.value as ScanScope)}>
+                <option value="quick">Quick scan</option>
+                <option value="system">System scan</option>
+              </select>
+            </label>
+            <label>Local time
+              <input value={localTime} disabled={unavailable || savingSchedule} onChange={(event) => changeSchedule(setLocalTime, event.target.value)} type="time" required />
+            </label>
+            {frequency === "weekly" && <label>Day
+              <select value={weekday} disabled={unavailable || savingSchedule} onChange={(event) => changeSchedule(setWeekday, Number(event.target.value))}>
+                {(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]).map((day, index) => <option key={day} value={index}>{day}</option>)}
+              </select>
+            </label>}
+          </div>
+          <button className="button button-secondary" disabled={unavailable || savingSchedule} type="submit">
+            {savingSchedule ? "Saving…" : "Save schedule"}
+          </button>
+        </form>
+        {(scheduleActionError || scheduleSaved) && <div role={scheduleActionError ? "alert" : "status"} className={`inline-alert ${scheduleActionError ? "error-alert" : "success-alert"}`}>
+          {scheduleActionError || "Schedule saved on this device."}
+        </div>}
+        {schedule && <div className="schedule-status" aria-live="polite">
+          <div><span>Next run</span><strong>{schedule.enabled && schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : "Not scheduled"}</strong></div>
+          <div><span>Last result</span><strong>{schedule.last_result ? schedule.last_result.replaceAll("_", " ") : "No scheduled scan yet"}</strong></div>
+          {schedule.error_message && <p role="status">{schedule.error_message}</p>}
+        </div>}
+        {unavailable && <p className="helper-note">Schedule controls are unavailable until the local protection service is ready.</p>}
+      </section>
+
       <section className="panel scan-result-panel">
         <div className="panel-heading">
           <div>
@@ -102,7 +214,7 @@ export function ScanView({
             <div className="progress-meta">
               <span>{busy
                 ? `Scanned ${scan.files_scanned}; discovered ${scan.files_total ?? 0} so far`
-                : `${scan.files_scanned} of ${scan.files_total ?? "—"} discovered files scanned`}</span>
+                : `${scan.files_scanned} of ${scan.files_total ?? "—"} files scanned`}</span>
               {!busy && scan.files_total !== null && <span>{progress}%</span>}
             </div>
             {scan.engine_version && <div className="scan-version-meta">

@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export type ProtectionState = "active" | "degraded" | "unavailable";
 export type ScanScope = "quick" | "system";
+export type ScanFrequency = "daily" | "weekly";
 
 export interface ProtectionCounts {
   detected: number | null;
@@ -91,6 +92,20 @@ export interface ScanJob {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+}
+
+export interface ScanSchedule {
+  enabled: boolean;
+  frequency: ScanFrequency;
+  scope: ScanScope;
+  local_time: string;
+  weekday: number | null;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_job_id: string | null;
+  last_result: string | null;
+  error_message: string | null;
+  updated_at: string | null;
 }
 
 export interface DetectionRecord {
@@ -213,6 +228,18 @@ export const getScan = (jobId: string) =>
 
 export const cancelScan = (jobId: string) =>
   invokeProtection<ScanJob | void>("cancel_protection_scan", { jobId });
+
+export const getScanSchedule = () =>
+  invokeProtection<ScanSchedule>("get_protection_scan_schedule");
+
+export const setScanSchedule = (schedule: Pick<ScanSchedule, "enabled" | "frequency" | "scope" | "local_time" | "weekday">) =>
+  invokeProtection<ScanSchedule>("set_protection_scan_schedule", {
+    enabled: schedule.enabled,
+    frequency: schedule.frequency,
+    scope: schedule.scope,
+    localTime: schedule.local_time,
+    weekday: schedule.weekday,
+  });
 
 export const listThreats = () =>
   invokeProtection<DetectionRecord[]>("list_protection_threats");

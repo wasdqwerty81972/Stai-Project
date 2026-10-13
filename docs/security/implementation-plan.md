@@ -10,7 +10,7 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 ## Current verified baseline
 
 - Per-file scanning hashes stable regular files and matches signed SHA-256/YARA rules. The signed demo package recognizes the exact EICAR file.
-- Background Quick and System scans exist. Windows Quick Scan now selects the enrolled user's local profile roots and saves them per job; scan accounting and traversal coverage remain incomplete. Full scan still targets only `C:\`.
+- Background Quick and System scans exist. Windows Quick Scan selects the enrolled user's local profile roots and saves them per job. Daily and weekly local-time schedules are persisted by the service and exposed in the Scans dashboard; startup marks prior pending/running jobs interrupted before scheduled work starts. Full scan still targets only `C:\`.
 - SQLite WAL persists scan jobs, detections, actions, quarantine, and Level 2 triage. Scan jobs now retain per-job roots, discovered/scanned/skipped/error/unknown counts, engine/rule versions, and duration; there is no full reputation database or verified update activation system.
 - A Windows service, authenticated named pipe, user-mode folder watcher, and minifilter source exist. The service/driver are not installed and there is no signed production driver package.
 - The sensor catalogue has 256 definitions, of which 2 are source-marked implemented and 12 partial; zero were active on the inspected host. The watcher currently emits file sensor IDs that disagree with the canonical registry.
@@ -27,7 +27,8 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 - [x] Add scan outcome fields for files discovered, scanned, skipped, errors, unknown verdicts, detections, engine/rule versions, cancel state, and duration.
 - [x] Replace count-then-rescan with one traversal that records root/path access failures, reparse-point skips, unknown verdicts, and cancellation truthfully.
 - [ ] Add explicit per-file size/time budgets and typed reasons for locked, oversized, and otherwise skipped files.
-- [ ] Validate service-start recovery for interrupted jobs; do not show an incomplete job as clean.
+- [x] Validate service-start recovery for interrupted jobs; they are marked failed with the interruption reason and retain scan counters.
+- [x] Add persisted daily/weekly Quick or System schedules with local time, weekly weekday, next-run and last-result/error states in the dashboard. Scheduling runs only while the protection service is running.
 - [x] Correct Quick Scan to use the enrolled-user profile and persist an immutable root snapshot per job. If the installed user/profile cannot be resolved, Windows Quick Scan has no fallback to LocalSystem's `Path.home()` roots and fails as unavailable.
 - [ ] Add a caller-selected Custom Scan scope with authenticated, constrained paths and durable results.
 - [ ] Enumerate eligible local volumes for Full Scan and document archive/large-file behavior rather than implying unsupported coverage.
@@ -69,14 +70,15 @@ Build SVS-Cyber's own verifiable scanning, evidence, investigation, and response
 
 ## Next implementation slice
 
-Quick Scan now uses enrolled-user roots and stores the root list durably for each job. Continue Phase 1 with scan accounting and one-pass traversal. These paths are foundational for reliable scheduled, custom, and full scans. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
+Quick Scan uses enrolled-user roots and stores the root list durably for each job. Scheduled daily/weekly scans and interrupted-job recovery are now wired through the service, authenticated pipe, Tauri bridge, and Scans page. Continue Phase 1 with explicit per-file budgets and typed skip reasons, then custom/full scan coverage. Preserve fail-open behavior for unavailable analysis while displaying the job as incomplete or degraded; never turn an inaccessible file into a clean verdict.
 
 ## Acceptance ledger
 
 | Requirement | Status | Evidence needed |
 |---|---|---|
 | Custom SVS-Cyber signature detection | Partial | Own-engine test for raw EICAR and inert test signatures, persisted source-attributed verdict |
-| Quick/Full/Custom scan coverage | Incomplete | Real isolated roots/volumes, skipped/error counts, persisted scan record, cancellation/restart tests |
+| Quick/Full/Custom scan coverage | Incomplete | Real isolated roots/volumes, custom scans, eligible-volume enumeration, skipped/error counts, persisted scan record |
+| Scheduled scans | Implemented in source | Daily/weekly persisted schedule, Quick/System scope, local time and weekday, next-run/last-result UI; service must be installed and running for execution |
 | Entropy and PE analysis | Missing | Correct measured fixtures, malformed PE handling, no entropy-only containment |
 | Threat database and verified updates | Partial | Indexed lookups, version history, rejected tampered package, atomic rollback |
 | Genuine process/network views | Missing | Runtime evidence from typed service operations and UI interaction |

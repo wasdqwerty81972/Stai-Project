@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 from cyber_os.protection.windows_service import (
+    _validate_pipe_request,
     _installed_user_quick_scan_roots,
     ProtectionServiceHost,
     WindowsNamedPipeServer,
@@ -165,6 +166,30 @@ def test_host_starts_and_stops_sensor_service_idempotently():
     assert status["sensors"]["running"] is True
 
 
+def test_host_recovers_interrupted_scan_before_starting_scheduler(tmp_path):
+    from cyber_os.protection.store import ProtectionStore
+
+    store = ProtectionStore(tmp_path / "host-recovery.db")
+    store.create_scan_job("job-before-restart", "quick")
+    store.update_scan_job("job-before-restart", state="running", files_total=3, files_scanned=1)
+    host = ProtectionServiceHost(
+        store=store,
+        service=None,
+        filter_client=None,
+        rules_trusted=False,
+    )
+
+    host.start()
+    try:
+        job = store.get_scan_job("job-before-restart")
+        assert job is not None
+        assert job.state == "failed"
+        assert job.error_message == "Scan was interrupted when the protection service stopped."
+        assert (job.files_total, job.files_scanned) == (3, 1)
+    finally:
+        host.stop()
+
+
 def test_sensor_start_failure_is_reported_without_stopping_protection_host():
     sensors = _SensorService(starts=False)
     host = ProtectionServiceHost(
@@ -280,6 +305,26 @@ def test_pipe_dispatch_rejects_non_allowlisted_operation():
 
     assert response["ok"] is False
     assert response["request_id"] == "b" * 32
+
+
+def test_scan_schedule_pipe_payload_requires_typed_local_time_and_weekday():
+    base = {
+        "version": 1,
+        "request_id": "c" * 32,
+        "operation": "set_scan_schedule",
+        "payload": {
+            "enabled": True,
+            "frequency": "weekly",
+            "scope": "quick",
+            "local_time": "03:15",
+            "weekday": 2,
+        },
+    }
+
+    assert _validate_pipe_request(base)[1] == "set_scan_schedule"
+    invalid = {**base, "payload": {**base["payload"], "weekday": True}}
+    with pytest.raises(ValueError, match="weekday"):
+        _validate_pipe_request(invalid)
 
 
 def test_status_does_not_wait_for_slow_windows_health_probe():

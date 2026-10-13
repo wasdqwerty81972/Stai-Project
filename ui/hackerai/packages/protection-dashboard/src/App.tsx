@@ -6,18 +6,21 @@ import {
   getProtectionStatus,
   getProtectionTriage,
   getScan,
+  getScanSchedule,
   listQuarantine,
   listThreats,
   requestProtectionTriage,
   restoreQuarantine,
   sendAgentMessage,
   startScan,
+  setScanSchedule,
   type AgentHistory,
   type AgentReply,
   type DetectionRecord,
   type ProtectionStatus,
   type QuarantineItem,
   type ScanJob,
+  type ScanSchedule,
   type ScanScope,
   type TriageRecord,
 } from "./protection-api";
@@ -50,6 +53,8 @@ export default function App() {
   const [scan, setScan] = useState<ScanJob | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanBusy, setScanBusy] = useState<ScanScope | null>(null);
+  const [scanSchedule, setScanScheduleState] = useState<ScanSchedule | null>(null);
+  const [scanScheduleError, setScanScheduleError] = useState<string | null>(null);
   const [selectedDetectionId, setSelectedDetectionId] = useState<string | null>(null);
   const [triage, setTriage] = useState<TriageRecord | null>(null);
   const [triageLoading, setTriageLoading] = useState(false);
@@ -62,10 +67,12 @@ export default function App() {
     setStatusError(null);
     setThreatsError(null);
     setQuarantineError(null);
-    const [statusResult, threatsResult, quarantineResult] = await Promise.allSettled([
+    setScanScheduleError(null);
+    const [statusResult, threatsResult, quarantineResult, scheduleResult] = await Promise.allSettled([
       getProtectionStatus(),
       listThreats(),
       listQuarantine(),
+      getScanSchedule(),
     ]);
     if (statusResult.status === "fulfilled") {
       setStatus(statusResult.value);
@@ -85,6 +92,13 @@ export default function App() {
       setQuarantine(null);
       setQuarantineError(messageFor(quarantineResult.reason, "Quarantine is unavailable"));
     }
+    if (scheduleResult.status === "fulfilled") {
+      setScanScheduleState(scheduleResult.value);
+      setScanScheduleError(null);
+    } else {
+      setScanScheduleState(null);
+      setScanScheduleError(messageFor(scheduleResult.reason, "Scan schedule unavailable"));
+    }
     setStatusLoading(false);
   }, []);
 
@@ -97,6 +111,28 @@ export default function App() {
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
   }, [page, refresh]);
+
+  useEffect(() => {
+    if (page !== "Scans") return;
+    let stale = false;
+    const poll = async () => {
+      try {
+        const current = await getScanSchedule();
+        if (!stale) {
+          setScanScheduleState(current);
+          setScanScheduleError(null);
+        }
+      } catch (error) {
+        if (!stale) setScanScheduleError(messageFor(error, "Scan schedule unavailable"));
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 15000);
+    return () => {
+      stale = true;
+      window.clearInterval(timer);
+    };
+  }, [page]);
 
   const activeScan = scan?.state === "running" || scan?.state === "queued";
   useEffect(() => {
@@ -206,6 +242,19 @@ export default function App() {
       setScanError(messageFor(error, "Unable to cancel scan"));
     }
   }, [scan]);
+
+  const handleSaveScanSchedule = useCallback(async (config: Pick<ScanSchedule, "enabled" | "frequency" | "scope" | "local_time" | "weekday">) => {
+    setScanScheduleError(null);
+    try {
+      const saved = await setScanSchedule(config);
+      setScanScheduleState(saved);
+      return saved;
+    } catch (error) {
+      const message = messageFor(error, "Unable to save the scan schedule");
+      setScanScheduleError(message);
+      throw new Error(message);
+    }
+  }, []);
 
   const handleRestore = useCallback(async (itemId: string) => {
     const result = await restoreQuarantine(itemId);
@@ -326,8 +375,11 @@ export default function App() {
               <ScanView
                 scan={scan}
                 scanError={scanError}
+                schedule={scanSchedule}
+                scheduleError={scanScheduleError}
                 onStart={handleStartScan}
                 onCancel={handleCancelScan}
+                onSaveSchedule={handleSaveScanSchedule}
                 unavailable={!status || Boolean(statusError) || status.state === "unavailable"}
               />
             )}

@@ -2102,6 +2102,8 @@ pub fn run() {
             protection_bridge::start_protection_scan,
             protection_bridge::get_protection_scan,
             protection_bridge::cancel_protection_scan,
+            protection_bridge::get_protection_scan_schedule,
+            protection_bridge::set_protection_scan_schedule,
             protection_bridge::list_protection_threats,
             protection_bridge::get_protection_triage,
             protection_bridge::request_protection_triage,

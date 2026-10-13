@@ -141,7 +141,7 @@ def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: P
     assert job is not None
     assert job.root_snapshot == []
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 4
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 5
 
 
 def test_scan_cancellation_is_durable(tmp_path: Path) -> None:
@@ -158,6 +158,23 @@ def test_scan_cancellation_is_durable(tmp_path: Path) -> None:
     assert job.state == "cancelled"
     assert job.completed_at is not None
     assert job.files_scanned == 7  # progress at cancellation is preserved
+
+
+def test_running_scan_is_marked_interrupted_when_service_reopens(tmp_path: Path) -> None:
+    db = tmp_path / "interrupted.db"
+    store = ProtectionStore(db)
+    store.create_scan_job("job-interrupted", "quick", root_snapshot=["C:\\Users\\demo\\Downloads"])
+    store.update_scan_job("job-interrupted", state="running", files_total=12, files_scanned=4)
+
+    reopened = ProtectionStore(db)
+    assert reopened.recover_interrupted_scans() == 1
+    job = reopened.get_scan_job("job-interrupted")
+
+    assert job is not None
+    assert job.state == "failed"
+    assert job.error_message == "Scan was interrupted when the protection service stopped."
+    assert job.completed_at is not None
+    assert (job.files_total, job.files_scanned) == (12, 4)
 
 
 def test_windows_security_status_is_read_only_and_optional(
