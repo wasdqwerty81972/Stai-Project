@@ -1,22 +1,23 @@
-# HackerAI Desktop
+# SVS Cyber Desktop
 
-Native desktop application for HackerAI built with [Tauri](https://tauri.app/).
+Native Windows protection dashboard for SVS Cyber, built with [Tauri](https://tauri.app/).
 
 ## Overview
 
 The desktop app wraps the HackerAI web application in a native shell, providing:
 
 - **Native window** with system integration
-- **Auto-updates** via Tauri's updater plugin
-- **Cross-platform** builds for macOS, Windows, and Linux
+- **Native Windows window** that opens the protection dashboard first
+- **AI Agent** available as a separate dashboard tab
+- **Packaged launch** after the Windows build is created once
 
 ## Prerequisites
 
-### Required
+### Required for Windows development/builds
 
 - **Node.js** 20+
 - **pnpm** 9+
-- **Rust** 1.70+ ([install](https://rustup.rs/))
+- **Rust** 1.78+ ([install](https://rustup.rs/))
 
 ### Platform-specific
 
@@ -38,6 +39,31 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appi
 - Install [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually pre-installed on Windows 10/11)
 - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
 
+## Launch SVS Cyber on Windows
+
+From the repository root, run:
+
+```powershell
+python cyber_main.py
+```
+
+This starts the local protection API and opens the native SVS Cyber window.
+Use `python cyber_main.py --browser` to explicitly use the browser dashboard,
+or `python cyber_main.py --web` to run only the API.
+
+For development, the launcher opens the Tauri development window. For a
+packaged Windows app, install the prerequisites and dependencies, then build
+once from `ui/hackerai`:
+
+```powershell
+pnpm install
+pnpm desktop:build
+```
+
+The launcher can then use `packages/desktop/src-tauri/target/release/hackerai-desktop.exe`
+when Rust/Cargo is not available. The Python launcher still starts the local
+protection API required by the app.
+
 ## Development
 
 ### Install dependencies
@@ -52,7 +78,8 @@ pnpm install
 pnpm dev
 ```
 
-This opens the desktop app pointing to `https://hackerai.co`.
+The root `cyber_main.py` launcher is the supported way to start the SVS Cyber
+protection app because it also starts the local protection API.
 
 ### Run with local web server
 

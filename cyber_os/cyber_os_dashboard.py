@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional
 
 try:
     from cyber_os import CyberOSEngine, ThreatAlert, SecurityEvent, Severity
+    from cyber_os.cyber_os_attacks import launch_attack
 except ImportError:
     print("[!] cyber_os module not found. Run from project directory.")
     sys.exit(1)
@@ -249,7 +250,6 @@ class CyberOSDashboard:
         
         # Import attack scripts
         try:
-            from cyber_os_attacks import launch_attack
             threading.Thread(
                 target=launch_attack,
                 args=(attack_type, self.engine),

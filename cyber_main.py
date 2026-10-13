@@ -136,12 +136,14 @@ def main() -> int:
             entry for entry in path_entries if "openclaw\\bin" not in entry.lower()
         )
 
-        def start_process(command: list[str], cwd: str) -> subprocess.Popen[bytes]:
+        def start_process(
+            command: list[str], cwd: str, env: dict[str, str] | None = None
+        ) -> subprocess.Popen[bytes]:
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             process = subprocess.Popen(
                 command,
                 cwd=cwd,
-                env=child_env,
+                env=env or child_env,
                 creationflags=creationflags,
             )
             children.append(process)
@@ -192,24 +194,54 @@ def main() -> int:
             dashboard_dir = os.path.join(project_root, "ui", "hackerai", "packages", "protection-dashboard")
             desktop_dir = os.path.join(project_root, "ui", "hackerai", "packages", "desktop")
             if launch_desktop:
-                cargo = shutil.which("cargo")
+                cargo = shutil.which("cargo", path=child_env["PATH"])
+                if not cargo and os.environ.get("USERPROFILE"):
+                    cargo_candidate = os.path.join(
+                        os.environ["USERPROFILE"], ".cargo", "bin", "cargo.exe"
+                    )
+                    if os.path.isfile(cargo_candidate):
+                        cargo = cargo_candidate
+                node = shutil.which("node", path=child_env["PATH"]) or shutil.which(
+                    "node.exe", path=child_env["PATH"]
+                )
                 tauri_cli = os.path.join(
                     desktop_dir, "node_modules", ".bin", "tauri.cmd",
                 )
-                if os.name != "nt" or not cargo or not os.path.isfile(tauri_cli):
-                    raise RuntimeError(
-                        "The Windows desktop dashboard requires Windows, Rust/Cargo, and the local Tauri CLI. "
-                        "Install Rust, then run `pnpm install` in ui/hackerai."
-                    )
-                desktop = start_process(
-                    [tauri_cli, "dev", "--config", "src-tauri/tauri.windows.conf.json"],
-                    desktop_dir,
+                packaged_app = os.path.join(
+                    desktop_dir, "src-tauri", "target", "release", "hackerai-desktop.exe"
                 )
+                if os.name != "nt":
+                    raise RuntimeError(
+                        "The native SVS Cyber desktop app is currently supported on Windows."
+                    )
+                if cargo and node and os.path.isfile(tauri_cli):
+                    desktop_bin = os.path.join(desktop_dir, "node_modules", ".bin")
+                    desktop_env = {
+                        **child_env,
+                        "PATH": os.pathsep.join(
+                            (desktop_bin, os.path.dirname(cargo), child_env["PATH"])
+                        ),
+                    }
+                    desktop = start_process(
+                        [node, "scripts/run-tauri.js", "dev"],
+                        desktop_dir,
+                        env=desktop_env,
+                    )
+                    print("[*] Native SVS Cyber protection dashboard is starting.")
+                elif os.path.isfile(packaged_app):
+                    desktop = start_process([packaged_app], desktop_dir)
+                    print("[*] Packaged SVS Cyber Windows app is starting.")
+                else:
+                    raise RuntimeError(
+                        "The SVS Cyber desktop app needs Rust/Cargo, Node.js, and the local Tauri CLI "
+                        "for development, or a previously built Windows app. Install Rust from "
+                        "https://rustup.rs/, then run `pnpm install` in ui/hackerai and "
+                        "`pnpm desktop:build` there."
+                    )
                 if desktop.poll() is not None:
                     raise RuntimeError(
                         f"Desktop app exited during startup with code {desktop.returncode}"
                     )
-                print("[*] Native SVS Cyber protection dashboard is starting.")
             else:
                 pnpm = shutil.which("pnpm", path=child_env["PATH"]) or shutil.which("pnpm.cmd", path=child_env["PATH"])
                 if not node or not pnpm:

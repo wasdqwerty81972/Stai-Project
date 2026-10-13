@@ -1,0 +1,281 @@
+{
+   "checksum": "8ebb3f0b30fb3a77ba0672f1276a4931",
+   "roots": {
+      "bookmark_bar": {
+         "children": [ {
+            "date_added": "13261768092253934",
+            "date_last_used": "0",
+            "guid": "80152868-ea92-40eb-a977-3cddcfffc316",
+            "id": "13",
+            "name": "YouTube",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.youtube.com/",
+            "visit_count": 0
+         }, {
+            "date_added": "13262757107322404",
+            "date_last_used": "0",
+            "guid": "3cec701d-eb66-4ebb-a502-299971861304",
+            "id": "14",
+            "name": "Indian School Al-Wadi Al-Kabir - Calendar - Tuesday, April 13, 2021, today",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://calendar.google.com/calendar/u/0/r?pli=1",
+            "visit_count": 0
+         }, {
+            "date_added": "13262763432894815",
+            "date_last_used": "0",
+            "guid": "aa20b718-6266-4203-bbc7-12f0ed3669db",
+            "id": "15",
+            "name": "Google Earth",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://earth.google.com/web/@0,0,0a,22251752.77375655d,35y,0h,0t,0r",
+            "visit_count": 0
+         }, {
+            "date_added": "13263284274077215",
+            "date_last_used": "0",
+            "guid": "6be01bd7-d1e5-4bc2-88e9-13d98c53e7e7",
+            "id": "16",
+            "name": "Semantris - Arcade",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://research.google.com/semantris",
+            "visit_count": 0
+         }, {
+            "date_added": "13266565767398796",
+            "date_last_used": "0",
+            "guid": "9c41f96f-4f60-414a-bce6-a1e154c53fbe",
+            "id": "17",
+            "name": "Duolingo - The world's best way to learn French",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.duolingo.com/learn",
+            "visit_count": 0
+         }, {
+            "date_added": "13273133958528715",
+            "date_last_used": "0",
+            "guid": "474e879d-2837-40ea-b4c4-2ede98e73ae0",
+            "id": "18",
+            "name": "Online Screen Recorder",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://screenapp.io/#/",
+            "visit_count": 0
+         }, {
+            "date_added": "13276798111435837",
+            "date_last_used": "0",
+            "guid": "bcb7307f-4e07-4208-be9c-451fa2f402c0",
+            "id": "19",
+            "name": "ISWK",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.iswkoman.com/index.php",
+            "visit_count": 0
+         }, {
+            "date_added": "13276798167126235",
+            "date_last_used": "0",
+            "guid": "cac12e98-81e8-4c14-9a1a-bd783bdf343b",
+            "id": "20",
+            "name": "School ERP | School Management Software - MyClassboard Login",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://iswk.myclassboard.com/StudentERP/StudentHome",
+            "visit_count": 0
+         }, {
+            "date_added": "13281452839070237",
+            "date_last_used": "0",
+            "guid": "0f972389-30e1-4e87-8c75-73db09fbb93c",
+            "id": "21",
+            "name": "Untitled Video",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://app.animaker.com/editproject/La02vGuplrePZNC8",
+            "visit_count": 0
+         }, {
+            "date_added": "13281547160613567",
+            "date_last_used": "13313578025042916",
+            "guid": "7d01678b-4517-469f-81bc-3f8ac3c29579",
+            "id": "22",
+            "name": "chat bot",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.bing.com/search?q=Battle+of+the+kalinga&qs=n&form=QBRE&sp=-1&pq=battle+of+the+kalinga&sc=1-21&sk=&cvid=034AE7E2B7A5499982B245CB676E07E9",
+            "visit_count": 0
+         }, {
+            "date_added": "13283772479180874",
+            "date_last_used": "0",
+            "guid": "e9a6a06f-5160-4aa8-8cb4-857c11ff0946",
+            "id": "23",
+            "name": "Meet - dad-mgsf-nvq",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://meet.google.com/dad-mgsf-nvq?authuser=0",
+            "visit_count": 0
+         }, {
+            "date_added": "13283936896429556",
+            "date_last_used": "0",
+            "guid": "ae2a415a-1e97-4b66-a1e5-45fdfaaec866",
+            "id": "24",
+            "name": "Indian School Al-Wadi Al-Kabir - Calendar",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://calendar.google.com/calendar/u/1/r?pli=1",
+            "visit_count": 0
+         }, {
+            "date_added": "13283947854652860",
+            "date_last_used": "0",
+            "guid": "2cc8109d-a9d1-49ea-af0b-ec1eb42474a5",
+            "id": "25",
+            "name": "Indian School Al-Wadi Al-Kabir Mail",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://mail.google.com/mail/u/1/#chat/space/AAAA0aMfG7M",
+            "visit_count": 0
+         }, {
+            "date_added": "13279218538362394",
+            "date_last_used": "0",
+            "guid": "d40523b9-1b35-412a-a582-19bf66a7821f",
+            "id": "26",
+            "name": "Booking.com",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://secure.rezserver.com/sdk/v1/LinkFwd?refid=9006&destination=booking&refclickid=webslice1819",
+            "visit_count": 0
+         }, {
+            "date_added": "13290766738696749",
+            "date_last_used": "0",
+            "guid": "22024bc0-3424-4da5-9904-995dca8fd1b3",
+            "id": "27",
+            "name": "How to get a sword with 1000 Sharpness in Minecraft",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.sportskeeda.com/minecraft/how-get-sword-1000-sharpness-minecraft",
+            "visit_count": 0
+         }, {
+            "date_added": "13436369515269788",
+            "date_last_used": "0",
+            "guid": "59a1dacf-31f7-4978-8a99-2a6c07d35307",
+            "id": "9",
+            "name": "Utomik Games",
+            "show_icon": false,
+            "source": "oem_preload",
+            "type": "url",
+            "url": "https://www.utomik.com/hp_edgefavourites",
+            "visit_count": 0
+         }, {
+            "date_added": "13436369515269165",
+            "date_last_used": "0",
+            "guid": "5a952904-fcb4-4bbe-b284-4b1b4bbe60c5",
+            "id": "8",
+            "name": "Express VPN",
+            "show_icon": false,
+            "source": "oem_preload",
+            "type": "url",
+            "url": "http://js.redirect.hp.com/jumpstation?bd=expressvpn&c=*&locale=en_us&pf=*&s=*&tp=edge",
+            "visit_count": 0
+         }, {
+            "date_added": "13436369515268341",
+            "date_last_used": "0",
+            "guid": "0c13a61a-470d-4ca6-94c4-fd3f62311d57",
+            "id": "7",
+            "name": "LastPass password manager",
+            "show_icon": false,
+            "source": "oem_preload",
+            "type": "url",
+            "url": "http://js.redirect.hp.com/jumpstation?bd=lastpass&c=*&locale=*&pf=*&s=*&tp=edge",
+            "visit_count": 0
+         } ],
+         "date_added": "13436369514540693",
+         "date_last_used": "0",
+         "date_modified": "13436369515269788",
+         "guid": "0bc5d13f-2cba-5d74-951f-3f233fe6c908",
+         "id": "1",
+         "name": "Favorites bar",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "other": {
+         "children": [ {
+            "children": [ {
+               "date_added": "13279218538362394",
+               "date_last_used": "0",
+               "guid": "495e1ad3-ae72-4225-b017-b9eb0cc12cee",
+               "id": "11",
+               "name": "Booking.com",
+               "show_icon": false,
+               "source": "sync",
+               "type": "url",
+               "url": "http://secure.rezserver.com/sdk/v1/LinkFwd?refid=9006&destination=booking&refclickid=iefav1819",
+               "visit_count": 0
+            }, {
+               "date_added": "13338828681086386",
+               "date_last_used": "0",
+               "guid": "ccc47075-587b-4bbc-b54c-a49279e750f4",
+               "id": "12",
+               "name": "0509232001004161381[1].pdf",
+               "show_icon": false,
+               "source": "sync",
+               "type": "url",
+               "url": "file:///C:/Users/venka/AppData/Local/Microsoft/Windows/INetCache/IE/NQPV6O97/0509232001004161381[1].pdf",
+               "visit_count": 0
+            } ],
+            "date_added": "13289232510692306",
+            "date_last_used": "0",
+            "date_modified": "13338828681086386",
+            "guid": "09779490-d984-4583-a676-eec245626611",
+            "id": "10",
+            "name": "HP",
+            "source": "unknown",
+            "type": "folder"
+         } ],
+         "date_added": "13436369514540693",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "82b081ec-3dd3-529c-8475-ab6c344590dd",
+         "id": "2",
+         "name": "Other favorites",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "synced": {
+         "children": [  ],
+         "date_added": "13436369514540693",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "4cf2e351-0e85-532b-bb37-df045d8f8d0f",
+         "id": "3",
+         "name": "Mobile favorites",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "workspaces_v2": {
+         "children": [  ],
+         "date_added": "13436369514540693",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "75aa6670-344f-549d-b742-660f029506ab",
+         "id": "5",
+         "name": "Workspaces",
+         "source": "unknown",
+         "type": "folder"
+      }
+   },
+   "sync_metadata": "CjEKDgiIgQISCCeaUTWhAQAAEgAqGGxwaU1WYWczaTQyQjZ2VHhLZ1g2Smc9PUgDoAYJEq4BCBoSqQEKHDVyS0FJbFQvVEtjNXhuU1BKcWNiTk00OXFUYz0SJGQ0MDUyM2I5LTFiMzUtNDEyYS1hNTgyLTE5YmY2NmE3ODIxZhgAIAAoADCZ16rxrTA49dmq8a0wQPXZqvGtMEocRVo3OHBhd0JpeCtsK1JHcW9UQTZaMHRYdTJBPVogIh7/9kZyZVZ4Zjc4Wm9YVnBpU3pFalo0NThQMURHND1lAAAAAMI+AmAFEq4BCBkSqQEKHE1GSGQvcERuaUpRTUdTWUJ2b3FpU0hNaVB6ND0SJDJjYzgxMDlkLWE5ZDEtNDllYS1hZjBiLWVjMWViNDI0NzRhNRgAIAAoADCZ16rxrTA45tmq8a0wQObZqvGtMEocT1pKVW9KTi9pVERMeE8wWldDR3JDLzBSUHhZPVogIh7/7EpRZDRMcG5ZWlliRGpkdXZEQzVWTWxsckQvQT1lFUubrcI+AmAFEq4BCBcSqQEKHE9WREVOdTBvblJjRU8xcnBnTmdvOHNnbjRqMD0SJGU5YTZhMDZmLTUxNjAtNGFhOC04Y2I0LTg1N2MxMWZmMDk0NhgAIAAoADCZ16rxrTA48tqq8a0wQPLaqvGtMEocUHZNQkp2T2RxV0tsaENDMStMcEpWbUd2MXc4PVogIh7/sEkzWWVaZEE4bFF1QzBJcG5NSTl5WExWRFNwYz1l9CL1G8I+AmAFEq0BCBYSqAEKHEtYREpXdDE1Zmd0aWwzSC9iVzNCQXVkc2R3QT0SJDdkMDE2NzhiLTQ1MTctNDY5Zi04MWJjLTNmOGFjM2MyOTU3ORgAIAAoADCAi6eW8zM46diq8a0wQOnYqvGtMEocOU9KWnRiK0lLcVM5dHJ3M3JOUnFEcy9xNm1NPVofIh3/YVA5SGZLcytER3JPRGNtNmZaSy81UmFmOW1nPWVeOQFhwj4CYAUSjAEIBRKHAQocd1JCclpMKzZQQTlhdktnak5QN0pYRExjZnZzPRIkZDE1OTRlYTEtMTJlNi01YWFhLWExZTQtZDMyZWVkY2VlNzZjGAAgACgAMImf1aORMzjJoNWjkTNAyaDVo5EzShxubXg2NXNRRHZ4SThUZ0VlditBK250dG9TbjQ9ZQAAAADCPgJgABKuAQgYEqkBChxjcXNPZ2hXZTlJRmdhWXZtM0JDWkhIUExZWGc9EiRhZTJhNDE1YS0xZTk3LTRiNjYtYTFlNS00NWZkZmFhZWM4NjYYACAAKAAwmdeq8a0wOJfZqvGtMECX2arxrTBKHHB0aUJzU3FBN3BzL29vaXBEd0JSZmRaTDJQST1aICIe/9hxWmd5ekZCTzlCNFdaa1lhNjhJNXl4cEVXcXc9ZbduMunCPgJgBRKtAQgVEqgBChxBaEVvU3RpNzJncGJHcUkxTEdxRVM0QXNWcDA9EiQwZjk3MjM4OS0zMGUxLTRlODctOGM3NS03M2RiMDlmYmI5M2MYACAAKAAwuvaYpesxOMnYqvGtMEDJ2KrxrTBKHDBocFExWGV3djZLeHl5dDdYS0hhbDRBU3ptQT1aHyId/1VLWHAvbGNBOTQwZ1JqM0tla0NvODFyYks1dz1lvW4uhMI+AmAFEq0BCBQSqAEKHEliU1V0Vk90bVhsOUwzeFRjNjJSK1lCK3V2RT0SJGNhYzEyZTk4LTgxZTgtNGMxNC05YTFhLWJkNzgzYmRmMzQzYhgAIAAoADC09pil6zE4qtiq8a0wQKrYqvGtMEocdDlud2VlNlRMRnI4VkdSZVZIMEZwbWFpRXpFPVofIh3+RnFPdXdkRXIrK210V3Q2Ym4zaEZ0eEFiMEJ3PWVnJpECwj4CYAUSrQEIERKoAQoceDVya2lFak1NZWU4QlUwUEJLaHVaUHRPMHZvPRIkOWM0MWY5NmYtNGY2MC00MTRhLWJjZTYtYTFlMTU0YzUzZmJlGAAgACgAMLn2mKXrMTiL2KrxrTBAi9iq8a0wShxTNCtPZTdvR3Z2L0piclU2RldCalAydUFyQ3M9Wh8iHfVQeCtGemtNUW1XOFl4N2JrcThMYXZIRFFyZTg9ZTD5Fw7CPgJgBRKMAQgBEocBChx5eEovNmZ2a2VjcjdrcDVFUXpCNHRXTHBkYkU9EiRiZjVlYmMxNC1hOThlLTU0MDgtYTc0MS1hYTQxMTE4MzJiZDYYACAAKAAwwqKq8a0wOIalqvGtMECGparxrTBKHGFSQ1dMZ2hGOWI1SW5xS0lEdnVKL2p2UWtGYz1lAAAAAMI+AmAAEq0BCBASqAEKHDVGb0d5MUMyd0VFU0hTdGI5NUtoenVCdTdmOD0SJDZiZTAxYmQ3LWQxZTUtNGJjMi04OGU5LTEzZDk4YzUzZTdlNxgAIAAoADCy9pil6zE4pNqq8a0wQKTaqvGtMEocRHdQY0xHQjRIVzdmMjFUQ2EzaVFhUU5VVllvPVofIh3rc1lmQXdIMmNTL1laaTJBbkltZ0JGaUxtVzNNPWV4O2Qiwj4CYAUSjAEIAhKHAQocWWNTVG9udkVTUHdxQ3M0TDJjclZodjY4TDk4PRIkNGQ3YTllNTctOThjOC01ZmU5LTg0MTQtYjkwZWVkOTU0MWVhGAAgACgAMMKiqvGtMDiVparxrTBAlaWq8a0wShxvUFZraHdCUmJWNjVLQ1dSMitJT05IV29PdTg9ZQAAAADCPgJgABKtAQgPEqgBChw0V1J5UEREZngyUnd0VDQzMm44MnRXR2JlWWc9EiRhYTIwYjcxOC02MjY2LTQyMDMtYmJjNy0xMmYwZWQzNjY5ZGIYACAAKAAwt/aYpesxOPjYqvGtMED42KrxrTBKHGlUdFBuQTRuclM2ZXJDVS82bXdxVU43UHgzVT1aHyId1ktVZzhiU3pYeGpOZUdjMjNhVVpFTHFGcDY3MD1l2uARG8I+AmAFEq4BCBsSqQEKHHdWd21sU1lhQlRZL1JjdUVHSTU0bzlTR3JmWT0SJDIyMDI0YmMwLTM0MjQtNGRhNS05OTA0LTk5NWRjYThmZDFiMxgAIAAoADCZ16rxrTA4kduq8a0wQJHbqvGtMEoceXdVTWZOVTh3TW8vQWQ1dFVCVTZuT0RkbGtVPVogIh7/+2hEeCtCa3FPTWlUQTBEM1ZkUkpvVTdob3kxcz1l5XWOSsI+AmAFEq0BCA4SqAEKHE44aUFUOUlGaGtIRkxCaHc2bHl6cTFpdk5WRT0SJDNjZWM3MDFkLWViNjYtNGViYi1hNTAyLTI5OTk3MTg2MTMwNBgAIAAoADCz9pil6zE47Neq8a0wQOzXqvGtMEocQkZaMzdvYTQxTzRxV0twQk0yd20xVlpWZ2E4PVofIh2tNEFTUFdnNXlqWU1tbkNyQUtwSlh0a3p6cjRNPWW3bjLpwj4CYAUSrQEIDBKoAQocSEplbU9sMEVUNERjRG1kMGpTTmE3S1ZES05rPRIkY2NjNDcwNzUtNTg3Yi00YmJjLWI1NGMtYTQ5Mjc5ZTc1MGY0GAAgACgAMPinu/unMTiWqrv7pzFAlqq7+6cxShxJYkt2Vm51bERTWjFDelpsejRQUUYrSGVwTms9Wh8iHalSVkJ2YWhrWDRqV2N4Zi94NXErN1lrdk1RTFk9ZXdwbKPCPgJgBRKsAQgLEqcBChxrU0traFRwNElPYytoa0FPVTJQemxhcFFwTFE9EiQ0OTVlMWFkMy1hZTcyLTQyMjUtYjAxNy1iOWViMGNjMTJjZWUYACAAKAAwmdeq8a0wOOLaqvGtMEDi2qrxrTBKHGpaNy9YUXpJTW1oVU16MGtOZ3M5VGUwOWQ1TT1aHiIcUm14eE1IQ3owcHVoVXVMSE5RcUFwMFVLV05RPWUAAAAAwj4CYAUSrAEIChKnAQocZ01WSFE1bWFPNFN3WEk4c0szTmlWRHNrdWdFPRIkMDk3Nzk0OTAtZDk4NC00NTgzLWE2NzYtZWVjMjQ1NjI2NjExGAAgACgAMJnXqvGtMDjD2qrxrTBAw9qq8a0wShx1bGcvUGVKUnBEZHl1NzJKQjIybUtlS1VGWVk9Wh4iHE4vTlpRcGFxZXF6bkJua0FKSGN5VVljcGxTaz1lAAAAAMI+AmAAEq0BCBMSqAEKHEZsNG9ET0VPQWl0b2cwbkhKcUxkRG1ZUTJOOD0SJGJjYjczMDdmLTRlMDctNDIwOC1iZTljLTQ1MWZhMmY0MDJjMBgAIAAoADC29pil6zE4xtmq8a0wQMbZqvGtMEoccElFOVo5UHVGbkRlcVpCTTJoK0tFeXQvOG1FPVofIh39STZRYkdNY0tCRHk0SUF3QnZEY05scld2cUhJPWXIcqPKwj4CYAUSrQEIEhKoAQocTVJULzhvNWlHK1VqUG5tL2tXWnlVc3Vuc29JPRIkNDc0ZTg3OWQtMjgzNy00MGVhLWI0YzQtMmVkZTk4ZTczYWUwGAAgACgAMLX2mKXrMTiU2qrxrTBAlNqq8a0wShx2TmxaZmYzZGJMbVBzOENBMG9KbWc2WTdMQW89Wh8iHfpzSlBVTjVnRmhoeTJMd3VOdFZMZ0dLZVFEQ3M9ZVQmOJrCPgJgBRKsAQgNEqcBChx3WUppV2JpNzBCUGR2Rlg5YjBJMTdOZVh4Z289EiQ4MDE1Mjg2OC1lYTkyLTQwZWItYTk3Ny0zY2RkY2ZmZmMzMTYYACAAKAAwpaaiuaMyOLfZqvGtMEC32arxrTBKHGM3T29XcDNWbktidVM1akt2STlFYXlNNXpadz1aHiIcWkRsQkQyUHFxTmdzeFhiNTlpdWlERk9tZWw0PWWdraLawj4CYAUSjAEIAxKHAQocbmpnRHU4OGVDcnZYcDg2cEQ3ZkhHY3FGcDg4PRIkYjMwZTA0Y2YtZWM2MS01NzAxLTkyZjUtNWRlZDBiMjQzNjg5GAAgACgAMMKiqvGtMDjwpqrxrTBA8Kaq8a0wShx5ek5CMDFjbjU0QTdjUlUwdVQrL1BnbVR0VW89ZQAAAADCPgJgADAAOAA=",
+   "version": 1
+}

@@ -36,12 +36,14 @@ class VisibleApplication {
     final installerPackageName = _nullableString(map, 'installerPackageName');
     if (!_packagePattern.hasMatch(packageName) ||
         packageName.contains('..') ||
-        packageName.length > maxPackageNameLength) {
+        packageName.length > VisibleApplicationCollection.maxPackageNameLength) {
       throw const FormatException('Application has an invalid package name.');
     }
-    if (label.length > maxLabelLength ||
-        (versionName?.length ?? 0) > maxVersionNameLength ||
-        (installerPackageName?.length ?? 0) > maxPackageNameLength) {
+    if (label.length > VisibleApplicationCollection.maxLabelLength ||
+        (versionName?.length ?? 0) >
+            VisibleApplicationCollection.maxVersionNameLength ||
+        (installerPackageName?.length ?? 0) >
+            VisibleApplicationCollection.maxPackageNameLength) {
       throw const FormatException('Application metadata exceeds its size limits.');
     }
     if (granted.any((permission) => !requested.contains(permission))) {
@@ -49,7 +51,8 @@ class VisibleApplication {
         'Granted permissions must also appear in the requested permission list.',
       );
     }
-    if (requested.any((permission) => permission.length > maxPermissionNameLength)) {
+    if (requested.any((permission) =>
+        permission.length > VisibleApplicationCollection.maxPermissionNameLength)) {
       throw const FormatException('Application permission metadata exceeds its limits.');
     }
     if (!grantStateAvailable && granted.isNotEmpty) {

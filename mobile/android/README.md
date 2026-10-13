@@ -4,17 +4,25 @@ This Android host is part of the isolated Flutter application. It uses package/a
 
 ## Toolchain configuration
 
-- Android Gradle Plugin: 8.10.1
-- Gradle wrapper distribution: 8.11.1
+- Flutter SDK: 3.47.7 (Dart SDK supplied by Flutter)
+- Android Gradle Plugin: 8.11.1
+- Gradle wrapper distribution: 8.14.3
 - Kotlin Gradle Plugin: 2.2.20
 - JDK: 17
-- Android SDK Platform 36 and Build Tools 35.0.0 or later required by the selected AGP setup
+- Android SDK Platform 36 and Build Tools 35.0.0 or later
 
-These versions are pinned for API 36. [AGP 8.10 requires Gradle 8.11.1 and JDK 17](https://developer.android.com/build/releases/agp-8-10-0-release-notes); [Kotlin 2.2.20 supports this Gradle/AGP range](https://kotlinlang.org/docs/gradle-configure-project.html). A local `android/local.properties` must point `flutter.sdk` at the installed Flutter SDK and `sdk.dir` at the Android SDK; that machine-specific file is intentionally not committed. The repository environment inspected for this change has Java 8 and no Flutter, Dart, Android SDK, Gradle, or Kotlin compiler commands available, so this host has not been built here. The Flutter SDK must generate or supply `gradlew`, `gradlew.bat`, and `gradle-wrapper.jar` before wrapper-based builds; those generated launcher files are intentionally not hand-authored. Preserve the custom host sources and build files when obtaining launcher files from a Flutter-generated Android project.
+These versions are configured for API 36. A local `android/local.properties` must point `flutter.sdk` at the installed Flutter SDK and `sdk.dir` at the Android SDK; that machine-specific file is intentionally not committed. Keep the checked-in Gradle wrapper launcher files and wrapper JAR in place so builds use the pinned Gradle version. Build prerequisites are Flutter 3.47.7, JDK 17, Android SDK Platform 36, and Build Tools 35.0.0 or later.
 
 Two Android build flavors are defined: `internal` uses application ID `com.svscyber.mobile.internal`, and `play` uses `com.svscyber.mobile`. Their app-private files, preferences, and Keystore entries are isolated by Android's per-app identity. Release signing and policy-specific configuration remain future release setup; the flavor name does not establish Play policy compliance.
 
-After installing the above toolchain and wrapper launchers, run from `mobile/`: `flutter pub get`, `flutter analyze`, `flutter test`, `flutter build apk --debug --flavor internal`, and `flutter build apk --debug --flavor play`. Android-only checks from `mobile/android/` are `./gradlew.bat :app:lintInternalDebug :app:lintPlayDebug`. Verify the channels and encrypted journal on an API 29+ emulator/device; the repository currently has no native Android test harness. Source inspection and XML parsing do not establish that Kotlin compiles or that Android Keystore works on a device.
+To build the internal debug APK, run from `mobile/`:
+
+```sh
+flutter pub get
+flutter build apk --debug --flavor internal
+```
+
+The expected output is `mobile/build/app/outputs/flutter-apk/app-internal-debug.apk`. This is an installable debug artifact for device testing; it is not release-signed. The app uses minimum SDK 29. Device behavior, including Android Keystore behavior, still needs validation on an API 29+ emulator or device.
 
 ## Native bridge contract v1
 
@@ -69,9 +77,9 @@ Method channel: `com.svscyber.mobile/privacy_setup.v1`
 
 The marker is a non-sensitive boolean in app-private SharedPreferences. This channel requests no Android permissions and does not start a collector. App backup and device-transfer backup are disabled for the preferences.
 
-## Tor VPN prototype status (internal flavor only)
+## VPN consent/status prototype (internal flavor only)
 
-The Android VPN integration is still a consent/status scaffold. The `internal` flavor exposes the platform consent flow; the `play` flavor remains unavailable. `requestVpnConsent()` only asks Android for VPN authorization after an explicit user action. Authorization is not a running VPN and does not mean any traffic is routed.
+The Android VPN integration is a consent/status scaffold only. The `internal` flavor exposes the platform consent flow; the `play` flavor remains unavailable. `requestVpnConsent()` only asks Android for VPN authorization after an explicit user action. Authorization is not a running VPN and does not mean any traffic is routed or protected.
 
 `getVpnStatus()` and `requestVpnConsent()` return this truthful status contract:
 
@@ -84,7 +92,7 @@ The Android VPN integration is still a consent/status scaffold. The `internal` f
 - `coverage`: `none`
 - `reasonCode`: `vpn_not_enabled_for_build`, `consent_unavailable`, `user_denied`, or `tor_data_plane_not_integrated` when applicable
 
-No Tor, tun2socks, or DNS dependency is packaged yet. Candidate upstreams were reviewed: Guardian Project's `tor-android` (BSD-3-Clause; example coordinate `info.guardianproject:tor-android:0.4.9.13.2`) and `heiher/hev-socks5-tunnel` 2.18.0 (MIT; its Android AAR exports JNI `TProxyStartService(config_path, fd)`, `TProxyStopService()`, and status/stats methods). These do not yet establish a complete safe integration. Before creating a route, the Tor process's upstream sockets need a verified bypass from this app's Android VPN; the bridge needs an explicit and verified UDP drop mode because Tor SOCKS does not transport arbitrary UDP; and DNS needs a local handler that uses Tor remote resolution with no Android-resolver fallback. No checked-in implementation currently satisfies or device-validates those requirements. Until it does, all routes remain absent and the UI must describe the feature as unavailable.
+No Tor, tun2socks, or DNS dependency is packaged. There is no Tor routing or VPN data-plane protection. Before creating a route, the Tor process's upstream sockets need a verified bypass from this app's Android VPN; the bridge needs an explicit and verified UDP drop mode because Tor SOCKS does not transport arbitrary UDP; and DNS needs a local handler that uses Tor remote resolution with no Android-resolver fallback. No checked-in implementation currently satisfies or device-validates those requirements. Until it does, all routes remain absent and the UI must describe the feature as unavailable.
 
 Upstream references: [tor-android](https://github.com/guardianproject/tor-android), [hev-socks5-tunnel releases](https://github.com/heiher/hev-socks5-tunnel/releases), [hev Android JNI contract](https://github.com/heiher/hev-socks5-tunnel#api), and [Tor SOCKS extensions](https://spec.torproject.org/socks-extensions). Their exact transitive binary notices and checksums must be recorded before dependencies are added to a distributable build.
 

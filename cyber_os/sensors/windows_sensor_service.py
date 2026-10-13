@@ -410,6 +410,11 @@ def normalize_windows_event(
 
 
 def _error_kind(exc: BaseException) -> tuple[str, str]:
+    if isinstance(exc, RuntimeError) and str(exc) in {
+        "pywin32 is not installed; Windows event source unavailable",
+        "pywin32 Event Log APIs are unavailable",
+    }:
+        return "unavailable", str(exc)
     code = getattr(exc, "winerror", None)
     if code is None and getattr(exc, "args", None):
         first = exc.args[0]

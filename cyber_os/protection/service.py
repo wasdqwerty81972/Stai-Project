@@ -169,51 +169,6 @@ class ProtectionService:
         LOGGER.warning("sensor-triggered detection remains flagged; quarantine failed")
         return verdict, "failed"
 
-    def quarantine_ai_assessed_file(
-        self,
-        path: Path,
-        event_id: str,
-        expected_sha256: str,
-    ) -> QuarantineResult:
-        """Quarantine only the same locally re-scanned file an AI warning referenced."""
-        target = Path(path)
-        current = scan_path(
-            target,
-            self._config.rules,
-            yara_timeout_seconds=self._config.yara_timeout_seconds,
-        )
-        if current.status != "clean" or current.sha256 != expected_sha256:
-            return QuarantineResult(success=False, error="file identity changed or local rules now report it")
-        detection_id = str(uuid.uuid4())
-        rule_id = "ai-sensor-assessment"
-        try:
-            size_bytes = target.stat().st_size
-        except OSError:
-            return QuarantineResult(success=False, error="file is no longer available")
-        self._config.store.record_detection(DetectionRecord(
-            detection_id=detection_id,
-            sha256=expected_sha256,
-            rule_id=rule_id,
-            rule_version="ai-sensor-v1",
-            action="block",
-            confidence="high",
-            severity="critical",
-            file_type=target.suffix.lower() if target.suffix else None,
-            size_bytes=size_bytes,
-            file_path=str(target),
-            created_at=datetime.now().isoformat(),
-            triage_enqueued=False,
-        ))
-        ai_verdict = ScanVerdict(
-            status="detected",
-            action="block",
-            rule_id=rule_id,
-            rule_version="ai-sensor-v1",
-            sha256=expected_sha256,
-            reason=f"AI-assisted sensor assessment for event {event_id}",
-        )
-        return self.quarantine_scanned_detection(detection_id, target, ai_verdict)
-
     def quarantine_scanned_detection(
         self,
         detection_id: str,

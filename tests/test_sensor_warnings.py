@@ -67,7 +67,7 @@ def test_ai_escalation_uses_a_lease_and_persists_result(tmp_path):
     assert warning["ai_analysis"] == "Repeated failed logons require review."
 
 
-def test_high_confidence_ai_file_assessment_quarantines_only_same_local_hash(tmp_path):
+def test_high_confidence_ai_file_assessment_is_advisory_only(tmp_path):
     target = tmp_path / "installer.exe"
     target.write_bytes(b"unrecognized executable sample")
     protection_store = ProtectionStore(tmp_path / "protection.sqlite3")
@@ -98,6 +98,18 @@ def test_high_confidence_ai_file_assessment_quarantines_only_same_local_hash(tmp
     assert str(target) not in str(warning)
     claim = coordinator.claim_ai_escalations("test-worker")[0]
 
+    unclaimed_result = {
+        "analysis": "The observed executable is malicious.",
+        "classification": "malicious",
+        "confidence": 0.99,
+        "recommended_action": "quarantine",
+    }
+    assert not coordinator.complete_ai_escalation(
+        claim["event_id"], "unowned-worker", unclaimed_result
+    )
+    assert target.exists()
+    assert len(protection.list_quarantine()) == 0
+
     assert coordinator.complete_ai_escalation(claim["event_id"], "test-worker", {
         "analysis": "The observed executable is malicious.",
         "classification": "malicious",
@@ -106,7 +118,7 @@ def test_high_confidence_ai_file_assessment_quarantines_only_same_local_hash(tmp
     })
 
     updated = coordinator.get_warnings()[0]
-    assert not target.exists()
-    assert updated["protection_state"] == "contained"
-    assert updated["protection_action"] == "ai_quarantine"
-    assert len(protection.list_quarantine()) == 1
+    assert target.exists()
+    assert updated["protection_state"] == "clean"
+    assert updated["protection_action"] is None
+    assert len(protection.list_quarantine()) == 0

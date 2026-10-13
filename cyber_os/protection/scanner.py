@@ -146,16 +146,19 @@ def scan_path(
         after_hash_snapshot = _snapshot(_safe_file_stat(target))
         if after_hash_snapshot != initial_snapshot:
             raise _FileChanged("scan target changed after reading")
-        yara_matches = _match_yara(target, rules.rules, yara_timeout_seconds)
+        yara_error: _YaraTimeout | _YaraFailure | None = None
+        try:
+            yara_matches = _match_yara(target, rules.rules, yara_timeout_seconds)
+        except (_YaraTimeout, _YaraFailure) as exc:
+            # An unavailable secondary matcher must not erase an already
+            # verified exact-hash block. Preserve the error for unknown results.
+            yara_matches = ()
+            yara_error = exc
         final_snapshot = _snapshot(_safe_file_stat(target))
         if final_snapshot != initial_snapshot:
             raise _FileChanged("scan target changed during YARA matching")
     except _FileChanged:
         return _unknown(rules.version, "file changed or is not a safe regular file")
-    except _YaraTimeout:
-        return _unknown(rules.version, "YARA scan timed out", locals().get("digest"))
-    except _YaraFailure as exc:
-        return _unknown(rules.version, str(exc), locals().get("digest"))
     except OSError:
         return _unknown(rules.version, "file could not be read", locals().get("digest"))
 
@@ -164,6 +167,26 @@ def scan_path(
         for rule in rules.rules
         if rule.kind == "sha256" and rule.value == digest
     ]
+    if yara_error is not None:
+        blocking_hash_rule = next(
+            (
+                rule
+                for rule in matching_rules
+                if rule.action == "block" and rule.confidence == "high"
+            ),
+            None,
+        )
+        if blocking_hash_rule is not None:
+            return ScanVerdict(
+                status="detected",
+                action="block",
+                rule_id=blocking_hash_rule.id,
+                rule_version=rules.version,
+                sha256=digest,
+                reason="high-confidence SHA-256 block rule matched; YARA unavailable",
+            )
+        return _unknown(rules.version, str(yara_error), digest)
+
     matching_rules.extend(yara_matches)
     if not matching_rules:
         return ScanVerdict(

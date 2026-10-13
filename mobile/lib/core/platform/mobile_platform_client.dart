@@ -36,9 +36,10 @@ class MethodChannelMobilePlatformClient implements MobilePlatformClient {
             (methodChannel ??
                     const MethodChannel(mobilePlatformMethodChannelName))
                 .invokeMethod<Object?>(method, arguments)),
-        _receiveEvents = () =>
+        _receiveEvents = (() =>
             (eventChannel ?? const EventChannel(mobilePlatformEventChannelName))
-                .receiveBroadcastStream();
+                .receiveBroadcastStream()
+                .cast<Object?>());
 
   /// Injectable transport seam for contract tests and local replay fixtures.
   MethodChannelMobilePlatformClient.withTransports({
@@ -80,7 +81,7 @@ class MethodChannelMobilePlatformClient implements MobilePlatformClient {
         contract.methodChannel != mobilePlatformMethodChannelName ||
         contract.eventChannel != mobilePlatformEventChannelName ||
         contract.credentialVaultChannel != mobileCredentialVaultChannelName ||
-        !contract.methods.containsAll(const {
+        !contract.methods.toSet().containsAll(const {
           'getContract',
           'collectDeviceBaseline',
           'collectVisibleApplicationInventory',

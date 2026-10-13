@@ -187,23 +187,28 @@ def populate_from_cache(registry: MCPRegistry) -> int:
     from core.integrations.mcp.client import process_mcp_client
 
     mcp_client = process_mcp_client()
-    tools_dict = _cached_tools()
-    if not tools_dict and mcp_client is not None:
-        tools_dict = getattr(mcp_client, "tools_cache", None) or {}
-    if not tools_dict:
-        logger.info("No MCP tools to register: the cache is empty")
+    # The disk cache is only a hint for warm-start UI. It cannot establish that
+    # a tool can be called: execute_mcp_tool requires this process's live client.
+    # Use the tools discovered by that client, and fail closed when there is no
+    # client or its connection state cannot be read.
+    if mcp_client is None:
+        logger.info("No MCP tools to register: no process MCP client is installed")
         return 0
 
-    connected: Dict[str, bool] = {}
-    if mcp_client is not None:
-        try:
-            connected = mcp_client.get_connection_status() or {}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Could not read MCP connection status: %s", exc)
+    tools_dict = getattr(mcp_client, "tools_cache", None) or {}
+    if not tools_dict:
+        logger.info("No MCP tools to register: no live tool cache is available")
+        return 0
+
+    try:
+        connected = mcp_client.get_connection_status() or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read MCP connection status; registering no tools: %s", exc)
+        return 0
 
     registered = 0
     for name, tools in tools_dict.items():
-        if connected and not connected.get(name, False):
+        if not connected.get(name, False):
             logger.debug("Skipping %s: cached but not connected this boot", name)
             continue
         registry.register_server(

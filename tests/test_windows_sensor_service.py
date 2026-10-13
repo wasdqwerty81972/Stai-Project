@@ -102,6 +102,33 @@ class WindowsSensorServiceTests(unittest.TestCase):
         self.assertEqual(len(CAPABILITIES), 14)
         self.assertEqual((CAPABILITIES[0].id, CAPABILITIES[0].key, CAPABILITIES[0].name), (1, "process_creation", "Process Creation"))
 
+    def test_each_registered_windows_capability_executes_to_its_catalog_id(self):
+        cases = (
+            ("Security", 4688, {"NewProcessName": r"C:\Windows\cmd.exe", "NewProcessId": "0x24", "ProcessId": "0x18"}, [1, 3]),
+            ("Security", 4656, {"ObjectType": "Process", "ProcessId": "0x24"}, [17]),
+            ("Security", 4663, {"ObjectType": "File", "AccessMask": "0x2", "ObjectName": r"C:\temp\x.exe"}, [49, 50]),
+            ("Security", 4660, {"ProcessId": "0x24", "HandleId": "0x1"}, [51]),
+            ("Security", 4657, {"ObjectName": r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "ObjectValueName": "Updater"}, [65]),
+            ("Security", 4698, {"TaskName": "\\Updater"}, [67]),
+            ("Security", 4697, {"ServiceName": "Example"}, [68]),
+            ("System", 7045, {"ServiceName": "Example"}, [68]),
+            ("Microsoft-Windows-DNS-Client/Operational", 3008, {"QueryName": "example.test"}, [89]),
+            ("Security", 5156, {"Direction": "%%14593", "DestAddress": "192.0.2.1", "DestPort": "443"}, [97]),
+            ("Security", 4624, {"TargetUserName": "analyst", "LogonType": "2"}, [129]),
+            ("Security", 4625, {"TargetUserName": "analyst", "IpAddress": "192.0.2.1"}, [130]),
+            ("Microsoft-Windows-Windows Defender/Operational", 5007, {"param1": "setting"}, [180]),
+            ("System", 7036, {"param1": "Microsoft Defender Antivirus Service"}, [180]),
+        )
+
+        emitted_ids = set()
+        for record_id, (channel, windows_event_id, fields, expected_ids) in enumerate(cases, 1):
+            event = normalize_windows_event(RawWindowsEvent(channel, record_id, windows_event_id, "2026-10-09T10:11:12Z", fields))
+            self.assertIsNotNone(event, f"event {windows_event_id} on {channel} was not recognized")
+            self.assertEqual(event.sensor_ids, expected_ids, f"event {windows_event_id} on {channel}")
+            emitted_ids.update(event.sensor_ids)
+
+        self.assertEqual(emitted_ids, {capability.registry_id for capability in CAPABILITIES})
+
     def test_queue_is_durable_deduplicated_and_bounded(self):
         event = normalize_windows_event(self._process_event())
         service = WindowsSensorService(database_path=self._path(), queue_capacity=1)
@@ -304,6 +331,14 @@ class WindowsSensorServiceTests(unittest.TestCase):
             self.assertEqual(source._last_record_id["Security"], 2)
             api.events["Security"].append(api._xml(3, 4688))
             self.assertEqual([event.record_id for event in source.read_events(limit=4)], [3])
+
+    def test_event_log_source_reports_why_runtime_api_is_unavailable(self):
+        source = WindowsEventLogSource(channels=["Security"])
+        with patch.object(WindowsEventLogSource, "_win32evtlog", side_effect=RuntimeError("pywin32 is not installed; Windows event source unavailable")):
+            source.open()
+
+        self.assertEqual(source.channel_status["Security"]["state"], "unsupported")
+        self.assertEqual(source.channel_status["Security"]["error"], "pywin32 is not installed; Windows event source unavailable")
 
 
 class CyberOSEngineSensorTests(unittest.TestCase):

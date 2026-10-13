@@ -328,7 +328,6 @@ class _ProviderCredentialSettingsPageState
                     ),
                   ),
                 ),
-              ),
             ],
             if (_message != null) ...[
               const SizedBox(height: 12),

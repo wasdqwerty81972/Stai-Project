@@ -484,7 +484,7 @@ _ws_lock = threading.Lock()
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+def _set_main_loop(loop: asyncio.AbstractEventLoop | None) -> None:
     global _main_loop
     _main_loop = loop
 
@@ -512,14 +512,36 @@ async def _broadcast(payload: dict[str, Any]) -> None:
                 pass
 
 
+def _schedule_broadcast(payload: dict[str, Any], loop: asyncio.AbstractEventLoop | None) -> bool:
+    """Schedule a websocket broadcast only while the API loop can accept work."""
+    if loop is None:
+        return False
+    if loop.is_closed():
+        if _main_loop is loop:
+            _set_main_loop(None)
+        return False
+    if not loop.is_running():
+        return False
+
+    coroutine = _broadcast(payload)
+    try:
+        asyncio.run_coroutine_threadsafe(coroutine, loop)
+    except RuntimeError:
+        # The loop can close after the state check but before scheduling. In
+        # that race, close the coroutine explicitly to avoid an unawaited leak.
+        coroutine.close()
+        if loop.is_closed() and _main_loop is loop:
+            _set_main_loop(None)
+        return False
+    return True
+
+
 def _on_event(event: AgentEvent) -> None:
     """Global event-bus callback — persists + broadcasts every event."""
     with _history_lock:
         chat_history.append(event.to_dict())
         _save_history()
-    loop = _get_loop()
-    if loop is not None:
-        asyncio.run_coroutine_threadsafe(_broadcast(event.to_dict()), loop)
+    _schedule_broadcast(event.to_dict(), _get_loop())
 
 
 # Subscribe once at import time so nothing is missed.
@@ -1101,15 +1123,15 @@ def _run_agent_prompt(prompt: str) -> None:
 
         # Schedule broadcast on the running asyncio event loop
         loop = _get_loop()
-        if loop is not None:
-            asyncio.run_coroutine_threadsafe(_broadcast(json.loads(payload)), loop)
-        else:
+        if loop is None:
             # Fallback: broadcast synchronously to all active connections
             for ws in list(active_connections):
                 try:
                     ws.send_text(payload)
                 except Exception:
                     pass
+        else:
+            _schedule_broadcast(json.loads(payload), loop)
 
     threading.Thread(target=run, daemon=True).start()
 

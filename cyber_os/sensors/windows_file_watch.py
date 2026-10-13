@@ -142,7 +142,7 @@ def build_file_activity_event(path: Path, action: int) -> SensorEvent | None:
         source="Windows directory change notification",
         details={"file_operation": "create_or_modify", "summary": summary},
         capabilities=["File Creation", "File Modification"],
-        sensor_ids=[17, 18],
+        sensor_ids=[49, 50],
         _protection_target=str(target),
     )
 

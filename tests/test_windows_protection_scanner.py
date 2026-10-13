@@ -123,6 +123,36 @@ def test_yara_timeout_returns_unknown(
     assert verdict.action == "allow"
 
 
+def test_signed_sha256_block_match_survives_yara_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"STAI signed hash signature remains authoritative"
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(content)
+    yara_rule = DetectionRule(
+        id="yara-1",
+        kind="yara",
+        value='rule marker { strings: $a = "marker" condition: $a }',
+        action="block",
+        confidence="high",
+    )
+
+    def unavailable(_path: Path, _rules: tuple[DetectionRule, ...], _timeout: int):
+        raise scanner._YaraFailure("YARA runtime is unavailable")
+
+    monkeypatch.setattr(scanner, "_match_yara", unavailable)
+
+    verdict = scan_path(sample, _rule_set(_hash_rule(content), yara_rule))
+
+    assert (verdict.status, verdict.action, verdict.rule_id) == (
+        "detected",
+        "block",
+        "hash-1",
+    )
+    assert verdict.sha256 == hashlib.sha256(content).hexdigest()
+
+
 def test_yara_rule_matches_verified_package(tmp_path: Path) -> None:
     pytest.importorskip("yara")
     sample = tmp_path / "sample.bin"

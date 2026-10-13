@@ -41,6 +41,7 @@ def test_file_activity_event_keeps_target_transient_and_uses_safe_summary(tmp_pa
     event = build_file_activity_event(target, FILE_ACTION_ADDED)
 
     assert event.event_type == "file_activity"
+    assert event.sensor_ids == [49, 50]
     assert event._protection_target == str(target)
     assert "dropper.exe" not in str(event.to_dict())
     assert "executable or script" in event.to_dict()["details"]["summary"]

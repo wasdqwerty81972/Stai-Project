@@ -25,4 +25,8 @@ External AI is optional. Evidence may only be sent after a user chooses it and r
 
 ## Build prerequisites
 
-Install Flutter 3.35 or newer, Android SDK Platform 36, and JDK 17 or newer. The repository environment currently has no Flutter/Android SDK toolchain on PATH and has JDK 8, so a local Android build cannot be verified until that toolchain is installed.
+The mobile build uses Flutter 3.47.7, JDK 17, Android SDK Platform 36, and Android Build Tools 35.0.0 or newer. Gradle and Android Gradle Plugin versions are pinned in `android/gradle/wrapper/gradle-wrapper.properties` and `android/settings.gradle`. Install those prerequisites, then configure the machine-specific `android/local.properties` with `flutter.sdk` and `sdk.dir` paths. Do not commit that file.
+
+From this directory, run `flutter pub get` followed by `flutter build apk --debug --flavor internal`. The expected installable debug APK is `build/app/outputs/flutter-apk/app-internal-debug.apk`. The `internal` flavor uses application ID `com.svscyber.mobile.internal`; this is a debug build for direct device testing, not a release-signed distribution build.
+
+The VPN screen is currently a consent and status scaffold. VPN consent does not start a tunnel; Tor, DNS handling, traffic routing/inspection, and data-plane protection are not implemented. The app does not route or protect network traffic at this stage.

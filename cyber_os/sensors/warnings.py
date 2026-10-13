@@ -212,8 +212,6 @@ class SensorResponseCoordinator:
         self.store = store
         self.rules = rules or SensorAnomalyRules()
         self.protection_service = protection_service
-        self._transient_paths: dict[str, str] = {}
-        self._lock = threading.Lock()
 
     def submit_event(self, event: SensorEvent) -> None:
         verdict = None
@@ -240,9 +238,6 @@ class SensorResponseCoordinator:
         if warning is not None:
             warning.protection_state = protection_state
             self.store.add(warning)
-            if target and protection_state == "clean":
-                with self._lock:
-                    self._transient_paths[event.event_id] = target
 
     def get_warnings(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.store.list(limit)
@@ -251,28 +246,6 @@ class SensorResponseCoordinator:
         return self.store.claim(worker_id, limit, lease_seconds)
 
     def complete_ai_escalation(self, event_id: str, worker_id: str, result: Mapping[str, Any]) -> bool:
-        warning = self.store.get(event_id)
-        if (
-            warning is not None
-            and warning.get("protection_state") == "clean"
-            and result.get("classification") == "malicious"
-            and isinstance(result.get("confidence"), (int, float))
-            and not isinstance(result.get("confidence"), bool)
-            and float(result["confidence"]) >= 0.98
-            and self.protection_service is not None
-        ):
-            with self._lock:
-                target = self._transient_paths.pop(event_id, "")
-            expected_hash = next(
-                (item.split(":", 1)[1] for item in warning.get("evidence", []) if item.startswith("sha256:")),
-                "",
-            )
-            if target and expected_hash:
-                quarantine = self.protection_service.quarantine_ai_assessed_file(
-                    Path(target), event_id, expected_hash
-                )
-                state = "contained" if quarantine.success else "failed"
-                self.store.update_protection_outcome(event_id, state, "ai_quarantine" if quarantine.success else "quarantine_failed")
-                result = dict(result)
-                result["protection_action"] = "ai_quarantine" if quarantine.success else "quarantine_failed"
+        # AI output is investigation evidence only. Any later destructive
+        # action must be owned by a separate response-policy controller.
         return self.store.complete(event_id, worker_id, result)

@@ -46,7 +46,7 @@ class CapabilityCatalog {
 
   static Future<CapabilityCatalog> load({AssetBundle? bundle}) async {
     final jsonText = await (bundle ?? rootBundle).loadString(capabilityCatalogAsset);
-    return fromJsonString(jsonText);
+    return CapabilityCatalog.fromJsonString(jsonText);
   }
 
   factory CapabilityCatalog.fromJsonString(String source) {
