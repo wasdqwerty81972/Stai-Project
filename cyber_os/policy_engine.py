@@ -123,6 +123,20 @@ DEFAULT_POLICIES = [
         'auto_approve_if_risk_below': 100.0,
         'description': 'Investigation actions. No approval required.',
     },
+    {
+        # Catch-all for mutating tools with no dedicated policy. Without it
+        # check_policy returned "No policy defined" and the orchestrator hard
+        # blocked the tool, so shell_exec, the honeypot controls, the CyberDB
+        # writers and every other mutating tool were permanently unusable.
+        # Its blast radius is unknown by definition, so it never auto-approves.
+        'rule_id': 'POL-011',
+        'action_type': 'system_modification',
+        'requires_approval': True,
+        'minimum_risk': 0.0,
+        'required_role': 'administrator',
+        'auto_approve_if_risk_below': -1.0,
+        'description': 'Mutating action without a dedicated policy. Always requires explicit approval.',
+    },
 ]
 
 
@@ -132,7 +146,6 @@ class PolicyEngine:
     def __init__(self, storage_path: str = 'cyber_os/policies.json'):
         self.storage_path = storage_path
         self.policies: Dict[str, PolicyRule] = {}
-        self._lock = type('threading', (), {'Lock': lambda: type('Lock', (), {'acquire': lambda: None, 'release': lambda: None})()})()
         self._load()
 
     def _load(self):
@@ -142,13 +155,25 @@ class PolicyEngine:
                     data = json.load(f)
                     for rule_id, rule_data in data.items():
                         self.policies[rule_id] = PolicyRule(**rule_data)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Silently falling back to defaults hid a corrupt or
+                # hand-edited policy file, so an operator's tightened policy
+                # could be replaced by the permissive defaults with no signal.
+                print(
+                    f"[!] PolicyEngine could not read {self.storage_path} "
+                    f"({type(exc).__name__}: {exc}); using built-in defaults."
+                )
 
-        if not self.policies:
-            for policy_data in DEFAULT_POLICIES:
-                rule = PolicyRule(**policy_data)
-                self.policies[rule.rule_id] = rule
+        # Seed any default rule the file does not already carry. Previously
+        # defaults were only written when the file was completely empty, so a
+        # policies.json created by an older build never gained new rules and
+        # every newly policy-gated tool stayed blocked.
+        added = False
+        for policy_data in DEFAULT_POLICIES:
+            if policy_data['rule_id'] not in self.policies:
+                self.policies[policy_data['rule_id']] = PolicyRule(**policy_data)
+                added = True
+        if added:
             self._save()
 
     def _save(self):
@@ -177,13 +202,21 @@ class PolicyEngine:
                 'policy_id': None,
             }
 
-        # Check minimum risk threshold
+        # Check minimum risk threshold.
+        #
+        # A risk score BELOW the policy's minimum does not make the action
+        # unsafe — it only means the policy's elevated-risk branch does not
+        # apply. Returning allowed=False here denied every remediation tool
+        # with a nonsensical reason ("risk too low"), so the approval card was
+        # never shown and no action could ever be authorized. Below the
+        # minimum the action stays available but is never auto-approved.
         if risk_score < policy.minimum_risk:
             return {
-                'allowed': False,
-                'requires_approval': True,
-                'reason': f'Risk score {risk_score:.1f} below minimum threshold {policy.minimum_risk}',
+                'allowed': True,
+                'requires_approval': policy.requires_approval,
+                'auto_approved': False,
                 'policy_id': policy.rule_id,
+                'reason': policy.description,
             }
 
         # Determine if approval is required

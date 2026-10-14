@@ -26,6 +26,11 @@ This is the Windows Filter Manager minifilter source for the STAI protection sys
 - Windows Driver Kit (WDK) 10.0.22621 or later
 - Visual Studio 2022 with Windows Kernel Mode Driver template
 - Test signing certificate for development
+- Minimum target OS is Windows 10, version 2004: the driver calls
+  `ExAllocatePool2`, which replaced the deprecated `ExAllocatePoolWithTag`. To
+  support anything earlier, switch to the `ExAllocatePoolZero` wrapper, define
+  `POOL_ZERO_DOWN_LEVEL_SUPPORT`, and call `ExInitializeDriverRuntime` from
+  `DriverEntry`.
 
 ## Build Instructions
 
@@ -44,12 +49,21 @@ Output: `x64\Debug\StaiProtection.sys` and the staged INF/catalog package.
 bcdedit /set testsigning on
 # Reboot required
 
-# The INF is a primitive minifilter package with a DefaultInstall section.
+# The INF is an architecture-decorated DefaultInstall package, which is the
+# documented layout for a non-PnP file system filter. Install it as a primitive
+# driver package with pnputil (NOT the legacy
+# "rundll32 setupapi.dll,InstallHinfSection DefaultInstall 132" path, which
+# Microsoft recommends replacing and which always exits 0 even on failure):
+pnputil /add-driver StaiProtection.inf /install
+
 # In an isolated test-signing VM, use the STAI MSI so it also installs the
 # service, signed rules, dashboard SID ACL, health check, and rollback action.
-# To inspect the driver alone during development, right-click the INF and
-# choose Install, then load the filter explicitly:
-fltmc load StaiProtection
+# Then load the filter explicitly:
+fltmc load StaiProtectionFilter
+
+# To remove the staged package again (oem#.inf is the published name reported
+# by "pnputil /enum-drivers"):
+pnputil /delete-driver oem#.inf /uninstall
 ```
 
 ## Minifilter Instance

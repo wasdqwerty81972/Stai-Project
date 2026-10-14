@@ -18,6 +18,7 @@ hiddenimports = [
     "pythoncom",
     "servicemanager",
     "win32api",
+    "win32con",
     "win32event",
     "win32file",
     "win32crypt",
@@ -27,6 +28,10 @@ hiddenimports = [
     "win32serviceutil",
     "win32timezone",
     "yara",
+    "psutil",
+    "ui.device_process_identity",
+    "ui.process_monitor",
+    "ui.windows_process_events",
 ]
 
 public_key_path = os.environ.get("STAI_TRUSTED_RULES_PUBLIC_KEY")
@@ -47,6 +52,18 @@ if public_key_path:
         public_key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     )
     datas.append((str(raw_key_path), "resources"))
+
+# Only the explicitly non-production Test build gets the EICAR demo package.
+# Release builds receive their separately signed rules from the MSI installer.
+build_root = Path(os.environ.get("STAI_BUILD_ROOT", "")).resolve()
+sensor_registry = project_root / "cyber_os" / "sensors" / "sensor_registry_data.json"
+if sensor_registry.is_file():
+    datas.append((str(sensor_registry), "cyber_os/sensors"))
+
+for demo_name in ("demo-manifest.json", "demo-manifest.sig"):
+    demo_path = build_root / "resources" / demo_name
+    if demo_path.is_file():
+        datas.append((str(demo_path), "resources"))
 
 a = Analysis(
     [str(entry_script)],

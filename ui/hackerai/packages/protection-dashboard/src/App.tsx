@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { openAgentWorkspace } from "./agent-workspace";
 import {
   cancelScan,
   getAgentHistory,
@@ -25,6 +26,7 @@ import {
   type TriageRecord,
 } from "./protection-api";
 import { AgentView } from "./components/AgentView";
+import { DriverDiagnostics } from "./components/DriverDiagnostics";
 import { Navigation, type DashboardPage } from "./components/Navigation";
 import { ProtectionOverview } from "./components/ProtectionOverview";
 import { QuarantineView } from "./components/QuarantineView";
@@ -32,6 +34,7 @@ import { ScanView } from "./components/ScanView";
 import { SettingsView } from "./components/SettingsView";
 import { SystemStatus } from "./components/SystemStatus";
 import { ThreatActivity } from "./components/ThreatActivity";
+import { DeviceActivityView } from "./components/DeviceActivityView";
 
 function messageFor(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -61,10 +64,13 @@ export default function App() {
   const [triageError, setTriageError] = useState<string | null>(null);
   const [history, setHistory] = useState<AgentHistory | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
+  const refreshing = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
     setStatusLoading(true);
-    setStatusError(null);
     setThreatsError(null);
     setQuarantineError(null);
     setScanScheduleError(null);
@@ -76,8 +82,8 @@ export default function App() {
     ]);
     if (statusResult.status === "fulfilled") {
       setStatus(statusResult.value);
+      setStatusError(null);
     } else {
-      setStatus(null);
       setStatusError(messageFor(statusResult.reason, "Protection service unavailable"));
     }
     if (threatsResult.status === "fulfilled") {
@@ -100,6 +106,7 @@ export default function App() {
       setScanScheduleError(messageFor(scheduleResult.reason, "Scan schedule unavailable"));
     }
     setStatusLoading(false);
+    refreshing.current = false;
   }, []);
 
   useEffect(() => {
@@ -107,10 +114,10 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (page !== "AI Agent" && page !== "System Status") return;
+    if (!["Dashboard", "AI Agent", "System Status", "Driver Diagnostics"].includes(page) && !statusError) return;
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
-  }, [page, refresh]);
+  }, [page, refresh, statusError]);
 
   useEffect(() => {
     if (page !== "Scans") return;
@@ -135,15 +142,18 @@ export default function App() {
   }, [page]);
 
   const activeScan = scan?.state === "running" || scan?.state === "queued";
+  const activeScanJobId = activeScan ? scan?.job_id : undefined;
   useEffect(() => {
-    if (!activeScan || !scan) return;
+    // Key the interval on the job id so a progress update does not tear down
+    // and rebuild the timer on every poll.
+    if (!activeScanJobId) return;
     const timer = window.setInterval(() => {
-      void getScan(scan.job_id)
+      void getScan(activeScanJobId)
         .then(setScan)
         .catch((error: unknown) => setScanError(messageFor(error, "Scan progress unavailable")));
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [activeScan, scan]);
+  }, [activeScanJobId]);
 
   useEffect(() => {
     if (page !== "AI Agent" || selectedDetectionId || !threats?.length) return;
@@ -318,7 +328,16 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Navigation page={page} onNavigate={setPage} />
+      <Navigation
+        page={page}
+        onNavigate={setPage}
+        onOpenAgent={() => {
+          setAgentWorkspaceError(null);
+          void openAgentWorkspace().catch((error: unknown) => {
+            setAgentWorkspaceError(messageFor(error, "Unable to open the SVS Cyber AI Agent workspace."));
+          });
+        }}
+      />
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-context">
@@ -334,6 +353,14 @@ export default function App() {
 
         <div className="page-scroll" key={page}>
           <div className="page-content">
+            {(page === "Processes" || page === "Network Activity") && (
+              <DeviceActivityView mode={page === "Processes" ? "processes" : "network"} />
+            )}
+            {agentWorkspaceError && (
+              <div className="inline-alert error-alert" role="alert">
+                {agentWorkspaceError}
+              </div>
+            )}
             {page === "Dashboard" && (
               statusLoading && !status && !statusError ? (
                 <div className="page-loading" role="status"><span className="spinner" /> Connecting to local protection service…</div>
@@ -370,6 +397,7 @@ export default function App() {
               />
             )}
             {page === "System Status" && <SystemStatus status={status} error={statusError} />}
+            {page === "Driver Diagnostics" && <DriverDiagnostics status={status} error={statusError} />}
             {page === "Threat Activity" && <ThreatActivity threats={threats} error={threatsError} />}
             {page === "Scans" && (
               <ScanView

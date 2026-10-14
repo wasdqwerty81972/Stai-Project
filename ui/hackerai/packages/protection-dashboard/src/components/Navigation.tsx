@@ -1,6 +1,9 @@
 import {
   Activity,
   Bot,
+  Cpu,
+  HardDriveDownload,
+  Network,
   LayoutDashboard,
   ListChecks,
   LockKeyhole,
@@ -13,7 +16,10 @@ import {
 export type DashboardPage =
   | "Dashboard"
   | "AI Agent"
+  | "Processes"
+  | "Network Activity"
   | "System Status"
+  | "Driver Diagnostics"
   | "Threat Activity"
   | "Scans"
   | "Quarantine"
@@ -22,7 +28,10 @@ export type DashboardPage =
 const pages: { label: DashboardPage; icon: LucideIcon }[] = [
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "AI Agent", icon: Bot },
+  { label: "Processes", icon: Cpu },
+  { label: "Network Activity", icon: Network },
   { label: "System Status", icon: Activity },
+  { label: "Driver Diagnostics", icon: HardDriveDownload },
   { label: "Threat Activity", icon: Shield },
   { label: "Scans", icon: ScanSearch },
   { label: "Quarantine", icon: LockKeyhole },
@@ -32,9 +41,11 @@ const pages: { label: DashboardPage; icon: LucideIcon }[] = [
 export function Navigation({
   page,
   onNavigate,
+  onOpenAgent,
 }: {
   page: DashboardPage;
   onNavigate: (page: DashboardPage) => void;
+  onOpenAgent: () => void;
 }) {
   return (
     <aside className="sidebar" aria-label="STAI Protection">
@@ -57,7 +68,7 @@ export function Navigation({
             aria-current={page === label ? "page" : undefined}
             className={`nav-item${page === label ? " is-active" : ""}`}
             key={label}
-            onClick={() => onNavigate(label)}
+            onClick={() => label === "AI Agent" ? onOpenAgent() : onNavigate(label)}
             title={label}
             type="button"
           >

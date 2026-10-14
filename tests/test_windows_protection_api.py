@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from cyber_os.protection.models import ThreatIntelEvidence
 from ui import api_server as server
 
 
@@ -56,6 +57,7 @@ def mock_protection_service():
         )),
         rules=SimpleNamespace(version="test-1", rules=()),
         rules_trust_established=True,
+        threat_intel_status=MagicMock(return_value={"state": "advisory", "integrity_ok": True, "block_eligible_records": 42, "activation": "inactive"}),
     )
 
     return service
@@ -97,6 +99,45 @@ def test_status_reports_degraded_when_driver_or_rules_unhealthy(monkeypatch, moc
     data = reply.json()
     assert data["state"] == "degraded"
     assert data["driver_state"] == "stopped"
+
+
+def test_status_exposes_advisory_intelligence_health(protection_client, mock_protection_service):
+    response = protection_client.get("/api/protection/status")
+    assert response.status_code == 200
+    assert response.json()["threat_intel"] == {
+        "state": "advisory",
+        "integrity_ok": True,
+        "block_eligible_records": 42,
+        "activation": "inactive",
+    }
+
+
+def test_threat_list_returns_structured_hash_intel_evidence(protection_client, mock_protection_service):
+    evidence = ThreatIntelEvidence(
+        indicator_type="sha256",
+        indicator_value="a" * 64,
+        source="abusech_malwarebazaar",
+        verification="confirmed",
+        confidence=95,
+        severity="high",
+        feed_version="feed-42",
+        first_seen="2026-10-14T10:00:00",
+        last_seen="2026-10-14T11:00:00",
+        freshness="fresh",
+        corroborations=1,
+        block_eligible=True,
+        decision_reason="eligible in store; advisory in P2A",
+    )
+    mock_protection_service.store.list_threats.return_value = [SimpleNamespace(
+        detection_id="det-1", sha256="a" * 64, rule_id="threat-intel-advisory",
+        rule_version="feed-42", action="allow", confidence="low", severity="high",
+        file_type=".exe", size_bytes=10, file_path="C:/sample.exe",
+        created_at="2026-10-14T12:00:00", triage_enqueued=False, intel_evidence=evidence,
+    )]
+    response = protection_client.get("/api/protection/threats")
+    assert response.status_code == 200
+    assert response.json()[0]["threat_intel_evidence"]["source"] == "abusech_malwarebazaar"
+    assert response.json()[0]["threat_intel_evidence"]["block_eligible"] is True
 
 
 def test_status_includes_registered_av_and_defender_mode_when_available(monkeypatch, mock_protection_service):

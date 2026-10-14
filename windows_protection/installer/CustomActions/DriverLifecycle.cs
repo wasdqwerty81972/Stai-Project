@@ -17,13 +17,13 @@ namespace StaiProtectionCustomActions
     public static class DriverLifecycle
     {
         private const string ServiceName = "STAIProtection";
-        private const string DriverName = "StaiProtection";
+        private const string DriverName = "StaiProtectionFilter";
         private const string PipeName = "STAI.Protection.v1";
         private const string UpdateRecoveryTaskName = "STAI Protection Update Recovery";
         private const string InstallRollbackRecoveryTaskName = "STAI Protection Install Rollback Recovery";
         private const string InstallRollbackRecoveryScriptName = "InstallRollbackRecovery.ps1";
         private const string InstallMarkerName = ".stai-install-in-progress";
-        private const int MaxFrameBytes = 64 * 1024;
+        private const int MaxFrameBytes = 1024 * 1024;
         private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(90);
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
@@ -88,7 +88,8 @@ namespace StaiProtectionCustomActions
                 SecureDataDirectory();
                 VerifyDashboardSid(dashboardSid);
 
-                RunServiceCommand(session, serviceExe, "install --startup=auto", protectionDir, false);
+                // PyWin32's HandleCommandLine parses install options before the command.
+                RunServiceCommand(session, serviceExe, "--startup=auto install", protectionDir, false);
                 ConfigureServiceRecovery(protectionDir);
                 RunServiceCommand(session, serviceExe, "start", protectionDir, false);
                 WaitForServiceRunning(TimeSpan.FromSeconds(30));
@@ -204,8 +205,13 @@ namespace StaiProtectionCustomActions
 
         private static void InstallMinifilter(Session session, string infPath, string driverDir)
         {
-            string arguments = "setupapi.dll,InstallHinfSection DefaultInstall 132 " + Quote(infPath);
-            RunProcess(Path.Combine(Environment.SystemDirectory, "rundll32.exe"), arguments, driverDir, ProcessTimeout, false);
+            // pnputil installs the package as a primitive driver (DiInstallDriver) and
+            // reports a real exit code. The legacy "rundll32 setupapi.dll,
+            // InstallHinfSection DefaultInstall 132" path is the mechanism Microsoft
+            // recommends replacing, and rundll32 always exits 0 so a failed INF
+            // install could only be detected after the fact.
+            string arguments = "/add-driver " + Quote(infPath) + " /install";
+            RunProcess(Path.Combine(Environment.SystemDirectory, "pnputil.exe"), arguments, driverDir, ProcessTimeout, false);
             if (!ServiceExists(DriverName))
                 throw new InvalidOperationException("The minifilter INF did not register the driver service.");
             session.Log("Installed the minifilter from its staged Windows INF package.");

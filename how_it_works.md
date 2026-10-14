@@ -5,7 +5,7 @@
 This is a unified cybersecurity AI agent interface built in Python. It combines:
 - 100+ security tools (scanners, analyzers, forensic utilities)
 - SOC workflow management (incident response, threat hunting, forensic analysis)
-- AI-enhanced threat analysis (via OmniRoute/Gemini API)
+- AI-enhanced threat analysis (via authenticated Codex CLI, with API-provider fallbacks)
 - Autonomous live defense (real-time monitoring + automated response)
 - Multi-agent AI orchestration (13 specialized SOC agents)
 
@@ -19,8 +19,9 @@ This is a unified cybersecurity AI agent interface built in Python. It combines:
 - **psutil** — system/process monitoring
 - **pywin32** — Windows Event Log access
 - **paramiko** — SSH honeypot server
-- **requests** — HTTP calls (honeypot + LLM)
-- **OpenAI SDK** — OmniRoute gateway client
+- **requests** — HTTP calls (honeypot)
+- **Codex CLI** — authenticated ChatGPT/Codex model access for AiApi
+- **OpenAI SDK** — optional direct API and legacy OmniRoute client
 - **google-genai** — Gemini fallback client
 - **Pydantic Settings** — configuration management
 - **JSON-first storage** — no mandatory PostgreSQL required
@@ -36,7 +37,7 @@ This is a unified cybersecurity AI agent interface built in Python. It combines:
 | `cyber_ui.py` | **Legacy dashboard** — full tkinter UI with 19+ demo buttons for every capability |
 | `cyber_agent.py` | **Core orchestrator** — wires together tools, AI, CyberDB, CyberOS; also defines 13 SOC agents + workflows |
 | `cyber_tools.py` | **Tool registry & implementations** — 100+ tools, WSL routing, guardrails, static analysis, honeypot, etc. |
-| `key_manager.py` | **AI API layer** — OmniRoute primary, Gemini fallback, mock/demo mode |
+| `key_manager.py` | **AI API layer** — authenticated Codex CLI primary, OpenAI/Gemini fallbacks, mock/demo mode |
 | `README.md` / `README_final.md` | Documentation |
 
 ### `cyber_os/` — Autonomous Live Defense System
@@ -121,8 +122,10 @@ This is a unified cybersecurity AI agent interface built in Python. It combines:
 
 ### C. AI Integration (`key_manager.py`)
 - **`AiApi`** is the unified interface for all AI calls
-- **Primary**: OmniRoute (local OpenAI-compatible gateway at `http://localhost:20128/v1`)
-- **Fallback**: 5 Gemini API keys with round-robin + cooldown on rate limits
+- **Primary**: authenticated Codex CLI (`codex login`, then `codex exec`) using `CODEX_CLI_MODEL` (default `gpt-6-luna`)
+- **Fallbacks**: direct OpenAI Responses API when `OPENAI_API_KEY` or `CODEX_API_KEY` is configured, then OmniRoute if explicitly enabled, then Gemini keys with round-robin + cooldown on rate limits
+- **Legacy gateway**: OmniRoute remains available to legacy role-key helpers when explicitly enabled
+- Run `codex login` as the same Windows user that launches STAI, then verify the route with `python scripts\smoke_gpt6_luna.py`; set `CODEX_CLI_PATH` or `CODEX_CLI_MODEL` only when overriding the auto-detected CLI or default model
 - **Demo mode**: `MockRoleKeyManager` returns canned responses for 6 cybersecurity roles
 - **Roles**: `threat_intel_analyst`, `malware_analyst`, `network_defender`, `incident_responder`, `forensic_investigator`, `vulnerability_researcher`
 - Usage: `api.chat_with_role("threat_intel_analyst", system_prompt, user_prompt)`
@@ -209,7 +212,7 @@ Requirements: Python 3.12, CustomTkinter, psutil, pywin32 (optional, for Windows
 
 - The project is **heavily Windows-oriented** (PowerShell, Windows Event Log, netsh, taskkill, WSL fallbacks)
 - **Most "simulated" tools** return fake data unless connected to real APIs or external binaries
-- The **AI layer** defaults to demo/mock mode unless OmniRoute (`localhost:20128`) or Gemini keys are configured
+- The **AI layer** uses Codex CLI when installed and logged in (`codex login status`); otherwise it falls back to configured direct OpenAI/Gemini providers or demo mode
 - `cyber_os/` attack simulations **write to `C:\AEGIS_Test`** — only safe if that directory exists and is backed up
 - `audit_log.json` is append-only and used for compliance/forensics
 - There are **two UI entry points**: `cyber_main.py` (modern, recommended) and `cyber_ui.py` (legacy demo dashboard)

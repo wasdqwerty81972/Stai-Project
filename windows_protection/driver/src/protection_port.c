@@ -79,15 +79,18 @@ NTSTATUS StaiSendRequestToService(
     }
     portAcquired = TRUE;
 
-    request = ExAllocatePoolWithTag(NonPagedPool, requestSize, STAI_TAG);
+    /* ExAllocatePool2 replaces ExAllocatePoolWithTag, which is deprecated as of
+       Windows 10 2004 and is rejected by the Driver Verifier UnSafeAllocatePool
+       rule. POOL_FLAG_NON_PAGED is non-executable (NX) pool, unlike the legacy
+       NonPagedPool type, and ExAllocatePool2 zeroes the allocation for us. */
+    request = ExAllocatePool2(POOL_FLAG_NON_PAGED, requestSize, STAI_TAG);
     replyBufferSize = FIELD_OFFSET(STAI_KERNEL_REPLY_BUFFER, Payload) + STAI_REPLY_DATA_MAX_BYTES;
-    replyBuffer = ExAllocatePoolWithTag(NonPagedPool, replyBufferSize, STAI_TAG);
+    replyBuffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, replyBufferSize, STAI_TAG);
     if (!request || !replyBuffer) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto Cleanup;
     }
 
-    RtlZeroMemory(request, requestSize);
     request->size = requestSize;
     request->version = STAI_PROTOCOL_VERSION;
     request->request_id = RequestId;
@@ -95,7 +98,7 @@ NTSTATUS StaiSendRequestToService(
     request->path_len = pathSize / sizeof(WCHAR);
     RtlCopyMemory(request->path, FilePath->Buffer, pathSize);
 
-    RtlZeroMemory(replyBuffer, replyBufferSize);
+    /* ExAllocatePool2 already zeroed replyBuffer. */
     replyDataOffset = FIELD_OFFSET(STAI_KERNEL_REPLY_BUFFER, Payload);
     replyLength = replyBufferSize;
     timeout.QuadPart = -10000LL * STAI_REQUEST_TIMEOUT_MS;

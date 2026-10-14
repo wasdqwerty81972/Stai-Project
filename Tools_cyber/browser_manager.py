@@ -20,8 +20,11 @@ class BrowserManager:
         profile_dir = os.path.abspath(os.path.join(".stai", "svs-cyber"))
         os.makedirs(profile_dir, exist_ok=True)
         
-        # Read headless toggle from env or default to False (visible)
-        headless = os.environ.get("SVS_CYBER_HEADLESS", "false").lower() == "true"
+        # Browser work happens in the agent's embedded workspace; opening a
+        # separate visible Chromium window here leaves users at about:blank
+        # until the first navigation completes. Opt into a visible window only
+        # when explicitly requested.
+        headless = os.environ.get("SVS_CYBER_HEADLESS", "true").lower() == "true"
         
         self.context: BrowserContext = self.playwright.chromium.launch_persistent_context(
             user_data_dir=profile_dir,

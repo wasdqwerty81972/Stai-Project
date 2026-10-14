@@ -1,6 +1,7 @@
 """Regression coverage for Gemini key failover in role-based chat."""
 
 from types import SimpleNamespace
+import json
 
 from key_manager import AiApi
 
@@ -58,6 +59,94 @@ def test_role_chat_tries_next_gemini_key_after_temporary_provider_error():
 
     assert response.choices[0].message.content == "Recovered using the next Gemini key."
     assert api._km.calls == [0, 1]
+
+
+def test_role_chat_uses_gpt6_luna_before_gemini():
+    calls = []
+
+    class Responses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(output_text="OpenAI primary response")
+
+    api = AiApi.__new__(AiApi)
+    api._codex_client = SimpleNamespace(responses=Responses())
+    api._codex_model = "gpt-6-luna"
+    api._codex_reasoning_effort = "medium"
+    api._km = _KeyPool()
+    api.model_override = None
+    api.reasoning_level_override = None
+
+    response = api.chat_with_role("investigator", "System", "Question")
+
+    assert response.choices[0].message.content == "OpenAI primary response"
+    assert response.model == "gpt-6-luna"
+    assert calls == [{
+        "model": "gpt-6-luna",
+        "input": [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Question"},
+        ],
+        "reasoning": {"effort": "medium"},
+    }]
+    assert api._km.calls == []
+
+
+def test_role_chat_falls_back_to_gemini_when_gpt6_luna_fails():
+    class FailingResponses:
+        def create(self, **_kwargs):
+            raise RuntimeError("OpenAI unavailable")
+
+    api = AiApi.__new__(AiApi)
+    api._codex_client = SimpleNamespace(responses=FailingResponses())
+    api._codex_model = "gpt-6-luna"
+    api._codex_reasoning_effort = "medium"
+    api._km = _KeyPool()
+    api.model_override = None
+    api.reasoning_level_override = None
+
+    response = api.chat_with_role("investigator", "System", "Question")
+
+    assert response.choices[0].message.content == "Recovered using the next Gemini key."
+    assert api._km.calls == [0, 1]
+
+
+def test_gpt6_luna_function_call_is_translated_for_agent_tool_dispatch():
+    tool = {
+        "type": "function",
+        "name": "network_inspect",
+        "description": "Inspect local network connections.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
+        "strict": False,
+    }
+    requests = []
+
+    class Responses:
+        def create(self, **kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(output=[SimpleNamespace(
+                type="function_call",
+                name="network_inspect",
+                arguments='{"target":"localhost"}',
+            )])
+
+    api = AiApi.__new__(AiApi)
+    api._codex_client = SimpleNamespace(responses=Responses())
+    api._codex_model = "gpt-6-luna"
+    api._codex_reasoning_effort = "medium"
+    api._km = _KeyPool()
+    api.model_override = None
+    api.reasoning_level_override = None
+
+    response = api.chat_with_role("investigator", "System", "Inspect localhost", tools=[tool])
+
+    assert json.loads(response.choices[0].message.content) == {
+        "action_type": "tool",
+        "tool_name": "network_inspect",
+        "arguments": {"target": "localhost"},
+    }
+    assert requests[0]["tools"] == [tool]
+    assert api._km.calls == []
 
 class _StreamingModels:
     def __init__(self):

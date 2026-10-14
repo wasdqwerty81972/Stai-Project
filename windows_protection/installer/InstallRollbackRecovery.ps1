@@ -2,7 +2,8 @@ $ErrorActionPreference = "Stop"
 $taskName = "STAI Protection Install Rollback Recovery"
 $dataRoot = Join-Path $env:ProgramData "STAI\Protection"
 $markerPath = Join-Path $dataRoot ".stai-install-in-progress"
-$driverName = "StaiProtection"
+$driverName = "StaiProtectionFilter"
+$legacyDriverName = "StaiProtection"
 $serviceName = "STAIProtection"
 $sc = Join-Path $env:windir "System32\sc.exe"
 $fltmc = Join-Path $env:windir "System32\fltmc.exe"
@@ -60,17 +61,22 @@ if ($service -and $service.Status -ne "Stopped") {
     throw "The protection service is still running. Automatic starts were disabled; recovery will retry on the next boot."
 }
 
-& $fltmc unload $driverName *> $null
+$filterNames = @($driverName, $legacyDriverName) | Select-Object -Unique
+foreach ($filterName in $filterNames) {
+    & $fltmc unload $filterName *> $null
+}
 $filters = & $fltmc filters 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Could not query Filter Manager before rollback recovery." }
-if ($filters -match "(?im)^\s*$([regex]::Escape($driverName))\s") {
-    & $sc config $driverName start= disabled *> $null
-    if ($LASTEXITCODE -ne 0) { throw "The loaded minifilter could not be disabled for the next boot." }
-    if (Test-ServiceRegistration $serviceName) {
-        & $sc config $serviceName start= disabled *> $null
-        if ($LASTEXITCODE -ne 0) { throw "The protection service could not be disabled for the next boot." }
+foreach ($filterName in $filterNames) {
+    if ($filters -match "(?im)^\s*$([regex]::Escape($filterName))\s") {
+        foreach ($name in @($serviceName, $driverName, $legacyDriverName) | Select-Object -Unique) {
+            if (Test-ServiceRegistration $name) {
+                & $sc config $name start= disabled *> $null
+                if ($LASTEXITCODE -ne 0) { throw "The '$name' service could not be disabled for the next boot." }
+            }
+        }
+        throw "The filter '$filterName' is still loaded. Automatic start was disabled; recovery will retry on the next boot."
     }
-    throw "The filter is still loaded. Automatic start was disabled; recovery will retry on the next boot."
 }
 
 Remove-ServiceRegistration $serviceName

@@ -416,12 +416,15 @@ class LLMClient:
             except Exception:
                 self._api = None
 
-    def chat(self, system: str, user: str, role: str = "investigator") -> str:
+    def chat(self, system: str, user: str, role: str = "investigator", tools=None) -> str:
         if not self._api:
             return "[LLM unavailable] key_manager.py could not initialize AiApi."
 
         try:
-            resp = self._api.chat_with_role(role, system, user, temperature=0.2, max_retries=2)
+            options = {"temperature": 0.2, "max_retries": 2}
+            if tools is not None:
+                options["tools"] = tools
+            resp = self._api.chat_with_role(role, system, user, **options)
             return resp.choices[0].message.content
         except Exception as e:
             return f"[LLM error] {e}"
@@ -491,6 +494,38 @@ class ToolOrchestrator:
         else:
             self.policy_engine = None
 
+    # PolicyEngine thresholds are numeric, but RiskLevel.value is a string
+    # ("read_only", "destructive", ...). The previous float(risk_level.value)
+    # therefore raised ValueError on every single call and the except branch
+    # pinned risk_score at 0.0 for every tool. That tripped PolicyEngine's
+    # minimum-risk branch, so all 20 mutating/destructive tools were blocked
+    # unconditionally. These scores line up with the DEFAULT_POLICIES
+    # thresholds in cyber_os/policy_engine.py.
+    _RISK_SCORES: Dict[Any, float] = {
+        RiskLevel.READ_ONLY: 0.0,
+        RiskLevel.MODIFIES_SYSTEM: 50.0,
+        RiskLevel.DESTRUCTIVE: 80.0,
+        RiskLevel.KERNEL_INTERVENTION: 100.0,
+    }
+
+    def _resolve_tool_def(self, tool_name: str) -> Optional[ToolDefinition]:
+        """Tool definition from the registry that will actually execute the call.
+
+        Execution routes through ``self.agent.execute_tool``, so the agent's
+        registry is authoritative. Gating against only this orchestrator's own
+        registry mis-scored every tool the agent registers itself
+        (``subagent_delegate``, ``pty_run``, ``notes_*``, the skill/command
+        readers): ``tool_def`` came back None, the tool mapped to its own name,
+        no policy matched, and the call was blocked — which meant the model
+        could not spawn a specialist subagent from the chat UI at all.
+        """
+        agent_registry = getattr(self.agent, "registry", None)
+        if agent_registry is not None:
+            tool_def = agent_registry.tools.get(tool_name)
+            if tool_def is not None:
+                return tool_def
+        return self.registry.tools.get(tool_name)
+
     def _map_tool_to_action_type(self, tool_name: str) -> str:
         """Map a registered tool name to a policy action_type."""
         mapping = {
@@ -507,11 +542,16 @@ class ToolOrchestrator:
         }
         if tool_name in mapping:
             return mapping[tool_name]
-        # Default: read-only tools map to "investigate"; mutating tools need approval
-        tool_def = self.registry.tools.get(tool_name)
-        if tool_def is not None and tool_def.risk_level == RiskLevel.READ_ONLY:
+        # Default: read-only tools map to "investigate"; every other registered
+        # tool maps to the "system_modification" catch-all so it reaches the
+        # approval card instead of being hard blocked merely for lacking a
+        # dedicated policy.
+        tool_def = self._resolve_tool_def(tool_name)
+        if tool_def is None:
+            return tool_name
+        if tool_def.risk_level == RiskLevel.READ_ONLY:
             return "investigate"
-        return tool_name
+        return "system_modification"
 
     def _gate_action(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run a tool invocation through the policy engine.
@@ -523,13 +563,13 @@ class ToolOrchestrator:
             return {"allowed": True, "requires_approval": False, "auto_approved": True, "policy_id": None, "reason": "No policy engine configured."}
 
         action_type = self._map_tool_to_action_type(tool_name)
-        tool_def = self.registry.tools.get(tool_name)
-        risk_score = 0.0
-        if tool_def is not None:
-            try:
-                risk_score = float(tool_def.risk_level.value)
-            except Exception:
-                risk_score = 0.0
+        tool_def = self._resolve_tool_def(tool_name)
+        # An unscored tool must never read as zero-risk, so anything the
+        # registries do not describe is treated as maximally risky.
+        risk_score = self._RISK_SCORES.get(
+            getattr(tool_def, "risk_level", None),
+            0.0 if tool_def is None else 100.0,
+        )
         return self.policy_engine.gate_action(
             action_type=action_type,
             risk_score=risk_score,
@@ -1070,6 +1110,20 @@ class ToolOrchestrator:
         call.started_at = datetime.now().isoformat()
         start = time.perf_counter()
 
+        # Resolve the tool before gating. An unknown name used to fall through
+        # to the policy engine and come back "No policy defined for action:
+        # <name>", which reads like a policy problem rather than the typo or
+        # stale tool name it actually is.
+        if self._resolve_tool_def(tool_name) is None:
+            call.status = "failed"
+            call.error = (
+                f"Tool '{tool_name}' is not registered. It is in neither the "
+                "orchestrator nor the agent tool registry."
+            )
+            call.finished_at = datetime.now().isoformat()
+            call.duration_ms = (time.perf_counter() - start) * 1000
+            return call
+
         # Emit tool_started event BEFORE execution so the UI can render the card
         if _EVENT_BUS_AVAILABLE and event_bus is not None:
             event_bus.publish(AgentEvent(
@@ -1083,7 +1137,9 @@ class ToolOrchestrator:
                     "tool": tool_name,
                     "arguments": args,
                     "started_at": call.started_at,
-                    "risk_level": self.registry.tools[tool_name].risk_level.value if tool_name in self.registry.tools else "unknown",
+                    "risk_level": getattr(
+                        getattr(self._resolve_tool_def(tool_name), "risk_level", None), "value", "unknown"
+                    ),
                 },
             ))
 
@@ -1206,9 +1262,78 @@ class ToolOrchestrator:
         # No UI connected — default to deny for safety
         return False
 
+    # Tools this orchestrator defines itself as read-only adapters over the
+    # cyber_tools primitives. Their signatures match what _build_tool_args
+    # produces (secret_scan/static_analysis take `filepath`), whereas the
+    # agent's registry holds the bare primitives that take `content`/`code`.
+    # Dispatch routes through agent.execute_tool, so without this set
+    # secret_scan and static_analysis raised TypeError ("unexpected keyword
+    # argument 'filepath'") and the three tools the agent never registers at
+    # all failed with "not found in registry". Every entry is READ_ONLY and
+    # workspace-confined, and the policy gate has already run by this point.
+    _ORCHESTRATOR_OWNED_TOOLS = frozenset({
+        "static_analysis",
+        "secret_scan",
+        "file_analyze",
+        "workspace_scan",
+        "windows_defender_scan",
+    })
+
+    def _invoke_registry_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one tool, preferring this orchestrator's own read-only adapter.
+
+        Returns the same envelope CyberAgent.execute_tool produces so
+        _decode_result and the finding converters behave identically either way.
+        """
+        own = self.registry.tools.get(tool_name)
+        if (
+            own is not None
+            and own.python_func is not None
+            and tool_name in self._ORCHESTRATOR_OWNED_TOOLS
+            and own.risk_level == RiskLevel.READ_ONLY
+        ):
+            env = own.environments[0] if own.environments else "cross_platform"
+            if not self.registry.is_environment_available(env):
+                return {
+                    "tool": tool_name, "environment_used": "none", "success": False,
+                    "output": "", "error": f"Tool '{tool_name}' requires {env}, which is unavailable.",
+                }
+            try:
+                res = own.python_func(**args)
+            except Exception as exc:
+                self.audit_logger.log_event(
+                    "tool_executed",
+                    {"tool": tool_name, "error": f"{type(exc).__name__}: {exc}"},
+                    status="ERROR",
+                )
+                return {
+                    "tool": tool_name, "environment_used": env, "success": False,
+                    "output": "", "error": f"{type(exc).__name__}: {exc}",
+                }
+            inner_success = res.get("success") if isinstance(res, dict) else None
+            result = {
+                "tool": tool_name,
+                "environment_used": env,
+                "success": True if inner_success is None else bool(inner_success),
+                "output": json.dumps(res, indent=2) if isinstance(res, (dict, list)) else str(res),
+                "error": "" if inner_success is not False else str(res.get("error", "") or ""),
+            }
+            if isinstance(res, dict):
+                for key in ("finding", "findings"):
+                    if res.get(key):
+                        result[key] = res[key]
+            return result
+
+        if self.agent is None:
+            raise RuntimeError(
+                f"Cannot execute '{tool_name}': this ToolOrchestrator was built without a "
+                "CyberAgent executor. Construct it as ToolOrchestrator(..., agent=<CyberAgent>)."
+            )
+        return self.agent.execute_tool(tool_name, args, timeout=120)
+
     def _execute_via_nat(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke an allowlisted registry tool through NAT's typed function API."""
-        if self.agent is None:
+        if self.agent is None and tool_name not in self._ORCHESTRATOR_OWNED_TOOLS:
             raise RuntimeError(
                 f"Cannot execute '{tool_name}': this ToolOrchestrator was built without a "
                 "CyberAgent executor. Construct it as ToolOrchestrator(..., agent=<CyberAgent>)."
@@ -1220,7 +1345,7 @@ class ToolOrchestrator:
             from nat.data_models.function import FunctionBaseConfig
 
             async def registry_call(value: dict[str, object]) -> dict[str, object]:
-                return self.agent.execute_tool(tool_name, value, timeout=120)
+                return self._invoke_registry_tool(tool_name, value)
 
             info = FunctionInfo.from_fn(
                 registry_call,
@@ -1239,7 +1364,16 @@ class ToolOrchestrator:
             # NAT is an optional dependency. Losing it must not disable the whole
             # tool catalog, so fall back to the same call NAT would have wrapped.
             print(f"[!] NAT unavailable ({exc}); executing {tool_name} directly.")
-            return self.agent.execute_tool(tool_name, args, timeout=120)
+            return self._invoke_registry_tool(tool_name, args)
+        except RuntimeError as exc:
+            # asyncio.run() refuses to start a second loop. When the orchestrator
+            # is driven from inside an async request handler this raised and the
+            # call surfaced as a generic tool failure, so dispatch looked broken
+            # for reasons that had nothing to do with the tool.
+            if "event loop" not in str(exc).lower():
+                raise
+            print(f"[!] Already inside an event loop; executing {tool_name} directly.")
+            return self._invoke_registry_tool(tool_name, args)
 
     # ------------------------------------------------------------------
     # Result → Findings conversion

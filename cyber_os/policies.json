@@ -88,5 +88,14 @@
     "required_role": null,
     "auto_approve_if_risk_below": 100.0,
     "description": "Investigation actions. No approval required."
+  },
+  "POL-011": {
+    "rule_id": "POL-011",
+    "action_type": "system_modification",
+    "requires_approval": true,
+    "minimum_risk": 0.0,
+    "required_role": "administrator",
+    "auto_approve_if_risk_below": -1.0,
+    "description": "Mutating action without a dedicated policy. Always requires explicit approval."
   }
 }

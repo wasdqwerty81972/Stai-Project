@@ -18,6 +18,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -120,12 +121,86 @@ class SensorEvent:
     remote_ip: str = ""
     network: Dict[str, Any] = field(default_factory=dict)
     file: Dict[str, Any] = field(default_factory=dict)
+    # Monotonic per-installation counter assigned when the event is durably
+    # enqueued. Consumers use it to detect gaps; 0 means "not yet assigned".
+    # Additive and optional, so the declared v1 required-field set is
+    # unchanged and older persisted payloads still load.
+    sequence: int = 0
     _protection_target: str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         payload = asdict(self)
         payload.pop("_protection_target", None)
         return payload
+
+    def dedup_key(self) -> str:
+        """Logical identity of what was observed, independent of the source.
+
+        Two collectors watching the same activity (for example the directory
+        change watcher and Security event 4663, which are both wired to the
+        same consumer) describe one real-world occurrence.  The key omits the
+        source and the per-source record ID so those can be collapsed.
+        """
+        target = (
+            self._protection_target
+            or self.file.get("path")
+            or self.file.get("path_hash")
+            or self.details.get("filepath")
+            or self.details.get("path_hash")
+            or ""
+        )
+        if not target and self.network:
+            target = (
+                f"{self.network.get('remote_ip', '')}:"
+                f"{self.network.get('remote_port', '')}:"
+                f"{self.network.get('local_port', '')}"
+            )
+        if not target:
+            target = f"{self.process}:{self.pid}"
+        operation = self.details.get("file_operation") or self.event_type
+        ids = ",".join(str(item) for item in sorted(self.sensor_ids))
+        return f"{self.event_type}|{ids}|{operation}|{os.path.normcase(str(target))}"
+
+
+class SensorEventDeduplicator:
+    """Bounded, time-windowed suppressor for one logical occurrence.
+
+    Shared by collectors that can observe the same activity.  Bounded in both
+    directions: at most ``capacity`` keys are retained, and a key older than
+    ``window_seconds`` no longer suppresses.
+    """
+
+    def __init__(self, *, window_seconds: float = 2.0, capacity: int = 4096):
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be positive")
+        if capacity < 1:
+            raise ValueError("capacity must be positive")
+        self.window_seconds = float(window_seconds)
+        self.capacity = int(capacity)
+        self._seen: "OrderedDict[str, float]" = OrderedDict()
+        self._lock = threading.RLock()
+        self.suppressed = 0
+
+    def should_emit(self, event: SensorEvent, *, now: Optional[float] = None) -> bool:
+        """True when this occurrence has not just been reported elsewhere."""
+        key = event.dedup_key()
+        moment = time.monotonic() if now is None else float(now)
+        with self._lock:
+            cutoff = moment - self.window_seconds
+            while self._seen:
+                oldest_key, oldest_at = next(iter(self._seen.items()))
+                if oldest_at > cutoff:
+                    break
+                self._seen.pop(oldest_key, None)
+            previous = self._seen.get(key)
+            if previous is not None and previous > cutoff:
+                self.suppressed += 1
+                return False
+            self._seen[key] = moment
+            self._seen.move_to_end(key)
+            while len(self._seen) > self.capacity:
+                self._seen.popitem(last=False)
+            return True
 
 
 @dataclass
@@ -630,8 +705,13 @@ class WindowsSensorService:
         queue_capacity: int = 10_000,
         poll_interval: float = 0.5,
         privacy: Optional[Mapping[str, bool]] = None,
+        deduplicator: Optional[SensorEventDeduplicator] = None,
     ):
         self.callback = callback
+        # Shared with any other collector wired to the same consumer so one
+        # real occurrence is reported once. None disables cross-source
+        # suppression (the per-event-ID replay guard still applies).
+        self.deduplicator = deduplicator
         self.database_path = database_path or os.path.join("cyber_db", "windows_sensor_queue.sqlite3")
         self.queue_capacity = max(1, int(queue_capacity))
         self.poll_interval = max(0.05, float(poll_interval))
@@ -715,8 +795,11 @@ class WindowsSensorService:
         conn.execute("UPDATE sensor_meta SET value=? WHERE key=?", (str(self._meta_int(conn, key) + 1), key))
 
     def _enqueue_result(self, event: SensorEvent) -> str:
-        payload = json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"))
         now = datetime.now(timezone.utc).isoformat()
+        if self.deduplicator is not None and not self.deduplicator.should_emit(event):
+            with self._connection() as conn:
+                self._increment(conn, "deduplicated")
+            return "duplicate"
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM seen_events WHERE event_id=?", (event.event_id,)).fetchone():
@@ -730,6 +813,15 @@ class WindowsSensorService:
                 self._increment(conn, "backpressure")
                 conn.commit()
                 return "backpressure"
+            # Assign the durable monotonic sequence inside the same
+            # transaction so a crash cannot reuse or skip a number.
+            sequence = self._meta_int(conn, "sequence") + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO sensor_meta(key, value) VALUES('sequence', ?)",
+                (str(sequence),),
+            )
+            event.sequence = sequence
+            payload = json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"))
             conn.execute("INSERT INTO queued_events(event_id, enqueued_at, payload) VALUES(?, ?, ?)", (event.event_id, now, payload))
             conn.execute("INSERT INTO seen_events(event_id, seen_at) VALUES(?, ?)", (event.event_id, now))
             # Keep a bounded replay window so long-running installations do

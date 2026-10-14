@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from .models import ScanVerdict
 from .store import ProtectionStore, QuarantineItem
@@ -72,6 +72,57 @@ def _atomic_move(src: Path, dst: Path) -> None:
     os.replace(src, dst)
 
 
+_EVERYONE_SID = "*S-1-1-0"
+
+
+def _deny_execute(path: Path) -> None:
+    """Make a quarantined file non-executable in place, best effort.
+
+    ``os.replace`` moves a file within a volume with its original DACL intact,
+    so an inheritable deny on the quarantine directory never reaches a
+    quarantined sample -- the ACE has to be set on the file itself. The
+    ``.stai_quarantine`` suffix alone only stops shell/extension-based launches;
+    ``CreateProcess`` does not care about the extension.
+    """
+
+    if os.name == "nt":
+        import subprocess
+
+        # Convert inherited ACEs into explicit copies first. The quarantine root
+        # blocks inheritance, so a moved-in file carries only orphaned inherited
+        # ACEs; adding a deny ACE directly makes icacls rewrite the DACL and drop
+        # them, leaving a file with *no* allow ACE that the service itself can no
+        # longer hash, verify, or restore.
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:d"],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["icacls", str(path), "/deny", f"{_EVERYONE_SID}:(X)"],
+            check=False,
+            capture_output=True,
+        )
+        return
+    try:
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode & ~0o111)
+    except OSError:
+        pass
+
+
+def _allow_execute(path: Path) -> None:
+    """Drop the quarantine deny-execute ACE so a restored file is usable again."""
+    if os.name == "nt":
+        import subprocess
+
+        subprocess.run(
+            ["icacls", str(path), "/remove:d", _EVERYONE_SID],
+            check=False,
+            capture_output=True,
+        )
+
+
 def quarantine_file(
     store: ProtectionStore,
     detection_id: str,
@@ -83,12 +134,21 @@ def quarantine_file(
     if not source.exists() or not source.is_file():
         return QuarantineResult(success=False, error="source file not found or not a regular file")
 
+    # Containment is only ever justified by a verified high-confidence block
+    # verdict. Callers that re-scan before quarantining checked the status but
+    # not the action, which let a low-confidence *observe* match (status
+    # "detected", action "allow") move a file -- including a system file.
+    if verdict.status != "detected" or verdict.action != "block":
+        return QuarantineResult(success=False, error="verdict is not a verified block detection")
+    if not verdict.sha256:
+        return QuarantineResult(success=False, error="verdict has no verified hash")
+
     try:
         current_hash = _digest_file(source)
     except OSError as e:
         return QuarantineResult(success=False, error=f"cannot read source file: {e}")
 
-    if verdict.sha256 and current_hash != verdict.sha256:
+    if current_hash != verdict.sha256:
         return QuarantineResult(
             success=False, error=f"hash mismatch: expected {verdict.sha256}, got {current_hash}"
         )
@@ -119,6 +179,10 @@ def quarantine_file(
         except OSError:
             pass
         return QuarantineResult(success=False, error="hash changed during quarantine move")
+
+    # Deny execute only after the bytes are verified, so a rollback above still
+    # hands the file back with its original permissions.
+    _deny_execute(quarantined_path)
 
     item = QuarantineItem(
         item_id=item_id,
@@ -160,6 +224,8 @@ def quarantine_file(
             _atomic_move(quarantined_path, source)
         except OSError:
             pass
+        else:
+            _allow_execute(source)
         return QuarantineResult(success=False, error=f"database error: {e}")
 
     return QuarantineResult(success=True, item=item)
@@ -259,6 +325,9 @@ def restore_quarantine(
         _atomic_move(quarantined_path, original_path)
     except OSError as e:
         return QuarantineResult(success=False, error=f"restore move failed: {e}")
+
+    # The file is cleared for use again, so drop the quarantine deny-execute ACE.
+    _allow_execute(original_path)
 
     try:
         restored_hash = _digest_file(original_path)

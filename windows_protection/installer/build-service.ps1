@@ -14,6 +14,7 @@ $venvPath = Join-Path $buildRoot "venv"
 $pythonPath = Join-Path $venvPath "Scripts\python.exe"
 $distPath = Join-Path $buildRoot "dist"
 $workPath = Join-Path $buildRoot "work"
+$resourcePath = Join-Path $buildRoot "resources"
 $specPath = Join-Path $PSScriptRoot "pyinstaller.spec"
 $requirementsPath = Join-Path $repoRoot "requirements-windows-protection.txt"
 $buildPythonVersion = (& python -c "import platform, sys; print(f'{sys.version_info.major}.{sys.version_info.minor};{platform.architecture()[0]}')" 2>&1 | Out-String).Trim()
@@ -21,26 +22,33 @@ if ($buildPythonVersion -ne "3.11;64bit") {
     throw "The pinned Windows protection build requires 64-bit Python 3.11; found '$buildPythonVersion'."
 }
 
-if ($Configuration -eq "Release" -and -not $TrustedRulesPublicKeyPath) {
-    throw "Release configuration requires -TrustedRulesPublicKeyPath with a trusted Ed25519 public-key PEM file."
+if (-not $TrustedRulesPublicKeyPath) {
+    throw "Every service build requires -TrustedRulesPublicKeyPath. A service without an embedded trust anchor cannot load signed rules and must not be installed."
+}
+if (-not (Test-Path -LiteralPath $TrustedRulesPublicKeyPath -PathType Leaf)) {
+    throw "Trusted rules public key file was not found: $TrustedRulesPublicKeyPath"
 }
 if ($Configuration -eq "Release" -and -not $SigningCertificateThumbprint) {
     throw "Release configuration requires a code-signing certificate thumbprint from the Windows certificate store."
 }
 
-if ($TrustedRulesPublicKeyPath) {
-    $keyPath = (Resolve-Path -LiteralPath $TrustedRulesPublicKeyPath).Path
-    $env:STAI_TRUSTED_RULES_PUBLIC_KEY = $keyPath
-} else {
-    Remove-Item Env:STAI_TRUSTED_RULES_PUBLIC_KEY -ErrorAction SilentlyContinue
-    Write-Warning "No trusted rules key supplied. The built service will report protection unavailable until installed with a trusted public key and signed rules."
-}
+$keyPath = (Resolve-Path -LiteralPath $TrustedRulesPublicKeyPath).Path
+$env:STAI_TRUSTED_RULES_PUBLIC_KEY = $keyPath
 
 New-Item -ItemType Directory -Path $buildRoot, $distPath, $workPath -Force | Out-Null
+New-Item -ItemType Directory -Path $resourcePath -Force | Out-Null
 $env:STAI_BUILD_ROOT = $buildRoot
 $rawPublicKeyPath = Join-Path $buildRoot "resources\trusted-rules.pub"
 if (-not $TrustedRulesPublicKeyPath) {
     Remove-Item -LiteralPath $rawPublicKeyPath -Force -ErrorAction SilentlyContinue
+}
+if ($Configuration -eq "Test") {
+    $demoResources = Join-Path $repoRoot "cyber_os\protection\resources"
+    Copy-Item -LiteralPath (Join-Path $demoResources "demo-manifest.json") -Destination $resourcePath -Force
+    Copy-Item -LiteralPath (Join-Path $demoResources "demo-manifest.sig") -Destination $resourcePath -Force
+} else {
+    Remove-Item -LiteralPath (Join-Path $resourcePath "demo-manifest.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $resourcePath "demo-manifest.sig") -Force -ErrorAction SilentlyContinue
 }
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     & python -m venv $venvPath

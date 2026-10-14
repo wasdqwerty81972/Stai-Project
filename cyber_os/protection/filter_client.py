@@ -43,6 +43,7 @@ _RECEIVE_WORKER_COUNT = 2
 _RECEIVE_POLL_TIMEOUT_MS = 250
 _MAX_PENDING_BLOCKS = 1024
 LOGGER = logging.getLogger(__name__)
+_REQUEST_QUEUE_PUT_TIMEOUT_SECONDS = 0.1
 
 
 class FilterTransportError(ConnectionError):
@@ -429,6 +430,17 @@ class FilterClient:
         request_queue: queue.Queue[Any],
     ) -> None:
         """Keep overlapped receives posted while scan/reply work runs elsewhere."""
+
+        def enqueue_until_stopped(item: Any) -> bool:
+            """Preserve backpressure while running, but make shutdown interruptible."""
+            while not stop_event.is_set():
+                try:
+                    request_queue.put(item, timeout=_REQUEST_QUEUE_PUT_TIMEOUT_SECONDS)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
         while not stop_event.is_set():
             try:
                 if not self._native:
@@ -437,7 +449,7 @@ class FilterClient:
                     min(self._config.timeout_ms, _RECEIVE_POLL_TIMEOUT_MS)
                 )
             except Exception as exc:
-                request_queue.put(exc)
+                enqueue_until_stopped(exc)
                 return
 
             if message is None:
@@ -448,7 +460,8 @@ class FilterClient:
             if request is not None:
                 # The driver caps outstanding requests at 32; keeping this
                 # queue bounded prevents an unbounded service-side backlog.
-                request_queue.put(request)
+                if not enqueue_until_stopped(request):
+                    return
 
     def run_until_stopped(
         self,
@@ -520,6 +533,21 @@ class FilterClient:
                 receive_stop.set()
                 for receiver in receivers:
                     receiver.join()
+                # Requests already received from Filter Manager but not yet
+                # scanned remain in _pending_messages. Complete them with a
+                # typed fail-open response on shutdown/transport loss instead
+                # of dropping pended I/O or blocking the receive pumps forever.
+                with self._pending_lock:
+                    pending_request_ids = tuple(self._pending_messages)
+                for request_id in pending_request_ids:
+                    try:
+                        self.reply_fail_open(request_id, "service stopping")
+                    except Exception:
+                        LOGGER.warning(
+                            "could not complete pending filter request %s during shutdown",
+                            request_id,
+                            exc_info=True,
+                        )
 
             if stop_event.is_set():
                 break

@@ -11,23 +11,34 @@ import json
 import logging
 import os
 import re
-import shutil
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .rule_package import InvalidRulePackage, RulePackage
-from .store import ProtectionStore
+from .rule_package import InvalidRulePackage, RulePackage, rule_set_fingerprint
+from .store import ProtectionStore, ThreatIntelStore
 
 
 LOGGER = logging.getLogger("stai.protection.service")
 PIPE_NAME = r"\\.\pipe\STAI.Protection.v1"
 PROTOCOL_VERSION = 1
-MAX_FRAME_BYTES = 64 * 1024
+# The system-status response includes the complete 256-entry sensor catalog
+# (currently ~382 KiB). Keep the pipe bounded while allowing that dashboard
+# payload to pass intact.
+MAX_FRAME_BYTES = 1024 * 1024
+# Upper bound on WFP events returned by one get_network_telemetry call. The
+# response must fit MAX_FRAME_BYTES, so a busy monitor must not be able to
+# produce a frame that gets rejected wholesale as oversized.
+MAX_NETWORK_TELEMETRY_EVENTS = 512
 _REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
+_PROCESS_INSTANCE_ID = re.compile(
+    r"(?:[0-9]+:0x[0-9a-f]+\.[0-9a-f]+p[+-][0-9]+|unverified:[0-9]+:[0-9a-f]{32})\Z",
+    re.IGNORECASE,
+)
 _SID_TEXT = re.compile(r"S-1-(?:[0-9]+-)*[0-9]+\Z", re.IGNORECASE)
 _RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 _PIPE_IO_TIMEOUT_SECONDS = 5.0
@@ -78,7 +89,14 @@ def _require_identifier(value: Any, name: str) -> str:
 
 
 _EMPTY_OPERATIONS = {
-    "get_status", "get_scan_schedule", "list_threats", "list_quarantine", "list_sensor_warnings"
+    "get_status", "get_rule_metadata", "get_scan_schedule", "list_threats", "list_quarantine",
+    "list_sensor_warnings",
+    # Network telemetry is read-only by construction: it takes no payload, so a
+    # pipe client cannot smuggle a policy/enforcement parameter (e.g. "block")
+    # through this operation. Enforcement stays behind the privileged paths.
+    "get_network_telemetry",
+    "get_process_monitor_status",
+    "get_process_connections",
 }
 _SINGLE_ID_OPERATIONS = {
     "get_scan": ("job_id",),
@@ -90,7 +108,9 @@ _SINGLE_ID_OPERATIONS = {
 }
 _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
     "start_scan", "get_scan_schedule", "set_scan_schedule", "send_agent_message",
-    "claim_sensor_ai_escalations", "complete_sensor_ai_escalation"
+    "claim_sensor_ai_escalations", "complete_sensor_ai_escalation",
+    "get_process_snapshot_page", "get_process_events", "get_process_details",
+    "set_process_monitor_profile",
 }
 
 
@@ -124,6 +144,36 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
         parsed = _require_payload(payload, set(fields))
         for field in fields:
             _require_identifier(parsed[field], field)
+    elif operation == "get_process_snapshot_page":
+        parsed = _require_payload(payload, {"offset", "limit", "sequence"})
+        offset, limit, sequence = parsed["offset"], parsed["limit"], parsed["sequence"]
+        if type(offset) is not int or not 0 <= offset <= 10_000_000:
+            raise PipeProtocolError("process snapshot offset is invalid")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise PipeProtocolError("process snapshot limit must be between 1 and 500")
+        if sequence is not None and (
+            type(sequence) is not int or not 0 <= sequence <= 2**63 - 1
+        ):
+            raise PipeProtocolError("process snapshot sequence is invalid")
+    elif operation == "get_process_events":
+        parsed = _require_payload(payload, {"after_sequence", "limit"})
+        if type(parsed["after_sequence"]) is not int or not 0 <= parsed["after_sequence"] <= 2**63 - 1:
+            raise PipeProtocolError("process event sequence is invalid")
+        if type(parsed["limit"]) is not int or not 1 <= parsed["limit"] <= 500:
+            raise PipeProtocolError("process event limit must be between 1 and 500")
+    elif operation == "get_process_details":
+        parsed = _require_payload(payload, {"instance_id"})
+        instance_id = parsed["instance_id"]
+        if (
+            not isinstance(instance_id, str)
+            or len(instance_id.encode("utf-8")) > 96
+            or not _PROCESS_INSTANCE_ID.fullmatch(instance_id)
+        ):
+            raise PipeProtocolError("process instance ID is invalid")
+    elif operation == "set_process_monitor_profile":
+        parsed = _require_payload(payload, {"profile"})
+        if parsed["profile"] not in ("low", "normal", "high"):
+            raise PipeProtocolError("process sampling profile is invalid")
     elif operation == "start_scan":
         parsed = _require_payload(payload, {"scope"})
         if parsed["scope"] not in ("quick", "system"):
@@ -550,6 +600,8 @@ class ProtectionServiceHost:
         sensor_service: Any | None = None,
         response_coordinator: Any | None = None,
         file_monitor: Any | None = None,
+        network_monitor: Any | None = None,
+        process_monitor: Any | None = None,
     ) -> None:
         self.store = store
         self.service = service
@@ -562,6 +614,8 @@ class ProtectionServiceHost:
         self.sensor_service = sensor_service
         self.response_coordinator = response_coordinator
         self.file_monitor = file_monitor
+        self.network_monitor = network_monitor
+        self.process_monitor = process_monitor
         from .scheduling import ScanScheduleManager
 
         self.scan_scheduler = ScanScheduleManager(store, service)
@@ -578,6 +632,10 @@ class ProtectionServiceHost:
         self._service_state = "stopped"
         self._last_error: str | None = None
         self._sensor_error: str | None = None
+        self._network_telemetry_error: str | None = None
+        self._process_monitor_error: str | None = None
+        self._process_monitor_start_attempted = False
+        self._process_monitor_stop_attempted = False
 
     def start(self) -> None:
         if self._started:
@@ -585,6 +643,41 @@ class ProtectionServiceHost:
         self._started = True
         self._service_state = "running"
         self._stop_event.clear()
+        # Publish the bounded status/control pipe before optional sensor startup.
+        # Slow or unavailable sensors must not make the dashboard look as if the
+        # entire protection service is absent.
+        if self.pipe_server is not None:
+            try:
+                self.pipe_server.start()
+            except Exception:
+                LOGGER.exception("unable to start the protection named pipe")
+                self._last_error = "protection named pipe is unavailable"
+        elif not self.client_sid:
+            self._last_error = "installed dashboard client SID is not configured"
+
+        if self.process_monitor is not None:
+            self._process_monitor_start_attempted = True
+            self._process_monitor_stop_attempted = False
+            try:
+                started = self.process_monitor.start()
+                self._process_monitor_error = (
+                    "process monitor did not start" if started is False else None
+                )
+            except Exception:
+                LOGGER.exception("unable to start Windows process monitor")
+                self._process_monitor_error = "process monitor startup failed"
+
+        if self.network_monitor is not None:
+            try:
+                started = self.network_monitor.start()
+                if started is False:
+                    self._network_telemetry_error = "WFP network telemetry did not start"
+            except Exception as exc:
+                LOGGER.exception("unable to start WFP network telemetry")
+                self._network_telemetry_error = (
+                    f"{type(exc).__name__}: {exc}"[:256]
+                )
+
         if hasattr(self.store, "get_scan_schedule"):
             if hasattr(self.store, "recover_interrupted_scans"):
                 try:
@@ -630,15 +723,6 @@ class ProtectionServiceHost:
                 self._start_filter_reconnect_loop()
         else:
             self._last_error = "minifilter client is unavailable"
-
-        if self.pipe_server is not None:
-            try:
-                self.pipe_server.start()
-            except Exception:
-                LOGGER.exception("unable to start the protection named pipe")
-                self._last_error = "protection named pipe is unavailable"
-        elif not self.client_sid:
-            self._last_error = "installed dashboard client SID is not configured"
 
     def _start_filter_reconnect_loop(self) -> None:
         if self.filter_client is None or self.service is None or not self.rules_trusted:
@@ -698,6 +782,17 @@ class ProtectionServiceHost:
         self._stop_event.set()
         self._health_stop_event.set()
         self.scan_scheduler.stop(timeout=3.0)
+        if (
+            self.process_monitor is not None
+            and self._process_monitor_start_attempted
+            and not self._process_monitor_stop_attempted
+        ):
+            self._process_monitor_stop_attempted = True
+            try:
+                self.process_monitor.stop()
+            except Exception:
+                LOGGER.exception("failed to stop Windows process monitor")
+                self._process_monitor_error = "process monitor shutdown failed"
         if self.sensor_service is not None:
             try:
                 self.sensor_service.stop(timeout=5.0)
@@ -710,6 +805,12 @@ class ProtectionServiceHost:
             except Exception:
                 LOGGER.exception("failed to stop Windows drop-folder file monitor")
                 self._sensor_error = self._sensor_error or "drop-folder file monitor shutdown failed"
+        if self.network_monitor is not None:
+            try:
+                self.network_monitor.stop(timeout=5.0)
+            except Exception:
+                LOGGER.exception("failed to stop WFP network telemetry")
+                self._network_telemetry_error = "WFP network telemetry shutdown failed"
         if self.pipe_server is not None:
             try:
                 self.pipe_server.close()
@@ -731,6 +832,20 @@ class ProtectionServiceHost:
             self._health_thread.join(timeout=2)
         self._started = False
         self._service_state = "stopped"
+
+    def get_rule_metadata(self) -> dict[str, Any]:
+        """Read trusted rule identity without store queries or sensor serialization."""
+        trusted = bool(self.rules_trusted and self.service is not None)
+        rules = self.service.rules if trusted else None
+        entries = getattr(rules, "rules", ())
+        return {
+            "rules_trusted": trusted,
+            "rules_version": rules.version if trusted else "unknown",
+            "rule_count": sum(rule.count for rule in entries),
+            "sha256_rule_count": sum(rule.count for rule in entries if rule.kind == "sha256"),
+            "yara_rule_count": sum(rule.count for rule in entries if rule.kind == "yara"),
+            "rules_fingerprint": rule_set_fingerprint(rules) if trusted and hasattr(rules, "rules") else None,
+        }
 
     def get_status(self) -> dict[str, Any]:
         connected = bool(
@@ -771,12 +886,38 @@ class ProtectionServiceHost:
             driver_state=driver_state,
             service_state=service_state,
             rules_version=rules_version,
+            rules_trusted=bool(self.rules_trusted and self.service is not None),
+            rule_count=(
+                sum(rule.count for rule in getattr(getattr(self.service, "rules", None), "rules", ()))
+                if self.rules_trusted and self.service is not None
+                else 0
+            ),
+            sha256_rule_count=(
+                sum(rule.count for rule in getattr(getattr(self.service, "rules", None), "rules", ()) if rule.kind == "sha256")
+                if self.rules_trusted and self.service is not None
+                else 0
+            ),
+            yara_rule_count=(
+                sum(rule.count for rule in getattr(getattr(self.service, "rules", None), "rules", ()) if rule.kind == "yara")
+                if self.rules_trusted and self.service is not None
+                else 0
+            ),
+            rules_fingerprint=(
+                rule_set_fingerprint(self.service.rules)
+                if self.rules_trusted and self.service is not None and hasattr(self.service.rules, "rules")
+                else None
+            ),
             state=(
                 "active"
                 if self._started and self.service is not None and self.rules_trusted and connected
                 else "unavailable"
                 if self.service is None or not self.rules_trusted
                 else "degraded"
+            ),
+            threat_intel=(
+                self.service.threat_intel_status()
+                if self.service is not None and hasattr(self.service, "threat_intel_status")
+                else {"state": "unavailable", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
             ),
         )
         if self.sensor_service is not None:
@@ -811,9 +952,202 @@ class ProtectionServiceHost:
                 result["sensors"]["drop_folder_watch"] = {"state": "error", "errors": {"status": "unavailable"}}
         if self._sensor_error:
             result["sensor_error"] = self._sensor_error
+        if self.network_monitor is None:
+            result["network_telemetry"] = {"state": "not_configured"}
+        else:
+            result["network_telemetry"] = self._network_telemetry_status()
         if self._last_error:
             result["last_error"] = self._last_error
+        result["process_monitor"] = self._process_monitor_status()
         return result
+
+    def _process_monitor_status(self) -> dict[str, Any]:
+        if self.process_monitor is None:
+            return {"state": "not_configured", "source": "none"}
+        if self._process_monitor_error:
+            return {
+                "state": "error",
+                "source": "protection_service",
+                "error": self._process_monitor_error,
+            }
+        try:
+            health = self.process_monitor.health()
+        except Exception:
+            LOGGER.exception("unable to read Windows process monitor health")
+            return {
+                "state": "error",
+                "source": "protection_service",
+                "error": "process monitor health unavailable",
+            }
+        if not isinstance(health, dict):
+            return {
+                "state": "error",
+                "source": "protection_service",
+                "error": "process monitor health unavailable",
+            }
+        return {**health, "source": "protection_service"}
+
+    def _require_process_monitor(self) -> Any:
+        if self.process_monitor is None or self._process_monitor_error:
+            raise ProtectionServiceUnavailable("process monitor is unavailable")
+        health = self._process_monitor_status()
+        if health.get("state") != "running":
+            raise ProtectionServiceUnavailable("process monitor is not running")
+        return self.process_monitor
+
+    def get_process_snapshot_page(
+        self, offset: int, limit: int, sequence: int | None
+    ) -> dict[str, Any]:
+        monitor = self._require_process_monitor()
+        snapshot = _to_jsonable(monitor.snapshot())
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("processes"), list):
+            raise ProtectionServiceUnavailable("process snapshot is unavailable")
+        processes = snapshot["processes"]
+        current_sequence = snapshot.get("sequence")
+        if not isinstance(current_sequence, int) or isinstance(current_sequence, bool):
+            raise ProtectionServiceUnavailable("process snapshot sequence is unavailable")
+        total = len(processes)
+        if sequence is not None and sequence != current_sequence:
+            return {
+                "resync_required": True,
+                "sequence": current_sequence,
+                "observed_at": snapshot.get("observed_at"),
+                "processes": [],
+                "offset": offset,
+                "next_offset": None,
+                "total": total,
+                "health": self._process_monitor_status(),
+            }
+
+        count = min(limit, max(0, total - offset))
+        while True:
+            page = {
+                "resync_required": False,
+                "sequence": current_sequence,
+                "observed_at": snapshot.get("observed_at"),
+                "processes": processes[offset : offset + count],
+                "offset": offset,
+                "next_offset": offset + count if offset + count < total else None,
+                "total": total,
+                "health": self._process_monitor_status(),
+            }
+            encoded_size = len(
+                json.dumps(_to_jsonable(page), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+            if encoded_size <= MAX_FRAME_BYTES - 4096:
+                return page
+            if count <= 1:
+                raise ProtectionServiceUnavailable("a process record exceeds the pipe frame limit")
+            count = max(1, count // 2)
+
+    def get_process_events(self, after_sequence: int, limit: int) -> dict[str, Any]:
+        monitor = self._require_process_monitor()
+        current_sequence = getattr(monitor, "current_sequence", None)
+        if not isinstance(current_sequence, int):
+            snapshot = monitor.snapshot()
+            current_sequence = snapshot.get("sequence")
+        events = _to_jsonable(monitor.drain_events(after_sequence))
+        if not isinstance(events, list):
+            raise ProtectionServiceUnavailable("process event history is unavailable")
+        resync_required = bool(
+            events and events[0].get("sequence", after_sequence + 1) > after_sequence + 1
+        )
+        if not events and current_sequence > after_sequence:
+            retained = _to_jsonable(monitor.drain_events(0))
+            resync_required = not retained or bool(
+                retained[0].get("sequence", after_sequence + 1) > after_sequence + 1
+            )
+        delivered = events[:limit]
+        return {
+            "sequence": (
+                delivered[-1].get("sequence", current_sequence)
+                if delivered and not resync_required
+                else current_sequence
+            ),
+            "resync_required": resync_required,
+            "events": [] if resync_required else delivered,
+        }
+
+    def get_process_details(self, instance_id: str) -> dict[str, Any]:
+        monitor = self._require_process_monitor()
+        details = _to_jsonable(monitor.get_process_details(instance_id))
+        if not isinstance(details, dict):
+            raise LookupError("process instance not found")
+        return details
+
+    def get_process_connections(self) -> dict[str, Any]:
+        monitor = self._require_process_monitor()
+        connections = _to_jsonable(monitor.connections())
+        if not isinstance(connections, list):
+            raise ProtectionServiceUnavailable("process connections are unavailable")
+        total = len(connections)
+        count = total
+        observed_at = datetime.now(timezone.utc).isoformat()
+        while True:
+            data = {
+                "connections": connections[:count],
+                "total": total,
+                "truncated": count < total,
+                "observed_at": observed_at,
+            }
+            size = len(
+                json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+            if size <= MAX_FRAME_BYTES - 4096:
+                return data
+            if count <= 1:
+                raise ProtectionServiceUnavailable("a process connection exceeds the pipe frame limit")
+            count = max(1, count // 2)
+
+    def set_process_monitor_profile(self, profile: str) -> dict[str, Any]:
+        monitor = self._require_process_monitor()
+        monitor.set_sampling_profile(profile)
+        return self._process_monitor_status()
+
+    def _network_telemetry_status(self) -> dict[str, Any]:
+        """Derive WFP telemetry status once, for every surface that reports it.
+
+        get_status() and the get_network_telemetry pipe operation must never be
+        able to disagree about whether network telemetry is running, so both
+        read this single derivation rather than each rebuilding it.
+        """
+        if self.network_monitor is None:
+            return {"state": "not_configured"}
+        try:
+            network_status = _to_jsonable(self.network_monitor.get_status())
+            if not isinstance(network_status, dict):
+                network_status = {"state": "unavailable"}
+        except Exception:
+            LOGGER.exception("unable to read WFP network telemetry status")
+            network_status = {"state": "error", "error": "status unavailable"}
+        if self._network_telemetry_error:
+            network_status["state"] = (
+                "error"
+                if "failed" in self._network_telemetry_error.lower()
+                or ":" in self._network_telemetry_error
+                else "unavailable"
+            )
+            network_status["startup_error"] = self._network_telemetry_error
+        return network_status
+
+    def get_network_telemetry(self) -> dict[str, Any]:
+        """Return WFP telemetry status plus a bounded recent-event window.
+
+        Read-only: this reports observed connections and never applies a
+        network policy. A monitor that is absent or broken yields an explicit
+        state and an empty window, never a fabricated "observing".
+        """
+        status = self._network_telemetry_status()
+        if self.network_monitor is None:
+            return {"status": status, "events": []}
+        try:
+            snapshot = _to_jsonable(self.network_monitor.snapshot())
+        except Exception:
+            LOGGER.exception("unable to read WFP network telemetry events")
+            return {"status": status, "events": []}
+        if not isinstance(snapshot, list):
+            return {"status": status, "events": []}
+        return {"status": status, "events": snapshot[-MAX_NETWORK_TELEMETRY_EVENTS:]}
 
     def handle_request(self, body: bytes) -> bytes:
         return process_pipe_request(body, self)
@@ -821,12 +1155,37 @@ class ProtectionServiceHost:
     def dispatch(self, operation: str, payload: dict[str, Any]) -> Any:
         if operation == "get_status":
             return self.get_status()
+        if operation == "get_rule_metadata":
+            return self.get_rule_metadata()
+        if operation == "get_network_telemetry":
+            return self.get_network_telemetry()
+        if operation == "get_process_snapshot_page":
+            return self.get_process_snapshot_page(
+                payload["offset"], payload["limit"], payload["sequence"]
+            )
+        if operation == "get_process_events":
+            return self.get_process_events(payload["after_sequence"], payload["limit"])
+        if operation == "get_process_monitor_status":
+            return self._process_monitor_status()
+        if operation == "get_process_details":
+            return self.get_process_details(payload["instance_id"])
+        if operation == "get_process_connections":
+            return self.get_process_connections()
+        if operation == "set_process_monitor_profile":
+            return self.set_process_monitor_profile(payload["profile"])
         if operation == "get_scan_schedule":
             return self.scan_scheduler.get_schedule()
         if operation == "set_scan_schedule":
             return self.scan_scheduler.configure(**payload)
         if operation == "list_threats":
-            return self.store.list_threats(limit=500)
+            records = self.store.list_threats(limit=500)
+            return [
+                {
+                    **{key: value for key, value in asdict(record).items() if key != "intel_evidence"},
+                    "threat_intel_evidence": asdict(record.intel_evidence) if record.intel_evidence is not None else None,
+                }
+                for record in records
+            ]
         if operation == "list_quarantine":
             from .quarantine import list_quarantine_items
 
@@ -906,6 +1265,27 @@ class ProtectionServiceHost:
 def _read_installed_client_sid() -> str | None:
     if os.name != "nt":
         return None
+    if os.environ.get("STAI_LOCAL_DEV_SERVICE") == "1":
+        # A user-scoped debug service may serve only the identity that launched
+        # it. Production installs continue to use the SID enrolled by the MSI.
+        try:
+            import win32api
+            import win32con
+            import win32security
+
+            token = win32security.OpenProcessToken(
+                win32api.GetCurrentProcess(), win32con.TOKEN_QUERY
+            )
+            try:
+                sid = win32security.GetTokenInformation(
+                    token, win32security.TokenUser
+                )[0]
+                sid_text = win32security.ConvertSidToStringSid(sid)
+                return sid_text if _valid_sid_text(sid_text) else None
+            finally:
+                win32api.CloseHandle(token)
+        except (OSError, ImportError):
+            return None
     try:
         import winreg
 
@@ -980,26 +1360,44 @@ def _installed_user_quick_scan_roots(client_sid: str | None) -> list[Path]:
     return roots
 
 
+def _create_default_process_monitor() -> Any | None:
+    """Create the user-mode process monitor only for the Windows service host."""
+    if os.name != "nt":
+        return None
+    from ui.process_monitor import ProcessRegistry
+
+    return ProcessRegistry(sample_interval=5.0, reconcile_interval=5.0)
+
+
 def create_default_host() -> ProtectionServiceHost:
     """Build a host only from installed data and the embedded trusted public key."""
-    data_root = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "STAI" / "Protection"
+    local_data_root = os.environ.get("STAI_PROTECTION_DATA_DIR")
+    data_root = (
+        Path(local_data_root)
+        if os.environ.get("STAI_LOCAL_DEV_SERVICE") == "1" and local_data_root
+        else Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "STAI" / "Protection"
+    )
     store = ProtectionStore(data_root / "protection.db")
+    threat_intel_store = ThreatIntelStore(data_root / "threat-intel.db")
     rules = None
     last_error = None
     public_key_path = _RESOURCE_ROOT / "resources" / "trusted-rules.pub"
     manifest_path = data_root / "rules" / "manifest.json"
     signature_path = data_root / "rules" / "manifest.sig"
     try:
-        if not manifest_path.exists() and not signature_path.exists():
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(_RESOURCE_ROOT / "resources" / "demo-manifest.json", manifest_path)
-            shutil.copyfile(_RESOURCE_ROOT / "resources" / "demo-manifest.sig", signature_path)
         public_key = public_key_path.read_bytes()
+    except OSError:
+        last_error = "trusted rules public key is not embedded in the service"
+    else:
         if len(public_key) != 32:
-            raise InvalidRulePackage("embedded trusted public key has invalid length")
-        rules = RulePackage.load(manifest_path, signature_path, public_key)
-    except (OSError, InvalidRulePackage):
-        last_error = "trusted rule package is unavailable or invalid"
+            last_error = "embedded trusted rules public key has invalid length"
+        elif not manifest_path.is_file() or not signature_path.is_file():
+            last_error = "trusted rule manifest and signature are not installed"
+        else:
+            try:
+                rules = RulePackage.load(manifest_path, signature_path, public_key)
+            except (OSError, InvalidRulePackage) as exc:
+                last_error = f"trusted rule package rejected: {exc}"
 
     client_sid = _read_installed_client_sid()
     service = None
@@ -1015,6 +1413,7 @@ def create_default_host() -> ProtectionServiceHost:
                 quarantine_root=data_root / "quarantine",
                 rules=rules,
                 store=store,
+                threat_intel_store=threat_intel_store,
                 quick_scan_roots=(
                     _installed_user_quick_scan_roots(client_sid)
                     if os.name == "nt"
@@ -1033,6 +1432,7 @@ def create_default_host() -> ProtectionServiceHost:
     sensor_service = None
     response_coordinator = None
     file_monitor = None
+    process_monitor = _create_default_process_monitor()
     if os.name == "nt":
         from cyber_os.sensors.windows_sensor_service import WindowsSensorService
         from cyber_os.sensors.warnings import SensorResponseCoordinator, SensorWarningStore
@@ -1064,6 +1464,7 @@ def create_default_host() -> ProtectionServiceHost:
         sensor_service=sensor_service,
         response_coordinator=response_coordinator,
         file_monitor=file_monitor,
+        process_monitor=process_monitor,
     )
     if last_error:
         host._last_error = last_error
@@ -1102,6 +1503,7 @@ if win32serviceutil is not None:
             try:
                 self._host = create_default_host()
                 self._host.start()
+                self.ReportServiceStatus(win32service.SERVICE_RUNNING)
                 win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
             except Exception:
                 LOGGER.exception("STAI protection service failed to start")
@@ -1114,6 +1516,17 @@ if win32serviceutil is not None:
 def main() -> None:
     if win32serviceutil is None:
         raise RuntimeError("pywin32 is required to run STAI Protection as a Windows service")
+    if len(sys.argv) == 1:
+        # HandleCommandLine is for install/remove/debug CLI verbs. When the
+        # Service Control Manager starts the frozen executable, it supplies
+        # no arguments; the process must connect to SCM's dispatcher or the
+        # service start request times out.
+        import servicemanager
+
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(STAIProtectionWindowsService)
+        servicemanager.StartServiceCtrlDispatcher()
+        return
     win32serviceutil.HandleCommandLine(STAIProtectionWindowsService)
 
 

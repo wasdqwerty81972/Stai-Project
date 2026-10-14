@@ -20,7 +20,7 @@ from cyber_os.protection import quarantine as quarantine_mod
 from cyber_os.protection import service as service_mod
 from cyber_os.protection.models import DetectionRule, RuleSet, ScanVerdict
 from cyber_os.protection.service import ProtectionConfig, ProtectionService
-from cyber_os.protection.store import ProtectionStore
+from cyber_os.protection.store import IndicatorRecord, ProtectionStore, ThreatIntelStore
 
 _MARKER = b"STAI inert antivirus test marker"
 
@@ -92,6 +92,200 @@ def test_detection_callback_runs_after_detection_is_durable(tmp_path: Path) -> N
     assert detection_id is not None
     assert observed == [detection_id]
 
+
+def test_exact_hash_intel_is_durable_advisory_evidence(tmp_path: Path) -> None:
+    sample = tmp_path / "reported.exe"
+    sample.write_bytes(b"reported sample")
+    digest = hashlib.sha256(sample.read_bytes()).hexdigest()
+    store = ProtectionStore(tmp_path / "protection.db")
+    intel = ThreatIntelStore(tmp_path / "intel.db")
+    now = "2026-10-14T12:00:00"
+    intel.upsert_indicators(
+        [
+            IndicatorRecord(
+                indicator_type="sha256",
+                indicator_value=digest,
+                source="abusech_malwarebazaar",
+                confidence=95,
+                severity="high",
+                verification="confirmed",
+                feed_version="mb-2026-10-14",
+                first_seen=now,
+                last_seen=now,
+                sha256=digest,
+                threat_family="test-family",
+            )
+        ],
+        feed_version="mb-2026-10-14",
+    )
+    service = ProtectionService(
+        ProtectionConfig(
+            quarantine_root=tmp_path / "quar",
+            rules=RuleSet("signed-1", ()),
+            store=store,
+            threat_intel_store=intel,
+        )
+    )
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert verdict.status == "clean"
+    assert verdict.action == "allow"
+    assert verdict.intel_evidence is not None
+    assert verdict.intel_evidence.indicator_value == digest
+    assert verdict.intel_evidence.verification == "confirmed"
+    assert verdict.intel_evidence.freshness in {"fresh", "aging"}
+    assert detection_id is not None
+    evidence_record = store.get_detection(detection_id)
+    assert evidence_record is not None
+    assert evidence_record.action == "allow"
+    assert evidence_record.intel_evidence == verdict.intel_evidence
+    assert store.get_status().counts == {"detected": 1, "blocked": 0, "quarantined": 0}
+
+
+def test_repeated_scans_preserve_exact_hash_evidence(tmp_path: Path) -> None:
+    sample = tmp_path / "repeat.exe"
+    sample.write_bytes(b"repeat sample")
+    digest = hashlib.sha256(sample.read_bytes()).hexdigest()
+    intel = ThreatIntelStore(tmp_path / "intel.db")
+    now = "2026-10-14T12:00:00"
+    intel.upsert_indicators([IndicatorRecord(
+        indicator_type="sha256", indicator_value=digest, source="abusech_malwarebazaar",
+        confidence=95, severity="high", verification="confirmed", feed_version="feed-1",
+        first_seen=now, last_seen=now, sha256=digest,
+    )], feed_version="feed-1")
+    store = ProtectionStore(tmp_path / "protection.db")
+    service = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=RuleSet("rules-1", ()), store=store,
+        threat_intel_store=intel,
+    ))
+
+    first_verdict, first_id = service.scan_file_for_filter(sample)
+    second_verdict, second_id = service.scan_file_for_filter(sample)
+
+    assert first_id and second_id and first_id != second_id
+    assert first_verdict.intel_evidence == second_verdict.intel_evidence
+    assert store.get_detection(first_id).intel_evidence == store.get_detection(second_id).intel_evidence
+
+
+def test_intel_evidence_does_not_change_unknown_scanner_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sample = tmp_path / "unknown.exe"
+    sample.write_bytes(b"unknown result")
+    digest = hashlib.sha256(sample.read_bytes()).hexdigest()
+    intel = ThreatIntelStore(tmp_path / "intel.db")
+    now = "2026-10-14T12:00:00"
+    intel.upsert_indicators([IndicatorRecord(
+        indicator_type="sha256", indicator_value=digest, source="abusech_malwarebazaar",
+        confidence=95, severity="high", verification="confirmed", feed_version="feed-1",
+        first_seen=now, last_seen=now, sha256=digest,
+    )], feed_version="feed-1")
+    monkeypatch.setattr(service_mod, "scan_path", lambda *_args, **_kwargs: ScanVerdict(
+        status="unknown", action="allow", rule_id=None, rule_version="rules-1",
+        sha256=digest, reason="YARA unavailable", reason_code="analysis_unavailable",
+    ))
+    service = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=RuleSet("rules-1", ()),
+        store=ProtectionStore(tmp_path / "protection.db"), threat_intel_store=intel,
+    ))
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert verdict.status == "unknown" and verdict.action == "allow"
+    assert verdict.intel_evidence is not None
+    assert detection_id is not None
+
+
+def test_network_ioc_never_becomes_file_scan_evidence(tmp_path: Path) -> None:
+    sample = tmp_path / "clean.exe"
+    sample.write_bytes(b"ordinary file")
+    intel = ThreatIntelStore(tmp_path / "intel.db")
+    intel.upsert_indicators([IndicatorRecord(
+        indicator_type="domain", indicator_value="malicious.example", source="abusech_threatfox",
+        confidence=50, severity="high", verification="reported", feed_version="feed-1",
+        first_seen="2026-10-14T12:00:00", last_seen="2026-10-14T12:00:00",
+    )], feed_version="feed-1")
+    service = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=RuleSet("rules-1", ()),
+        store=ProtectionStore(tmp_path / "protection.db"), threat_intel_store=intel,
+    ))
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert verdict.status == "clean" and verdict.action == "allow"
+    assert verdict.intel_evidence is None
+    assert detection_id is None
+
+
+def test_intel_evidence_never_overrides_signed_block_verdict(tmp_path: Path) -> None:
+    sample = tmp_path / "signed-match.exe"
+    sample.write_bytes(_MARKER)
+    digest = hashlib.sha256(_MARKER).hexdigest()
+    store = ProtectionStore(tmp_path / "protection.db")
+    intel = ThreatIntelStore(tmp_path / "intel.db")
+    now = "2026-10-14T12:00:00"
+    intel.upsert_indicators(
+        [
+            IndicatorRecord(
+                indicator_type="sha256",
+                indicator_value=digest,
+                source="abusech_malwarebazaar",
+                confidence=95,
+                severity="high",
+                verification="confirmed",
+                feed_version="mb-2026-10-14",
+                first_seen=now,
+                last_seen=now,
+                sha256=digest,
+            )
+        ],
+        feed_version="mb-2026-10-14",
+    )
+    service = ProtectionService(
+        ProtectionConfig(
+            quarantine_root=tmp_path / "quar",
+            rules=_block_ruleset(_MARKER),
+            store=store,
+            threat_intel_store=intel,
+        )
+    )
+
+    verdict, detection_id = service.scan_file_for_filter(sample)
+
+    assert (verdict.status, verdict.action, verdict.rule_id) == ("detected", "block", "hash-1")
+    assert verdict.intel_evidence is not None
+    assert detection_id is not None
+    assert store.get_detection(detection_id).action == "block"
+
+
+def test_threat_intel_health_is_advisory_and_reports_corruption(tmp_path: Path) -> None:
+    empty_store = ThreatIntelStore(tmp_path / "empty-intel.db")
+    empty_service = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=RuleSet("rules-1", ()),
+        store=ProtectionStore(tmp_path / "empty-protection.db"), threat_intel_store=empty_store,
+    ))
+    assert empty_service.threat_intel_status() == {
+        "state": "advisory", "integrity_ok": True, "block_eligible_records": 0, "activation": "inactive",
+    }
+
+    corrupt_path = tmp_path / "corrupt-intel.db"
+    corrupt_path.write_bytes(b"not a sqlite database")
+    corrupt_store = ThreatIntelStore(corrupt_path)
+    corrupt_service = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=RuleSet("rules-1", ()),
+        store=ProtectionStore(tmp_path / "corrupt-protection.db"), threat_intel_store=corrupt_store,
+    ))
+    assert corrupt_service.threat_intel_status()["state"] == "degraded"
+    assert corrupt_service.threat_intel_status()["integrity_ok"] is False
+
+    sample = tmp_path / "signed-rule-match.exe"
+    sample.write_bytes(_MARKER)
+    protected_scan = ProtectionService(ProtectionConfig(
+        quarantine_root=tmp_path / "quar", rules=_block_ruleset(_MARKER),
+        store=ProtectionStore(tmp_path / "protection-with-corrupt-intel.db"),
+        threat_intel_store=corrupt_store,
+    ))
+    verdict, _detection_id = protected_scan.scan_file_for_filter(sample)
+    assert (verdict.status, verdict.action, verdict.rule_id) == ("detected", "block", "hash-1")
 
 def test_detection_callback_failure_does_not_change_scan_verdict(tmp_path: Path) -> None:
     sample = tmp_path / "sample.exe"

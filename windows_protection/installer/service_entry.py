@@ -1,6 +1,7 @@
 """Importable entry point for the frozen Windows service executable."""
 
 import sys
+import logging
 from pathlib import Path
 
 import yara
@@ -31,4 +32,9 @@ if __name__ == "__main__":
     elif len(sys.argv) == 4 and sys.argv[1] == "--stai-verify-rules":
         raise SystemExit(_verify_rules(sys.argv[2], sys.argv[3]))
     else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
         main()

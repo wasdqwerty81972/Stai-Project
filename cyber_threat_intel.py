@@ -28,7 +28,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +345,530 @@ def clear_cache() -> None:
     with _lock:
         _cache.clear()
         _last_request.clear()
+
+
+# ---------------------------------------------------------------------------
+# Bulk feed ingestion (metadata only)
+#
+# HARD CONSTRAINT: nothing here downloads an executable sample. Every endpoint
+# below returns JSON or text listings of hashes, URLs, and IPs. MalwareBazaar's
+# ``/download/`` endpoint -- the one that returns a zipped live sample -- is
+# never constructed, and ``_assert_metadata_only`` refuses any URL that looks
+# like a sample fetch before a request is made.
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass  # noqa: E402  (grouped with the feed code)
+
+# Fragments that indicate a sample payload rather than metadata. A feed
+# definition containing any of these is a bug, and is rejected at call time
+# rather than trusted to be harmless.
+_SAMPLE_DOWNLOAD_MARKERS = (
+    "/download/",
+    "download_file",
+    "get_file",
+    "/sample/",
+    "payload.zip",
+    "/downloads/malware",
+)
+
+#: Feeds that need no credential. Verified reachable 2026-10-14; see the
+#: ``licence`` field for redistribution terms.
+FREE_METADATA_FEEDS: Dict[str, Dict[str, str]] = {
+    "abusech_malwarebazaar": {
+        # The bulk SHA-256 export: one hex digest per line, zipped. This is a
+        # list of identifiers, not samples -- 1.15M lines of 64 hex chars. The
+        # MalwareBazaar *query* API (mb-api.abuse.ch) does require an Auth-Key,
+        # but these /export/ paths do not.
+        "url": "https://bazaar.abuse.ch/export/txt/sha256/full/",
+        "format": "malwarebazaar_sha256_txt",
+        "indicator_types": "sha256",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "none",
+        "zip_member": "full_sha256.txt",
+    },
+    "abusech_malwarebazaar_recent": {
+        # The recent CSV carries the family label (``signature``) and the
+        # sibling md5/sha1 digests that the hash-only export omits.
+        "url": "https://bazaar.abuse.ch/export/csv/recent/",
+        "format": "malwarebazaar_csv",
+        "indicator_types": "sha256,sha1,md5",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "none",
+    },
+    "abusech_feodotracker": {
+        "url": "https://feodotracker.abuse.ch/downloads/ipblocklist.json",
+        "format": "feodo_json",
+        "indicator_types": "ip",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "none",
+    },
+    "abusech_threatfox": {
+        "url": "https://threatfox.abuse.ch/export/json/recent/",
+        "format": "threatfox_json",
+        "indicator_types": "sha256,md5,domain,ip,url",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "none",
+    },
+    "abusech_urlhaus": {
+        "url": "https://urlhaus.abuse.ch/downloads/text_recent/",
+        "format": "urlhaus_text",
+        "indicator_types": "url",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "none",
+    },
+}
+
+#: Feeds that require a credential this environment does not have.
+CREDENTIALED_METADATA_FEEDS: Dict[str, Dict[str, str]] = {
+    "abusech_malwarebazaar_api": {
+        # The per-hash query API. Returns richer metadata (file type, tags,
+        # vendor verdicts) for one sample at a time, but needs a free account's
+        # Auth-Key: an unauthenticated POST returns HTTP 401.
+        "url": "https://mb-api.abuse.ch/api/v1/",
+        "format": "malwarebazaar_api",
+        "indicator_types": "sha256",
+        "licence": "CC0 1.0 Universal (public domain dedication)",
+        "auth": "Auth-Key header (free abuse.ch account)",
+        "env_var": "ABUSECH_AUTH_KEY",
+    },
+}
+
+
+class SampleDownloadRefused(RuntimeError):
+    """A feed URL looked like a malware sample fetch and was refused."""
+
+
+def _assert_metadata_only(url: str) -> None:
+    lowered = str(url).lower()
+    for marker in _SAMPLE_DOWNLOAD_MARKERS:
+        if marker in lowered:
+            raise SampleDownloadRefused(
+                f"refusing to fetch {url!r}: matches sample-download marker {marker!r}. "
+                "This ingestion path handles hashes and metadata only."
+            )
+
+
+@dataclass(frozen=True)
+class FeedRecord:
+    """One indicator parsed out of a feed, before trust is applied.
+
+    ``verification`` and ``confidence`` here are what the *feed* claims. The
+    store re-derives both from its own trust registry, so a parser cannot
+    promote its source.
+    """
+
+    indicator_type: str
+    indicator_value: str
+    source: str
+    claimed_confidence: Optional[int] = None
+    threat_family: Optional[str] = None
+    source_timestamp: Optional[str] = None
+    sha256: Optional[str] = None
+    sha1: Optional[str] = None
+    md5: Optional[str] = None
+    severity: str = "medium"
+    claimed_verification: str = "reported"
+
+
+def _hash_type(value: str) -> Optional[str]:
+    candidate = str(value).strip().lower()
+    length = len(candidate)
+    if length not in (32, 40, 64):
+        return None
+    try:
+        int(candidate, 16)
+    except ValueError:
+        return None
+    return {32: "md5", 40: "sha1", 64: "sha256"}[length]
+
+
+def parse_malwarebazaar_sha256_txt(
+    payload: Any, source: str = "abusech_malwarebazaar"
+) -> list[FeedRecord]:
+    """Parse MalwareBazaar's hash-only bulk export (one sha256 per line).
+
+    Yields a record per digest with no family label -- the hash-only export
+    carries no metadata beyond the digest itself. Lines that are not valid
+    sha256 digests are dropped rather than stored as indicators.
+    """
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8", "replace")
+    records: list[FeedRecord] = []
+    for line in str(payload).splitlines():
+        digest = line.strip().strip('"').lower()
+        if not digest or digest.startswith("#"):
+            continue
+        if _hash_type(digest) != "sha256":
+            continue
+        records.append(
+            FeedRecord(
+                indicator_type="sha256",
+                indicator_value=digest,
+                source=source,
+                sha256=digest,
+                severity="high",
+                claimed_verification="confirmed",
+            )
+        )
+    return records
+
+
+def iter_malwarebazaar_sha256(lines: Any, source: str = "abusech_malwarebazaar") -> Iterator[str]:
+    """Stream valid sha256 digests from an iterable of lines.
+
+    Used by the bulk loader so a million-line export never has to be held in
+    memory as a list of dataclasses.
+    """
+    for line in lines:
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", "replace")
+        digest = line.strip().strip('"').lower()
+        if not digest or digest.startswith("#"):
+            continue
+        if _hash_type(digest) == "sha256":
+            yield digest
+
+
+def parse_feodo_json(payload: Any, source: str = "abusech_feodotracker") -> list[FeedRecord]:
+    """Parse Feodo Tracker's botnet C2 IP blocklist."""
+    if isinstance(payload, (bytes, str)):
+        import json as _json
+
+        payload = _json.loads(payload)
+    records: list[FeedRecord] = []
+    for entry in payload or []:
+        if not isinstance(entry, dict):
+            continue
+        ip = str(entry.get("ip_address") or "").strip()
+        if not ip or _validate_ip(ip) is None:
+            continue
+        records.append(
+            FeedRecord(
+                indicator_type="ip",
+                indicator_value=ip,
+                source=source,
+                threat_family=entry.get("malware") or None,
+                source_timestamp=entry.get("first_seen") or entry.get("last_online") or None,
+                severity="high",
+                # A C2 IP is a report about infrastructure, never a file
+                # identity, so it stays at "reported" no matter how confident
+                # the feed sounds.
+                claimed_verification="reported",
+            )
+        )
+    return records
+
+
+def parse_threatfox_json(payload: Any, source: str = "abusech_threatfox") -> list[FeedRecord]:
+    """Parse ThreatFox's recent-IOC export.
+
+    The export is an object keyed by ThreatFox id, each holding a one-element
+    list of IOC objects.
+    """
+    if isinstance(payload, (bytes, str)):
+        import json as _json
+
+        payload = _json.loads(payload)
+    records: list[FeedRecord] = []
+    if not isinstance(payload, dict):
+        return records
+    for entries in payload.values():
+        for entry in entries if isinstance(entries, list) else [entries]:
+            if not isinstance(entry, dict):
+                continue
+            raw_value = str(entry.get("ioc_value") or "").strip()
+            if not raw_value:
+                continue
+            ioc_type = str(entry.get("ioc_type") or "").strip().lower()
+            family = entry.get("malware_printable") or entry.get("malware") or None
+            timestamp = entry.get("first_seen_utc") or entry.get("last_seen_utc") or None
+            claimed = entry.get("confidence_level")
+            try:
+                claimed = int(claimed) if claimed is not None else None
+            except (TypeError, ValueError):
+                claimed = None
+
+            hash_kind = _hash_type(raw_value)
+            if ioc_type in ("sha256_hash", "md5_hash", "sha1_hash") or hash_kind:
+                if hash_kind is None:
+                    continue
+                records.append(
+                    FeedRecord(
+                        indicator_type=hash_kind,
+                        indicator_value=raw_value.lower(),
+                        source=source,
+                        claimed_confidence=claimed,
+                        threat_family=family,
+                        source_timestamp=timestamp,
+                        severity="high",
+                        claimed_verification="reported",
+                    )
+                )
+                continue
+
+            if ioc_type.startswith("domain"):
+                indicator_type = "domain"
+            elif ioc_type.startswith("url"):
+                indicator_type = "url"
+            elif ioc_type.startswith("ip"):
+                # ThreatFox writes these as host:port.
+                indicator_type = "ip"
+                raw_value = raw_value.split(":", 1)[0]
+                if _validate_ip(raw_value) is None:
+                    continue
+            else:
+                continue
+            records.append(
+                FeedRecord(
+                    indicator_type=indicator_type,
+                    indicator_value=raw_value.lower(),
+                    source=source,
+                    claimed_confidence=claimed,
+                    threat_family=family,
+                    source_timestamp=timestamp,
+                    severity="medium",
+                    claimed_verification="reported",
+                )
+            )
+    return records
+
+
+def parse_urlhaus_text(payload: Any, source: str = "abusech_urlhaus") -> list[FeedRecord]:
+    """Parse URLhaus's plain-text recent-URL listing (one URL per line)."""
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8", "replace")
+    records: list[FeedRecord] = []
+    for line in str(payload).splitlines():
+        url = line.strip()
+        if not url or url.startswith("#"):
+            continue
+        records.append(
+            FeedRecord(
+                indicator_type="url",
+                indicator_value=url,
+                source=source,
+                severity="medium",
+                claimed_verification="reported",
+            )
+        )
+    return records
+
+
+def parse_malwarebazaar_csv(
+    payload: Any, source: str = "abusech_malwarebazaar"
+) -> list[FeedRecord]:
+    """Parse MalwareBazaar's full CSV hash export.
+
+    Columns (quoted, comma separated, ``#``-prefixed comment header):
+    first_seen_utc, sha256_hash, md5_hash, sha1_hash, reporter, file_name,
+    file_type_guess, mime_type, signature, clamav, vtpercent, imphash, ...
+    """
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8", "replace")
+    import csv as _csv
+    import io as _io
+
+    records: list[FeedRecord] = []
+    stream = _io.StringIO(str(payload))
+    reader = _csv.reader(
+        (line for line in stream if line.strip() and not line.lstrip().startswith("#")),
+        skipinitialspace=True,
+    )
+    for row in reader:
+        if len(row) < 4:
+            continue
+        cells = [cell.strip().strip('"') for cell in row]
+        first_seen, sha256, md5, sha1 = cells[0], cells[1].lower(), cells[2].lower(), cells[3].lower()
+        if _hash_type(sha256) != "sha256":
+            continue
+        family = cells[8] if len(cells) > 8 and cells[8] not in ("", "n/a") else None
+        records.append(
+            FeedRecord(
+                indicator_type="sha256",
+                indicator_value=sha256,
+                source=source,
+                threat_family=family,
+                source_timestamp=first_seen or None,
+                sha256=sha256,
+                sha1=sha1 if _hash_type(sha1) == "sha1" else None,
+                md5=md5 if _hash_type(md5) == "md5" else None,
+                severity="high",
+                # MalwareBazaar holds and analyses the sample itself, so an
+                # exact file hash from it is first-hand evidence.
+                claimed_verification="confirmed",
+            )
+        )
+    return records
+
+
+_FEED_PARSERS = {
+    "feodo_json": parse_feodo_json,
+    "threatfox_json": parse_threatfox_json,
+    "urlhaus_text": parse_urlhaus_text,
+    "malwarebazaar_csv": parse_malwarebazaar_csv,
+    "malwarebazaar_sha256_txt": parse_malwarebazaar_sha256_txt,
+}
+
+
+#: Uncompressed-size ceiling for a zipped feed member. A feed that claims to
+#: expand past this is treated as hostile (zip bomb) rather than ingested.
+_MAX_FEED_MEMBER_BYTES = 1024 * 1024 * 1024
+
+
+def unzip_feed_member(raw: bytes, member: Optional[str] = None) -> bytes:
+    """Return one member of a zipped feed, refusing implausible expansion.
+
+    Only text is read out; nothing is written to disk and nothing is executed.
+    """
+    import io
+    import zipfile
+
+    if not raw[:2] == b"PK":
+        return raw
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        infos = archive.infolist()
+        if not infos:
+            raise ValueError("zipped feed is empty")
+        info = next((i for i in infos if i.filename == member), infos[0])
+        if info.file_size > _MAX_FEED_MEMBER_BYTES:
+            raise ValueError(
+                f"zipped feed member {info.filename!r} expands to {info.file_size} bytes, "
+                f"above the {_MAX_FEED_MEMBER_BYTES} ceiling"
+            )
+        return archive.read(info)
+
+
+def parse_feed(feed_format: str, payload: Any, source: str) -> list[FeedRecord]:
+    """Dispatch to a feed parser. Pure function -- no network, fixture-testable."""
+    parser = _FEED_PARSERS.get(feed_format)
+    if parser is None:
+        raise ValueError(f"unknown feed format: {feed_format!r}")
+    return parser(payload, source)
+
+
+def http_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 30.0) -> bytes:
+    """Default fetcher: one read-only GET, refusing sample-download URLs."""
+    _assert_metadata_only(url)
+    import urllib.request
+
+    request = urllib.request.Request(url, headers=headers or {}, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def ingest_feed(
+    feed_name: str,
+    store: Any,
+    *,
+    fetcher: Optional[Any] = None,
+    feed_definition: Optional[Dict[str, str]] = None,
+    auth_key: Optional[str] = None,
+    feed_version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch, parse, and upsert one feed into a ``ThreatIntelStore``.
+
+    ``fetcher`` is injectable so the whole path -- parse, trust ceiling,
+    upsert, run bookkeeping -- is exercised offline against a fixture with no
+    network at all. It is called as ``fetcher(url, headers)`` and must return
+    the raw bytes.
+    """
+    definition = feed_definition or FREE_METADATA_FEEDS.get(feed_name) or \
+        CREDENTIALED_METADATA_FEEDS.get(feed_name)
+    if definition is None:
+        return {"status": "unknown_feed", "feed": feed_name, "ingested": 0}
+
+    url = definition["url"]
+    _assert_metadata_only(url)
+
+    headers: Dict[str, str] = {"User-Agent": "SVS-Cyber-ThreatIntel/1"}
+    env_var = definition.get("env_var")
+    if env_var:
+        key = auth_key or os.getenv(env_var)
+        if not key:
+            # Report the gap rather than fetching and getting an opaque 401.
+            return {
+                "status": "credential_missing",
+                "feed": feed_name,
+                "ingested": 0,
+                "message": f"{feed_name} requires {definition['auth']}; set {env_var}.",
+            }
+        headers["Auth-Key"] = key
+
+    version = feed_version or f"{feed_name}-{time.strftime('%Y%m%dT%H%M%S')}"
+    run_id = store.start_feed_run(feed_name, version)
+    try:
+        raw = (fetcher or http_fetch)(url, headers)
+        if definition.get("zip_member") or (isinstance(raw, bytes) and raw[:2] == b"PK"):
+            raw = unzip_feed_member(raw, definition.get("zip_member"))
+        records = parse_feed(definition["format"], raw, feed_name)
+    except SampleDownloadRefused:
+        raise
+    except Exception as exc:
+        logger.error("feed %s failed: %s", feed_name, exc)
+        store.finish_feed_run(run_id, status="failed", error=str(exc))
+        return {"status": "fetch_failed", "feed": feed_name, "ingested": 0, "error": str(exc)}
+
+    indicators = [_to_indicator(record, version) for record in records]
+    counters = store.upsert_indicators(indicators, feed_version=version)
+    store.finish_feed_run(
+        run_id,
+        status="completed",
+        inserted=counters["inserted"],
+        updated=counters["updated"],
+        rejected=counters["rejected"],
+    )
+    return {
+        "status": "success",
+        "feed": feed_name,
+        "feed_version": version,
+        "parsed": len(records),
+        "licence": definition["licence"],
+        **counters,
+    }
+
+
+def _to_indicator(record: FeedRecord, feed_version: str) -> Any:
+    from cyber_os.protection.store import IndicatorRecord
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    return IndicatorRecord(
+        indicator_type=record.indicator_type,
+        indicator_value=record.indicator_value,
+        source=record.source,
+        # The store clamps this against the source's trust tier; passing the
+        # feed's own claim through unmodified is intentional so the clamp is
+        # the single place trust is decided.
+        confidence=record.claimed_confidence if record.claimed_confidence is not None else 100,
+        severity=record.severity,
+        verification=record.claimed_verification,
+        feed_version=feed_version,
+        first_seen=record.source_timestamp or now,
+        last_seen=now,
+        sha256=record.sha256,
+        sha1=record.sha1,
+        md5=record.md5,
+        threat_family=record.threat_family,
+        source_timestamp=record.source_timestamp,
+    )
+
+
+def feed_catalogue() -> Dict[str, Any]:
+    """Report every known feed, its licence, and whether it needs a credential."""
+    return {
+        "free": {
+            name: {**definition, "credential_required": False}
+            for name, definition in FREE_METADATA_FEEDS.items()
+        },
+        "credentialed": {
+            name: {
+                **definition,
+                "credential_required": True,
+                "credential_present": bool(os.getenv(definition.get("env_var", ""))),
+            }
+            for name, definition in CREDENTIALED_METADATA_FEEDS.items()
+        },
+        "sample_downloads": "never; _assert_metadata_only refuses them before any request",
+    }
 
 
 if __name__ == "__main__":

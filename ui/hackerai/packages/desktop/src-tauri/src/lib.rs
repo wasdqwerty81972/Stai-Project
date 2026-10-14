@@ -2099,6 +2099,7 @@ pub fn run() {
             execute_pty_resize,
             execute_pty_kill,
             protection_bridge::get_protection_status,
+            protection_bridge::get_device_activity,
             protection_bridge::start_protection_scan,
             protection_bridge::get_protection_scan,
             protection_bridge::cancel_protection_scan,

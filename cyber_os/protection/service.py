@@ -9,14 +9,15 @@ import stat
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Optional
 
-from .models import DetectionRule, RuleSet, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanVerdict, ThreatIntelEvidence
 from .quarantine import QuarantineItem, QuarantineResult, list_quarantine_items, quarantine_file, restore_quarantine
 from .scanner import SCANNER_ENGINE_VERSION, scan_path
-from .store import DetectionRecord, ProtectionStatus, ProtectionStore, ScanJob, WindowsSecurityStatus
+from .store import DetectionRecord, ProtectionStatus, ProtectionStore, ScanJob, ThreatIntelStore, WindowsSecurityStatus
 
 
 SCAN_ROOTS_QUICK = [
@@ -36,6 +37,7 @@ class ProtectionConfig:
     store: ProtectionStore
     yara_timeout_seconds: int = 5
     quick_scan_roots: list[Path] | None = None
+    threat_intel_store: ThreatIntelStore | None = None
 
 
 class ScanScope:
@@ -63,6 +65,8 @@ class ProtectionService:
         self._cancel_scan = threading.Event()
         self._scan_lock = threading.Lock()
         self._current_job_id: Optional[str] = None
+        self._intel_status_lock = threading.Lock()
+        self._intel_status_cache: tuple[float, dict[str, Any]] | None = None
 
     @property
     def rules(self) -> RuleSet:
@@ -95,15 +99,18 @@ class ProtectionService:
     def scan_file_for_filter(self, path: Path) -> tuple[ScanVerdict, str | None]:
         """Scan and return the durable detection ID for filter correlation."""
         verdict = scan_path(path, self._config.rules, yara_timeout_seconds=self._config.yara_timeout_seconds)
+        verdict = self._attach_intel_evidence(verdict)
         detection_id: str | None = None
 
-        if verdict.status == "detected":
+        if verdict.status == "detected" or verdict.intel_evidence is not None:
             detection_id = str(uuid.uuid4())
             file_type = None
             size_bytes = None
             try:
-                stat = path.stat()
-                size_bytes = stat.st_size
+                # Do not bind this to "stat": that shadows the stat module
+                # imported at the top of this file and relied on by _iter_files.
+                stat_result = path.stat()
+                size_bytes = stat_result.st_size
                 if path.suffix:
                     file_type = path.suffix.lower()
             except OSError:
@@ -112,16 +119,17 @@ class ProtectionService:
             record = DetectionRecord(
                 detection_id=detection_id,
                 sha256=verdict.sha256 or "",
-                rule_id=verdict.rule_id or "unknown",
-                rule_version=verdict.rule_version,
+                rule_id=verdict.rule_id or "threat-intel-advisory",
+                rule_version=verdict.rule_version if verdict.status == "detected" else verdict.intel_evidence.feed_version,
                 action=verdict.action,
                 confidence="high" if verdict.action == "block" else "low",
-                severity="critical" if verdict.action == "block" else "medium",
+                severity="critical" if verdict.action == "block" else verdict.intel_evidence.severity if verdict.intel_evidence else "medium",
                 file_type=file_type,
                 size_bytes=size_bytes,
                 file_path=str(path),
                 created_at=datetime.now().isoformat(),
                 triage_enqueued=False,
+                intel_evidence=verdict.intel_evidence,
             )
             self._config.store.record_detection(record)
             if self._on_detection is not None:
@@ -141,6 +149,7 @@ class ProtectionService:
             self._config.rules,
             yara_timeout_seconds=self._config.yara_timeout_seconds,
         )
+        verdict = self._attach_intel_evidence(verdict)
         if verdict.status == "clean":
             return verdict, "clean"
         if verdict.status != "detected" or verdict.action != "block" or not verdict.sha256:
@@ -172,6 +181,66 @@ class ProtectionService:
             return verdict, "contained"
         LOGGER.warning("sensor-triggered detection remains flagged; quarantine failed")
         return verdict, "failed"
+
+    def _attach_intel_evidence(self, verdict: ScanVerdict) -> ScanVerdict:
+        """Attach exact SHA-256 evidence; P2A intelligence remains advisory."""
+        intel = self._config.threat_intel_store
+        if intel is None or verdict.sha256 is None:
+            return verdict
+        try:
+            decision = intel.block_decision("sha256", verdict.sha256)
+        except Exception:
+            LOGGER.exception("threat-intelligence lookup failed; preserving scanner verdict")
+            with self._intel_status_lock:
+                self._intel_status_cache = None
+            return verdict
+        record = decision.record
+        if record is None:
+            return verdict
+        evidence = ThreatIntelEvidence(
+            indicator_type="sha256",
+            indicator_value=record.indicator_value.lower(),
+            source=record.source,
+            verification=record.verification,
+            confidence=record.confidence,
+            severity=record.severity,
+            feed_version=record.feed_version,
+            first_seen=record.first_seen,
+            last_seen=record.last_seen,
+            freshness=record.freshness(),
+            corroborations=record.corroborations,
+            block_eligible=decision.block,
+            decision_reason=decision.reason[:256],
+        )
+        # Eligibility is evidence only until signed/staged feed activation.
+        return replace(verdict, intel_evidence=evidence)
+
+    def threat_intel_status(self) -> dict[str, Any]:
+        """Report local database integrity and eligibility without trust claims."""
+        now = time.monotonic()
+        with self._intel_status_lock:
+            if self._intel_status_cache and now - self._intel_status_cache[0] < 60:
+                return dict(self._intel_status_cache[1])
+            intel = self._config.threat_intel_store
+            if intel is None:
+                status = {"state": "unavailable", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
+            else:
+                try:
+                    integrity = intel.verify_integrity()
+                    if not integrity.get("ok"):
+                        status = {"state": "degraded", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
+                    else:
+                        status = {
+                            "state": "advisory",
+                            "integrity_ok": True,
+                            "block_eligible_records": intel.count_block_eligible_hashes(),
+                            "activation": "inactive",
+                        }
+                except Exception:
+                    LOGGER.exception("unable to read threat-intelligence database health")
+                    status = {"state": "unavailable", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
+            self._intel_status_cache = (now, status)
+            return dict(status)
 
     def quarantine_scanned_detection(
         self,
@@ -327,7 +396,10 @@ class ProtectionService:
                     try:
                         verdict = self.scan_file(file_path)
                     except Exception:
+                        # Count AND log: a silently swallowed scan error made a
+                        # scan that failed on every file look merely "partial".
                         errors += 1
+                        LOGGER.exception("scan failed for %s", file_path)
                     else:
                         files_scanned += 1
                         if verdict.status == "detected":
@@ -424,9 +496,10 @@ class ProtectionService:
 
     def quarantine_detection(self, detection_id: str) -> QuarantineResult:
         """Quarantine a file by detection ID."""
-        # Find the detection record
-        detections = self._config.store.list_threats(limit=1000)
-        detection = next((d for d in detections if d.detection_id == detection_id), None)
+        # Look the detection up directly. A paged list_threats() scan silently
+        # failed to find any detection outside the first page, so older
+        # detections became permanently unquarantinable.
+        detection = self._config.store.get_detection(detection_id)
 
         if not detection:
             return QuarantineResult(success=False, error="detection not found")
@@ -466,7 +539,12 @@ class ProtectionService:
     def get_status(
         self,
         driver_state: Literal["running", "stopped", "error", "unknown"] = "unknown",
-        service_state: Literal["running", "stopped", "error", "unknown"] = "running",
+        # Both states default to "unknown". A caller that has not actually
+        # probed the service must never be handed a "running" claim it did
+        # not verify -- reporting protection that was never checked is worse
+        # than reporting nothing. ProtectionStore.get_status already defaults
+        # to "unknown"; this layer previously overrode it with "running".
+        service_state: Literal["running", "stopped", "error", "unknown"] = "unknown",
         windows_security: Optional[WindowsSecurityStatus] = None,
         sensor_coverage: Optional[dict[str, Any]] = None,
         last_error: Optional[str] = None,
@@ -479,6 +557,3 @@ class ProtectionService:
             sensor_coverage=sensor_coverage,
             last_error=last_error,
         )
-
-
-from datetime import datetime

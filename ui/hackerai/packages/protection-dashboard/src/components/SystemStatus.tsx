@@ -1,5 +1,6 @@
-import { Activity, AlertCircle, CheckCircle2, CircleHelp, Cpu, Shield, ShieldCheck } from "lucide-react";
+import { Activity, AlertCircle, CheckCircle2, CircleHelp, Cpu, Network, Shield, ShieldCheck } from "lucide-react";
 import type { ProtectionStatus } from "../protection-api";
+import { isDemoRuleVersion } from "../protection-status";
 import { PageHeading } from "./PageHeading";
 import { StatusPill } from "./StatusPill";
 
@@ -10,6 +11,29 @@ function HealthValue({ value }: { value: string | null | undefined }) {
     <span className={`health-value ${healthy ? "healthy" : "attention"}`}>
       {healthy ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
       {value}
+    </span>
+  );
+}
+
+/** Rule packages carry the real coverage, so trust and demo state lead here. */
+function RulePackageValue({ status }: { status: ProtectionStatus }) {
+  if (status.rules_trusted === false) {
+    return <span className="health-value attention"><AlertCircle size={14} aria-hidden="true" /> Not verified</span>;
+  }
+  if (!status.rules_version || status.rules_version === "unknown") {
+    return <span className="health-value unknown"><CircleHelp size={14} aria-hidden="true" /> Not reported</span>;
+  }
+  if (isDemoRuleVersion(status.rules_version)) {
+    return (
+      <span className="health-value attention">
+        <AlertCircle size={14} aria-hidden="true" /> {status.rules_version} · demo only
+      </span>
+    );
+  }
+  return (
+    <span className="health-value healthy">
+      <CheckCircle2 size={14} aria-hidden="true" /> {status.rules_version}
+      {status.rule_count == null ? "" : ` · ${status.rule_count} rules`}
     </span>
   );
 }
@@ -50,8 +74,53 @@ export function SystemStatus({
             <div className="health-detail-grid">
               <HealthCard icon={Shield} label="Filter driver" value={status.driver_state} />
               <HealthCard icon={Activity} label="Local service" value={status.service_state} />
-              <HealthCard icon={ShieldCheck} label="Rule package" value={status.rules_version} />
+              <HealthCard
+                icon={ShieldCheck}
+                label="Hash intelligence"
+                value={status.threat_intel?.state === "advisory"
+                  ? `Advisory · ${status.threat_intel.block_eligible_records} eligible; inactive`
+                  : status.threat_intel?.state ?? "Not reported"}
+              />
+              <article className="health-card">
+                <span className="health-card-icon"><ShieldCheck size={17} aria-hidden="true" /></span>
+                <span>Rule package</span>
+                <RulePackageValue status={status} />
+              </article>
             </div>
+            {isDemoRuleVersion(status.rules_version) && status.rules_trusted !== false && (
+              <div className="inline-alert coverage-gap" role="status">
+                <AlertCircle size={16} aria-hidden="true" />
+                The active rule package is the EICAR demonstration package. It detects the EICAR test file only and provides no real malware coverage.
+              </div>
+            )}
+            {status.threat_intel?.state === "advisory" && (
+              <p className="helper-note">
+                Exact SHA-256 matches are stored as evidence. Feed-based blocking stays inactive until signed feed activation is implemented and verified.
+              </p>
+            )}
+          </section>
+
+          <section className="panel health-detail-panel">
+            <div className="panel-heading">
+              <div><div className="eyebrow">NETWORK</div><h2>Network telemetry</h2></div>
+              <span className="panel-icon"><Network size={18} aria-hidden="true" /></span>
+            </div>
+            <div className="health-list">
+              <div>
+                <span>Reported state</span>
+                <strong>
+                  <HealthValue value={status.network_telemetry?.state?.replaceAll("_", " ") ?? null} />
+                </strong>
+              </div>
+              {status.network_telemetry?.startup_error && (
+                <div><span>Startup error</span><strong>{status.network_telemetry.startup_error}</strong></div>
+              )}
+            </div>
+            <p className="helper-note">
+              {status.network_telemetry?.state === "running"
+                ? "The service reports active network telemetry."
+                : "Network Activity lists connections read from user-mode polling. Without active network telemetry those connections are not filtered or blocked."}
+            </p>
           </section>
 
           <section className="panel health-detail-panel">

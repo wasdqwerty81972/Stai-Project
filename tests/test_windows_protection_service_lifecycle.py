@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import uuid
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from cyber_os.protection.models import DetectionRule, RuleSet, ThreatIntelEvidence
+from cyber_os.protection.store import DetectionRecord, ProtectionStore
+from cyber_os.protection import windows_service as windows_service_module
 from cyber_os.protection.windows_service import (
     _validate_pipe_request,
     _installed_user_quick_scan_roots,
@@ -21,6 +26,64 @@ from cyber_os.protection.windows_service import (
 
 CLIENT_SID = "S-1-5-21-123456789-123456789-123456789-1001"
 OTHER_SID = "S-1-5-21-123456789-123456789-123456789-1002"
+
+
+def test_pipe_threat_list_uses_dashboard_intel_evidence_contract(tmp_path):
+    store = ProtectionStore(tmp_path / "protection.db")
+    evidence = ThreatIntelEvidence(
+        indicator_type="sha256", indicator_value="a" * 64,
+        source="test-source", verification="reported", confidence=40,
+        severity="medium", feed_version="feed-1", first_seen="2026-10-14T10:00:00",
+        last_seen="2026-10-14T11:00:00", freshness="fresh", corroborations=1,
+    )
+    store.record_detection(DetectionRecord(
+        detection_id="det-1", sha256="a" * 64, rule_id="threat-intel-advisory",
+        rule_version="feed-1", action="allow", confidence="low", severity="medium",
+        file_type=".exe", size_bytes=1, file_path="C:/sample.exe",
+        created_at="2026-10-14T12:00:00", triage_enqueued=False, intel_evidence=evidence,
+    ))
+    host = ProtectionServiceHost(store=store, service=None)
+
+    result = host.dispatch("list_threats", {})
+
+    assert result[0]["threat_intel_evidence"]["source"] == "test-source"
+    assert "intel_evidence" not in result[0]
+
+
+def test_windows_service_reports_running_before_waiting_for_stop(monkeypatch):
+    service_type = windows_service_module.STAIProtectionWindowsService
+    if service_type is None:
+        pytest.skip("pywin32 service support is unavailable")
+
+    calls = []
+
+    class Host:
+        def start(self):
+            calls.append("host-start")
+
+        def stop(self):
+            calls.append("host-stop")
+
+    host = Host()
+    monkeypatch.setattr(windows_service_module, "create_default_host", lambda: host)
+    monkeypatch.setattr(
+        windows_service_module.win32event,
+        "WaitForSingleObject",
+        lambda _event, _timeout: calls.append("wait"),
+    )
+
+    class ServiceInstance:
+        _host = None
+        _stop_event = object()
+
+        def ReportServiceStatus(self, status):
+            calls.append(("status", status))
+
+    service_type.SvcDoRun(ServiceInstance())
+
+    assert calls[0] == "host-start"
+    assert calls[1] == ("status", windows_service_module.win32service.SERVICE_RUNNING)
+    assert calls[2] == "wait"
 
 
 def test_enrolled_user_quick_scan_roots_use_redirected_folders(tmp_path, monkeypatch):
@@ -144,6 +207,29 @@ class _FileMonitor:
         return {"state": "running", "roots": ["C:/Users/demo/Downloads"]}
 
 
+class _ProcessMonitor:
+    def __init__(self, startup_error=None):
+        self.startup_error = startup_error
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self):
+        self.start_calls += 1
+        if self.startup_error is not None:
+            raise self.startup_error
+        return True
+
+    def stop(self):
+        self.stop_calls += 1
+        return True
+
+    def snapshot(self):
+        return {"sequence": 0, "observed_at": "now", "processes": [], "health": self.health()}
+
+    def health(self):
+        return {"state": "running", "event_source": "running", "source": "test-process-monitor"}
+
+
 def test_host_starts_and_stops_sensor_service_idempotently():
     sensors = _SensorService()
     host = ProtectionServiceHost(
@@ -233,6 +319,140 @@ def test_host_owns_drop_folder_monitor_lifecycle_and_reports_its_status():
     assert status["sensors"]["drop_folder_watch"]["state"] == "running"
 
 
+def test_host_starts_and_stops_process_monitor_idempotently():
+    monitor = _ProcessMonitor()
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        pipe_server=_PipeServer(),
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+        process_monitor=monitor,
+    )
+
+    host.start()
+    host.start()
+    status = host.get_status()
+    host.stop()
+    host.stop()
+
+    assert monitor.start_calls == 1
+    assert monitor.stop_calls == 1
+    assert status["process_monitor"]["state"] == "running"
+    assert status["process_monitor"]["source"] == "protection_service"
+
+
+def test_process_monitor_start_failure_is_reported_without_stopping_host():
+    pipe = _PipeServer()
+    monitor = _ProcessMonitor(startup_error=RuntimeError("subscription denied"))
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=_Service(),
+        filter_client=_FilterClient(False),
+        pipe_server=pipe,
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+        process_monitor=monitor,
+    )
+
+    host.start()
+    status = host.get_status()
+    host.stop()
+
+    assert pipe.started is True
+    assert status["service_state"] == "running"
+    assert status["process_monitor"]["state"] == "error"
+    assert status["process_monitor"]["error"] == "process monitor startup failed"
+
+
+def test_default_process_monitor_factory_uses_registry_on_windows(monkeypatch):
+    import cyber_os.protection.windows_service as windows_service
+
+    created = []
+    module = ModuleType("ui.process_monitor")
+
+    class RecordingRegistry:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    module.ProcessRegistry = RecordingRegistry
+    monkeypatch.setitem(sys.modules, "ui.process_monitor", module)
+    monkeypatch.setattr(windows_service, "os", SimpleNamespace(name="nt"))
+
+    monitor = windows_service._create_default_process_monitor()
+
+    assert isinstance(monitor, RecordingRegistry)
+    assert created == [{"sample_interval": 5.0, "reconcile_interval": 5.0}]
+
+
+def test_default_host_wires_service_process_monitor_without_api_server(monkeypatch, tmp_path):
+    import builtins
+
+    import cyber_os.protection.windows_service as windows_service
+
+    sentinel = object()
+    monkeypatch.setattr(windows_service, "_create_default_process_monitor", lambda: sentinel)
+    monkeypatch.setattr(
+        windows_service,
+        "os",
+        SimpleNamespace(name="posix", environ={"STAI_LOCAL_DEV_SERVICE": "1", "STAI_PROTECTION_DATA_DIR": str(tmp_path)}),
+    )
+    monkeypatch.setattr(windows_service, "_RESOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(windows_service, "ProtectionStore", lambda path: _Store())
+
+    from cyber_os.protection import ai_provider, triage
+
+    monkeypatch.setattr(ai_provider, "create_default_provider", lambda: None)
+    monkeypatch.setattr(triage, "ProtectionTriage", lambda *args, **kwargs: object())
+    original_import = builtins.__import__
+
+    def reject_api_server_import(name, *args, **kwargs):
+        if name == "ui.api_server":
+            raise AssertionError("the frozen protection service must not import the dashboard API")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_api_server_import)
+    host = windows_service.create_default_host()
+
+    assert host.process_monitor is sentinel
+
+
+def test_default_host_reports_missing_trust_anchor_without_installing_demo_rules(monkeypatch, tmp_path):
+    import cyber_os.protection.windows_service as windows_service
+
+    data_root = tmp_path / "protection-data"
+    resource_root = tmp_path / "service-resources"
+    resource_root.mkdir()
+    monkeypatch.setattr(
+        windows_service,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            environ={
+                "STAI_LOCAL_DEV_SERVICE": "1",
+                "STAI_PROTECTION_DATA_DIR": str(data_root),
+            },
+        ),
+    )
+    monkeypatch.setattr(windows_service, "_RESOURCE_ROOT", resource_root)
+    monkeypatch.setattr(windows_service, "ProtectionStore", lambda _path: _Store())
+    monkeypatch.setattr(windows_service, "_read_installed_client_sid", lambda: None)
+
+    from cyber_os.protection import ai_provider, triage
+
+    monkeypatch.setattr(ai_provider, "create_default_provider", lambda: None)
+    monkeypatch.setattr(triage, "ProtectionTriage", lambda *args, **kwargs: object())
+
+    host = windows_service.create_default_host()
+
+    assert host.service is None
+    assert host.rules_trusted is False
+    assert "public key" in host._last_error.lower()
+    assert not (data_root / "rules" / "manifest.json").exists()
+    assert not (data_root / "rules" / "manifest.sig").exists()
+
+
 def test_service_status_is_unavailable_before_driver_and_rules_are_ready():
     host = ProtectionServiceHost(
         store=_Store(),
@@ -247,6 +467,30 @@ def test_service_status_is_unavailable_before_driver_and_rules_are_ready():
     assert status["state"] == "unavailable"
     assert status["driver_state"] != "running"
     assert status["rules_version"] == "unknown"
+
+
+def test_service_status_reports_trusted_rule_counts_and_fingerprint():
+    service = _Service()
+    service.rules = RuleSet("signed-test-2", (
+        DetectionRule("sample-hash", "sha256", "a" * 64, "block", "high"),
+        DetectionRule("sample-yara", "yara", "rule sample { condition: true }", "observe", "low"),
+    ))
+    host = ProtectionServiceHost(
+        store=_Store(),
+        service=service,
+        filter_client=_FilterClient(False),
+        pipe_server=_PipeServer(),
+        rules_trusted=True,
+        client_sid=CLIENT_SID,
+    )
+
+    status = host.get_status()
+
+    assert status["rules_trusted"] is True
+    assert status["rule_count"] == 2
+    assert status["sha256_rule_count"] == 1
+    assert status["yara_rule_count"] == 1
+    assert len(status["rules_fingerprint"]) == 64
 
 
 def test_service_startup_does_not_claim_active_on_filter_failure():

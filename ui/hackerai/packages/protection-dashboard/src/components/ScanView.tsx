@@ -90,8 +90,17 @@ export function ScanView({
     scan?.files_total && scan.files_total > 0
       ? Math.min(100, Math.round((scan.files_scanned / scan.files_total) * 100))
       : 0;
+  // A finished scan only proves coverage when the service reported a total,
+  // actually read files, and recorded no errors, skips or unknown verdicts.
   const hasCoverageGaps = Boolean(
-    scan && (scan.errors > 0 || (scan.unknown_verdicts ?? 0) > 0 || (scan.files_skipped ?? 0) > 0),
+    scan && (
+      scan.errors > 0 ||
+      (scan.unknown_verdicts ?? 0) > 0 ||
+      (scan.files_skipped ?? 0) > 0 ||
+      scan.files_total === null ||
+      scan.files_scanned === 0 ||
+      (scan.files_total !== null && scan.files_scanned < scan.files_total)
+    ),
   );
 
   return (
@@ -218,7 +227,7 @@ export function ScanView({
               {!busy && scan.files_total !== null && <span>{progress}%</span>}
             </div>
             {scan.engine_version && <div className="scan-version-meta">
-              Scan used scanner v{scan.engine_version} and rules v{scan.rules_version || "unknown"} across {scan.root_snapshot?.length ?? 0} locations.
+              Scan used scanner v{scan.engine_version} and rules v{scan.rules_version || "unknown"} across {scan.root_snapshot === undefined ? "an unreported number of" : scan.root_snapshot.length} locations.
             </div>}
             <div
               className={`progress-track${busy ? " is-indeterminate" : ""}`}

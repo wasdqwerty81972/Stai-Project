@@ -188,6 +188,25 @@ test("renders_degraded_state_without_fake_counts", async () => {
   expect(screen.queryByText("Protected and up to date")).not.toBeInTheDocument();
 });
 
+test("explains_when_service_runs_without_the_file_protection_driver", async () => {
+  jest.mocked(getProtectionStatus).mockResolvedValue({
+    ...status,
+    state: "degraded",
+    driver_state: "stopped",
+    service_state: "running",
+    last_error: "minifilter communication port is unavailable",
+  } as never);
+
+  render(<App />);
+
+  expect(await screen.findByText("Kernel protection unavailable")).toBeInTheDocument();
+  expect(screen.getByText(
+    "The protection service is running, but the Windows file filter driver is not connected. Real-time protection is unavailable.",
+  )).toBeInTheDocument();
+  expect(screen.queryByText("minifilter communication port is unavailable")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Quick Scan" })).toBeEnabled();
+});
+
 test("shows_last_scan_rule_version_and_agent_escalations", async () => {
   render(<App />);
 
@@ -261,6 +280,18 @@ test("shows_distinct_detection_block_and_quarantine_totals", async () => {
   expect(within(totals).getByRole("article", { name: /^Quarantined:/ })).toHaveTextContent("1");
 });
 
+test("opens_the_HackerAI_style_agent_workspace_in_a_new_tab", async () => {
+  const user = userEvent.setup();
+  const open = jest.spyOn(window, "open").mockReturnValue(null);
+  render(<App />);
+
+  await user.click(await screen.findByRole("button", { name: "AI Agent" }));
+
+  expect(open).toHaveBeenCalledWith("http://127.0.0.1:3000/", "_blank", "noopener,noreferrer");
+  expect(screen.queryByText(triage.summary)).not.toBeInTheDocument();
+  open.mockRestore();
+});
+
 test("renders_quarantine_restore_result", async () => {
   const user = userEvent.setup();
   render(<App />);
@@ -277,7 +308,7 @@ test("sends_typed_detection_follow_up_and_renders_agent_reply", async () => {
   const user = userEvent.setup();
   render(<App />);
 
-  await user.click(await screen.findByRole("button", { name: "AI Agent" }));
+  await user.click(await screen.findByRole("button", { name: "Open analysis for C:\\Users\\Public\\invoice.exe" }));
   expect(await screen.findByText(triage.summary)).toBeInTheDocument();
   expect(screen.getByText("Keep the item quarantined while you verify its source.")).toBeInTheDocument();
 
@@ -299,8 +330,9 @@ test("renders_service_unavailable_on_bridge_error", async () => {
   jest.mocked(listQuarantine).mockRejectedValue(new Error("protection service unavailable"));
   render(<App />);
 
-  expect(await screen.findByText("Protection service unavailable")).toBeInTheDocument();
+  expect(await screen.findByText("Protection status unknown")).toBeInTheDocument();
   expect(screen.queryByText("Protected and up to date")).not.toBeInTheDocument();
+  expect(screen.queryByText("Service confirmed")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Retry connection" })).toBeInTheDocument();
 });
 
@@ -317,4 +349,97 @@ test("keeps_navigation_and_scan_action_keyboard_reachable", async () => {
   scan.focus();
   await user.keyboard("{Enter}");
   expect(startScan).toHaveBeenCalledWith("quick");
+});
+
+test("never_claims_verified_protection_while_only_demo_rules_are_loaded", async () => {
+  jest.mocked(getProtectionStatus).mockResolvedValue({
+    ...status,
+    state: "active",
+    driver_state: "running",
+    service_state: "running",
+    rules_version: "svs-eicar-demo-1",
+    rules_trusted: true,
+    last_error: null,
+  } as never);
+
+  render(<App />);
+
+  expect(await screen.findByText("Protection is active with limited coverage")).toBeInTheDocument();
+  expect(screen.queryByText("Protection is active and verified")).not.toBeInTheDocument();
+  expect(screen.queryByText("Service confirmed")).not.toBeInTheDocument();
+  expect(screen.getByText(/EICAR demonstration package/)).toBeInTheDocument();
+  expect(screen.getByText("svs-eicar-demo-1 · demo only")).toBeInTheDocument();
+});
+
+test("claims_verified_protection_only_with_kernel_filter_and_real_rules", async () => {
+  render(<App />);
+
+  expect(await screen.findByText("Protection is active and verified")).toBeInTheDocument();
+  expect(screen.getByText("Service confirmed")).toBeInTheDocument();
+  expect(screen.queryByText("Protection coverage is limited")).not.toBeInTheDocument();
+});
+
+test("discloses_that_network_telemetry_is_not_configured", async () => {
+  jest.mocked(getProtectionStatus).mockResolvedValue({
+    ...status,
+    network_telemetry: { state: "not_configured" },
+  } as never);
+
+  render(<App />);
+
+  expect(await screen.findByText("Protection is active with limited coverage")).toBeInTheDocument();
+  expect(screen.getByText(/Network telemetry is not active/)).toBeInTheDocument();
+  expect(screen.queryByText("Service confirmed")).not.toBeInTheDocument();
+});
+
+test("driver_diagnostics_reports_unreported_fields_as_unknown", async () => {
+  const user = userEvent.setup();
+  jest.mocked(getProtectionStatus).mockResolvedValue({
+    ...status,
+    state: "degraded",
+    driver_state: "stopped",
+    service_state: "running",
+    network_telemetry: { state: "not_configured" },
+  } as never);
+
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Driver Diagnostics" }));
+
+  const driverPanel = within(screen.getByRole("region", { name: "Driver state" }));
+  expect(driverPanel.getByText("Load state")).toBeInTheDocument();
+  expect(driverPanel.getByText("Not connected")).toBeInTheDocument();
+  expect(driverPanel.getByText("Driver version")).toBeInTheDocument();
+  expect(driverPanel.getByText("Signing state")).toBeInTheDocument();
+  expect(driverPanel.getByText("OS compatibility")).toBeInTheDocument();
+  expect(driverPanel.getAllByText("Not reported").length).toBeGreaterThanOrEqual(4);
+
+  const capabilities = within(screen.getByRole("region", { name: "Protection capabilities" }));
+  expect(capabilities.getByText("Unavailable")).toBeInTheDocument();
+  expect(capabilities.getByText("Not configured")).toBeInTheDocument();
+});
+
+test("completed_scan_that_read_no_files_is_not_reported_as_clean", async () => {
+  const user = userEvent.setup();
+  jest.mocked(startScan).mockResolvedValue({
+    ...scan,
+    state: "completed",
+    files_scanned: 0,
+    files_total: 0,
+    detections: 0,
+    errors: 0,
+  } as never);
+  jest.mocked(getScan).mockResolvedValue({
+    ...scan,
+    state: "completed",
+    files_scanned: 0,
+    files_total: 0,
+    detections: 0,
+    errors: 0,
+  } as never);
+
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Quick Scan" }));
+
+  expect(await screen.findByText(/Coverage is incomplete/i)).toBeInTheDocument();
+  expect(screen.queryByText(/Scan finished for the listed locations/)).not.toBeInTheDocument();
 });

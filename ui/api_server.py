@@ -12,10 +12,12 @@ Run:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import inspect
 import ipaddress
 import json
 import os
+import stat
 import threading
 import uuid
 from collections import deque
@@ -35,6 +37,15 @@ _protection_service: Any | None = None
 _protection_service_lock = threading.Lock()
 _protection_triage: Any | None = None
 _protection_triage_lock = threading.Lock()
+_process_registry: Any | None = None
+_process_registry_lock = threading.Lock()
+_process_scan_lock = threading.Lock()
+_process_analysis_worker: Any | None = None
+_process_analysis_lock = threading.Lock()
+_process_analysis_state: Any | None = None
+_process_analysis_state_lock = threading.Lock()
+_process_analysis_feed_stop = threading.Event()
+_process_analysis_feed_thread: threading.Thread | None = None
 
 # ---------------------------------------------------------------------------
 # Lazy agent singleton — created on first request so the server can start
@@ -53,10 +64,12 @@ def _windows_sensor_service_manages_sensors() -> bool:
     return os.name == "nt"
 
 
-def _protection_pipe_request(operation: str, payload: dict[str, Any]) -> Any:
+def _protection_pipe_request(
+    operation: str, payload: dict[str, Any], *, timeout: float = 5.0
+) -> Any:
     from cyber_os.protection.windows_pipe_client import request_protection_service
 
-    return request_protection_service(operation, payload)
+    return request_protection_service(operation, payload, timeout=timeout)
 
 
 async def _consume_sensor_ai_escalations() -> None:
@@ -118,7 +131,13 @@ def _analyze_sensor_warning_with_emergency_reasoning(agent: Any, warning: dict[s
 
 async def _start_sensor_ai_consumer() -> None:
     global _sensor_ai_task
-    if os.name == "nt" and (_sensor_ai_task is None or _sensor_ai_task.done()):
+    # Sensor protection must remain local and database/rule driven by default.
+    # This worker can send sensor warnings to Gemini, so only run it when an
+    # operator explicitly opts into cloud analysis.
+    cloud_analysis_enabled = os.environ.get("STAI_ENABLE_SENSOR_AI_ANALYSIS", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if cloud_analysis_enabled and os.name == "nt" and (_sensor_ai_task is None or _sensor_ai_task.done()):
         _sensor_ai_task = asyncio.create_task(_consume_sensor_ai_escalations())
 
 
@@ -154,6 +173,7 @@ def _get_protection_service() -> Any:
                         ProtectionConfig,
                         ProtectionService,
                         ProtectionStore,
+                        ThreatIntelStore,
                         RulePackage,
                         RuleSet,
                     )
@@ -178,12 +198,14 @@ def _get_protection_service() -> Any:
                         rules = RuleSet(version="dev-empty", rules=())
 
                     store = ProtectionStore(data_dir / "protection.db")
+                    threat_intel_store = ThreatIntelStore(data_dir / "threat-intel.db")
                     quarantine_root = data_dir / "quarantine"
 
                     config = ProtectionConfig(
                         quarantine_root=quarantine_root,
                         rules=rules,
                         store=store,
+                        threat_intel_store=threat_intel_store,
                         yara_timeout_seconds=5,
                     )
                     _protection_service = ProtectionService(config)
@@ -223,6 +245,8 @@ def _get_protection_service() -> Any:
                             )
                         def list_threats(self, limit=100):
                             return []
+                        def threat_intel_status(self):
+                            return {"state": "unavailable", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
                         def get_triage(self, detection_id):
                             return None
                         def get_triage_source(self, detection_id):
@@ -256,6 +280,152 @@ def _get_protection_service() -> Any:
                     _protection_service = _UnavailableService()
 
     return _protection_service
+
+
+def _get_process_registry() -> Any:
+    """Return the process monitor singleton without coupling API import to Windows."""
+    global _process_registry
+    if _process_registry is None:
+        with _process_registry_lock:
+            if _process_registry is None:
+                from ui.process_monitor import ProcessRegistry
+
+                worker = _get_process_analysis_worker()
+                _process_registry = ProcessRegistry(on_process_added=worker.enqueue)
+    return _process_registry
+
+
+def _make_service_process_monitor() -> Any:
+    from ui.service_process_monitor import ServiceProcessMonitor
+
+    return ServiceProcessMonitor()
+
+
+def _get_process_monitor_provider() -> tuple[Any, str, str | None]:
+    """Prefer the service-owned registry on Windows; label a local fallback honestly."""
+    if os.name == "nt":
+        try:
+            from cyber_os.protection.windows_pipe_client import get_process_monitor_status
+
+            health = get_process_monitor_status(timeout=0.75)
+            if health.get("state") == "running":
+                return _make_service_process_monitor(), "protection_service", None
+            error = str(health.get("error") or f"service process monitor state: {health.get('state', 'unknown')}")
+        except Exception as exc:
+            error = f"service process monitor unavailable: {exc}"
+    else:
+        error = "Windows protection service is not available on this platform"
+    return _get_process_registry(), "local_fallback", error
+
+
+def _process_monitor_call(method: str, *args: Any) -> tuple[Any, str, str | None]:
+    provider, source, source_error = _get_process_monitor_provider()
+    try:
+        return getattr(provider, method)(*args), source, source_error
+    except Exception as exc:
+        if source != "protection_service":
+            raise
+        # If the service pipe drops after source selection, use the live local
+        # collector for visibility and expose the degradation to the caller.
+        fallback = _get_process_registry()
+        try:
+            value = getattr(fallback, method)(*args)
+        except Exception:
+            raise exc
+        return value, "local_fallback", f"service process monitor request failed: {exc}"
+
+
+def _process_snapshot_with_source() -> dict[str, Any]:
+    snapshot, source, source_error = _process_monitor_call("snapshot")
+    state = _get_process_analysis_state()
+    snapshot["processes"] = [state.apply(process) for process in snapshot.get("processes", [])]
+    health = snapshot.get("health")
+    if not isinstance(health, dict):
+        health = {}
+        snapshot["health"] = health
+    if source == "local_fallback" and health.get("state") != "running":
+        source = "unavailable"
+        source_error = source_error or "local process monitor is not running"
+    health["source"] = source
+    if source_error:
+        health["source_error"] = source_error
+    else:
+        health.pop("source_error", None)
+    return snapshot
+
+
+def _get_process_analysis_worker() -> Any:
+    global _process_analysis_worker
+    if _process_analysis_worker is None:
+        with _process_analysis_lock:
+            if _process_analysis_worker is None:
+                from ui.process_analysis import ProcessAnalysisWorker, configured_entropy_threshold
+
+                try:
+                    threshold = configured_entropy_threshold()
+                except ValueError:
+                    threshold = 7.2
+                _process_analysis_worker = ProcessAnalysisWorker(
+                    lambda: _get_process_analysis_state(),
+                    lambda instance_id: _scan_process_executable(instance_id),
+                    threshold=threshold,
+                )
+    return _process_analysis_worker
+
+
+def _get_process_analysis_state() -> Any:
+    global _process_analysis_state
+    if _process_analysis_state is None:
+        with _process_analysis_state_lock:
+            if _process_analysis_state is None:
+                from ui.process_analysis_state import ProcessAnalysisState
+
+                _process_analysis_state = ProcessAnalysisState(_get_process_monitor_provider)
+    return _process_analysis_state
+
+
+def _run_service_process_analysis_feed() -> None:
+    """Forward service process-start records to the existing async analysis queue."""
+    worker = _get_process_analysis_worker()
+    state = _get_process_analysis_state()
+    sequence: int | None = None
+    while not _process_analysis_feed_stop.is_set():
+        try:
+            provider, source, _source_error = _get_process_monitor_provider()
+            if source == "protection_service":
+                sequence = _consume_service_process_analysis_batch(provider, sequence, worker, state)
+            else:
+                sequence = None
+        except Exception:
+            # A later iteration retries service selection; the API collector's
+            # local fallback and its normal process-added callback keep working.
+            sequence = None
+        _process_analysis_feed_stop.wait(1.0)
+
+
+def _consume_service_process_analysis_batch(
+    provider: Any, sequence: int | None, worker: Any, state: Any
+) -> int:
+    """Queue only new service process instances; resync from the bounded snapshot on gaps."""
+    if sequence is None:
+        snapshot = provider.snapshot()
+        for process in snapshot.get("processes", []):
+            state.remember(process)
+            worker.enqueue(process)
+        return int(snapshot["sequence"])
+    batch = provider.read_events(sequence)
+    if batch["resync_required"]:
+        snapshot = provider.snapshot()
+        for process in snapshot.get("processes", []):
+            state.remember(process)
+            worker.enqueue(process)
+        return int(snapshot["sequence"])
+    for event in batch["events"]:
+        if event.get("type") == "process_added" and isinstance(event.get("process"), dict):
+            process = event["process"]
+            state.remember(process)
+            worker.enqueue(process)
+    return int(batch["sequence"])
 
 
 def _get_protection_triage() -> Any:
@@ -303,6 +473,8 @@ COMMUNICATIONS_ALLOWED_ORIGINS = {
     "http://127.0.0.1:8080",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
+    "tauri://localhost",
+    "http://tauri.localhost",
 }
 
 SUPPORTED_CHAT_MODELS = {
@@ -937,8 +1109,14 @@ def agent_status() -> dict[str, Any]:
     tasks = agent.task_manager.get_tasks() if hasattr(agent, "task_manager") else []
     notes = agent.notes_manager.list_notes() if hasattr(agent, "notes_manager") else []
     inv = agent.current_investigation
+    orchestrator = getattr(agent, "orchestrator", None)
+    provider_api = getattr(orchestrator, "_api", None) or getattr(
+        orchestrator, "api", None
+    )
+    provider = getattr(provider_api, "get_status", None)
     return {
         "status": "idle" if not agent.cancel_event.is_set() else "cancelled",
+        "ai_provider": provider() if callable(provider) else None,
         "investigation_id": inv.get("investigation_id") if inv else None,
         "tasks_count": len(tasks),
         "notes_count": len(notes),
@@ -1252,12 +1430,345 @@ def _capture_main_loop() -> None:
     _set_main_loop(asyncio.get_event_loop())
 
 
+@app.on_event("startup")
+def _start_process_monitor() -> None:
+    # Enumeration and event-source setup are isolated from UI/API import, but
+    # the registry begins collecting as the local service starts.
+    global _process_analysis_feed_thread
+    try:
+        _get_process_analysis_worker().start()
+        _get_process_registry().start()
+        _process_analysis_feed_stop.clear()
+        if _process_analysis_feed_thread is None or not _process_analysis_feed_thread.is_alive():
+            _process_analysis_feed_thread = threading.Thread(
+                target=_run_service_process_analysis_feed,
+                name="svs-service-process-analysis-feed",
+                daemon=True,
+            )
+            _process_analysis_feed_thread.start()
+    except Exception:
+        # The monitor reports its own unavailable/degraded health; never prevent
+        # the rest of the dashboard API from starting.
+        pass
+
+
+@app.on_event("shutdown")
+def _stop_process_monitor() -> None:
+    global _process_analysis_feed_thread
+    _process_analysis_feed_stop.set()
+    if _process_analysis_feed_thread and _process_analysis_feed_thread is not threading.current_thread():
+        _process_analysis_feed_thread.join(timeout=3)
+    _process_analysis_feed_thread = None
+    worker = _process_analysis_worker
+    if worker is not None:
+        worker.stop()
+    registry = _process_registry
+    if registry is not None:
+        registry.stop()
+
+
 def _is_loopback_request(request: Request) -> bool:
     host = request.client.host if request.client else ""
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+@app.get("/api/device/activity")
+async def device_activity(request: Request) -> dict[str, Any]:
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Device activity is local-only")
+    origin = request.headers.get("origin")
+    if origin and origin not in COMMUNICATIONS_ALLOWED_ORIGINS:
+        raise HTTPException(status_code=403, detail="Device activity requires the local UI")
+    from ui.device_activity import get_device_activity
+
+    protection_status = None
+    if os.name == "nt":
+        try:
+            protection_status = await asyncio.to_thread(
+                _protection_pipe_request, "get_rule_metadata", {}, timeout=0.75
+            )
+        except Exception:
+            # The device activity snapshot remains useful when the privileged
+            # protection service cannot be reached; it will report that rules
+            # are unverified rather than inventing a database state.
+            protection_status = None
+    return await asyncio.to_thread(get_device_activity, protection_status)
+
+
+def _require_local_process_request(request: Request) -> None:
+    if not _is_loopback_request(request):
+        raise HTTPException(status_code=403, detail="Process monitoring is local-only")
+    origin = request.headers.get("origin")
+    if origin and origin not in COMMUNICATIONS_ALLOWED_ORIGINS:
+        raise HTTPException(status_code=403, detail="Process monitoring requires the local UI")
+
+
+@app.get("/api/antivirus/processes")
+async def antivirus_processes(request: Request) -> dict[str, Any]:
+    _require_local_process_request(request)
+    return await asyncio.to_thread(_process_snapshot_with_source)
+
+
+@app.get("/api/antivirus/processes/{instance_id}")
+async def antivirus_process_detail(instance_id: str, request: Request) -> dict[str, Any]:
+    _require_local_process_request(request)
+    process, source, source_error = await asyncio.to_thread(
+        _process_monitor_call, "get_process_details", instance_id
+    )
+    if process is None:
+        raise HTTPException(status_code=404, detail="Process instance is no longer running")
+    process = _get_process_analysis_state().apply(process)
+    process["telemetry_source"] = source
+    if source_error:
+        process["telemetry_source_error"] = source_error
+    return process
+
+
+@app.get("/api/antivirus/processes/{instance_id}/connections")
+async def antivirus_process_connections(instance_id: str, request: Request) -> dict[str, Any]:
+    _require_local_process_request(request)
+    process, source, source_error = await asyncio.to_thread(
+        _process_monitor_call, "get_process", instance_id
+    )
+    if process is None:
+        raise HTTPException(status_code=404, detail="Process instance is no longer running")
+    connections, connection_source, connection_error = await asyncio.to_thread(
+        _process_monitor_call, "connections"
+    )
+    health = (await asyncio.to_thread(_process_snapshot_with_source)).get("health", {})
+    last_error = str(health.get("last_error") or "")
+    return {
+        "instance_id": instance_id,
+        "available": not last_error.startswith("Connection enumeration failed:"),
+        "source": connection_source,
+        "source_error": connection_error or source_error,
+        "connections": [
+            connection for connection in connections
+            if connection.get("instance_id") == instance_id
+        ],
+    }
+
+
+def _scan_process_executable(instance_id: str) -> dict[str, Any]:
+    if not _process_scan_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A process executable scan is already running")
+    try:
+        process, _source, _source_error = _process_monitor_call("get_process_details", instance_id)
+        if process is None:
+            raise HTTPException(status_code=404, detail="Process instance is no longer running")
+        raw_path = process.get("exe")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise HTTPException(status_code=409, detail="Executable path is inaccessible for this process")
+        target = Path(raw_path)
+        try:
+            entry = target.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail="Process executable is no longer accessible") from exc
+        if not stat.S_ISREG(entry.st_mode) or getattr(entry, "st_file_attributes", 0) & 0x400:
+            raise HTTPException(status_code=409, detail="Process executable is not a regular file")
+        try:
+            target = target.resolve(strict=True)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail="Process executable is no longer accessible") from exc
+
+        service = _get_protection_service()
+        try:
+            verdict, detection_id = service.scan_file_for_filter(target)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Protection scanner is unavailable") from exc
+
+        quarantine = None
+        if verdict.status == "detected" and verdict.action == "block" and detection_id:
+            result = service.quarantine_scanned_detection(detection_id, target, verdict)
+            quarantine = {
+                "state": "quarantined" if result.success else "failed",
+                "error": result.error,
+            }
+        return {
+            "instance_id": instance_id,
+            "pid": process["pid"],
+            "executable": str(target),
+            "status": verdict.status,
+            "action": verdict.action,
+            "rule_id": verdict.rule_id,
+            "rule_version": verdict.rule_version,
+            "sha256": verdict.sha256,
+            "reason": verdict.reason,
+            "reason_code": verdict.reason_code,
+            "detection_id": detection_id,
+            "quarantine": quarantine,
+        }
+    finally:
+        _process_scan_lock.release()
+
+
+@app.post("/api/antivirus/processes/{instance_id}/scan")
+async def scan_antivirus_process_executable(instance_id: str, request: Request) -> dict[str, Any]:
+    _require_local_process_request(request)
+    return await asyncio.to_thread(_scan_process_executable, instance_id)
+
+
+@app.get("/api/antivirus/process-monitor/status")
+async def antivirus_process_monitor_status(request: Request) -> dict[str, Any]:
+    _require_local_process_request(request)
+    snapshot = await asyncio.to_thread(_process_snapshot_with_source)
+    return snapshot["health"]
+
+
+@app.post("/api/antivirus/process-monitor/profile")
+async def set_antivirus_process_monitor_profile(
+    request: Request, payload: dict[str, Any]
+) -> dict[str, Any]:
+    _require_local_process_request(request)
+    profile = payload.get("profile") if isinstance(payload, dict) else None
+    if not isinstance(profile, str):
+        raise HTTPException(status_code=422, detail="A sampling profile is required")
+    try:
+        _result, source, source_error = await asyncio.to_thread(
+            _process_monitor_call, "set_sampling_profile", profile
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    health = (await asyncio.to_thread(_process_snapshot_with_source))["health"]
+    health["source"] = source
+    if source_error:
+        health["source_error"] = source_error
+    return health
+
+
+@app.get("/api/antivirus/process-monitor/events")
+async def antivirus_process_events(
+    request: Request, after_sequence: int = 0
+) -> dict[str, Any]:
+    """Return bounded deltas; require a snapshot when a client missed history."""
+    _require_local_process_request(request)
+    provider, source, source_error = await asyncio.to_thread(_get_process_monitor_provider)
+    if hasattr(provider, "read_events"):
+        try:
+            batch = await asyncio.to_thread(provider.read_events, after_sequence)
+            events = batch["events"]
+            current = batch["sequence"]
+            gap = batch["resync_required"]
+        except Exception as exc:
+            provider = _get_process_registry()
+            source = "local_fallback"
+            source_error = f"service process event request failed: {exc}"
+            snapshot = await asyncio.to_thread(provider.snapshot)
+            events = await asyncio.to_thread(provider.drain_events, after_sequence)
+            current = snapshot["sequence"]
+            gap = bool(events and events[0]["sequence"] > max(0, after_sequence) + 1)
+    else:
+        snapshot = await asyncio.to_thread(provider.snapshot)
+        events = await asyncio.to_thread(provider.drain_events, after_sequence)
+        current = snapshot["sequence"]
+        gap = bool(events and events[0]["sequence"] > max(0, after_sequence) + 1)
+        if not events and current > max(0, after_sequence):
+            retained = await asyncio.to_thread(provider.drain_events, 0)
+            gap = bool(retained and retained[0]["sequence"] > max(0, after_sequence) + 1)
+    snapshot = await asyncio.to_thread(_process_snapshot_with_source) if gap else None
+    if snapshot is not None:
+        current = snapshot["sequence"]
+    return {
+        "resync_required": gap,
+        "snapshot": snapshot,
+        "events": [] if gap else [
+            {**event, "process": _get_process_analysis_state().apply(event["process"])}
+            if isinstance(event.get("process"), dict) else event
+            for event in events
+        ],
+        "sequence": current,
+        "source": source,
+        "source_error": source_error,
+    }
+
+
+@app.websocket("/api/antivirus/process-monitor/stream")
+async def antivirus_process_stream(ws: WebSocket) -> None:
+    host = ws.client.host if ws.client else ""
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = False
+    origin = ws.headers.get("origin")
+    if not is_loopback or (origin and origin not in COMMUNICATIONS_ALLOWED_ORIGINS):
+        await ws.close(code=1008)
+        return
+    provider, source, source_error = _get_process_monitor_provider()
+    await ws.accept()
+    try:
+        snapshot = await asyncio.to_thread(provider.snapshot)
+    except Exception as exc:
+        provider = _get_process_registry()
+        source = "local_fallback"
+        source_error = f"service process snapshot failed: {exc}"
+        snapshot = await asyncio.to_thread(provider.snapshot)
+    snapshot["health"]["source"] = source
+    if source_error:
+        snapshot["health"]["source_error"] = source_error
+    sequence = snapshot["sequence"]
+    await ws.send_json({"type": "snapshot", **snapshot})
+    last_heartbeat = asyncio.get_running_loop().time()
+    try:
+        while True:
+            try:
+                if hasattr(provider, "read_events"):
+                    batch = await asyncio.to_thread(provider.read_events, sequence)
+                    events = batch["events"]
+                    gap = batch["resync_required"]
+                    current_sequence = batch["sequence"]
+                else:
+                    events = await asyncio.to_thread(provider.drain_events, sequence)
+                    gap = bool(events and events[0]["sequence"] > sequence + 1)
+                    current_sequence = events[-1]["sequence"] if events else sequence
+                if gap:
+                    current = await asyncio.to_thread(provider.snapshot)
+                    current["health"]["source"] = source
+                    if source_error:
+                        current["health"]["source_error"] = source_error
+                    sequence = current["sequence"]
+                    await ws.send_json({"type": "snapshot", **current, "resync": True})
+                else:
+                    for event in events:
+                        if isinstance(event.get("process"), dict):
+                            event = {**event, "process": _get_process_analysis_state().apply(event["process"])}
+                        await ws.send_json(event)
+                        sequence = event["sequence"]
+                    if not events:
+                        sequence = max(sequence, current_sequence)
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                if source != "protection_service":
+                    raise
+                provider = _get_process_registry()
+                source = "local_fallback"
+                source_error = f"service process event stream failed: {exc}"
+                current = await asyncio.to_thread(provider.snapshot)
+                current["health"]["source"] = source
+                current["health"]["source_error"] = source_error
+                sequence = current["sequence"]
+                await ws.send_json({"type": "snapshot", **current, "resync": True})
+            now = asyncio.get_running_loop().time()
+            if now - last_heartbeat >= 5.0:
+                current = await asyncio.to_thread(provider.snapshot)
+                current["health"]["source"] = source
+                if source_error:
+                    current["health"]["source_error"] = source_error
+                await ws.send_json({"type": "health", "health": current["health"], "sequence": sequence})
+                await ws.send_json({"type": "heartbeat", "timestamp": current.get("observed_at"), "sequence": sequence})
+                last_heartbeat = now
+            await asyncio.sleep(0.25)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        # A slow/broken socket cannot hold up process collection or other clients.
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 def _require_loopback(request: Request) -> None:
@@ -1498,6 +2009,7 @@ class ThreatResponse(BaseModel):
     file_path: str | None = None
     created_at: str
     triage_enqueued: bool
+    threat_intel_evidence: dict[str, Any] | None = None
 
 
 class QuarantineItemResponse(BaseModel):
@@ -1547,6 +2059,7 @@ class ProtectionStatusResponse(BaseModel):
     windows_security: dict[str, Any]
     sensor_coverage: dict[str, Any]
     last_error: str | None = None
+    threat_intel: dict[str, Any] = Field(default_factory=dict)
 
 
 def _triage_record_response(result: Any) -> dict[str, Any]:
@@ -1590,6 +2103,11 @@ def protection_status() -> dict[str, Any]:
         "windows_security": status.windows_security,
         "sensor_coverage": status.sensor_coverage,
         "last_error": last_error,
+        "threat_intel": (
+            service.threat_intel_status()
+            if hasattr(service, "threat_intel_status")
+            else {"state": "unavailable", "integrity_ok": False, "block_eligible_records": 0, "activation": "inactive"}
+        ),
     }
 
 
@@ -1668,6 +2186,7 @@ def list_protection_threats(limit: int = 100) -> list[dict[str, Any]]:
             "file_path": t.file_path,
             "created_at": t.created_at,
             "triage_enqueued": t.triage_enqueued,
+            "threat_intel_evidence": asdict(t.intel_evidence) if getattr(t, "intel_evidence", None) is not None else None,
         }
         for t in threats
     ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .models import DetectionRule, RuleAction, RuleConfidence, RuleKind, RuleSet
 
 
-_MAX_MANIFEST_BYTES = 10 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 _MAX_RULES = 100_000
-_MAX_RULE_VALUE_CHARS = 256 * 1024
+_MAX_RULE_VALUE_CHARS = 24 * 1024 * 1024
 _ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\Z")
 _SHA256_PATTERN = re.compile(r"[a-f0-9]{64}\Z")
@@ -24,6 +25,26 @@ _RULE_FIELDS = {"id", "kind", "value", "action", "confidence"}
 
 class InvalidRulePackage(ValueError):
     """The package is malformed, unsupported, or failed signature checking."""
+
+
+def rule_set_fingerprint(rule_set: Any) -> str:
+    """Return a stable identity for the validated rules loaded by a service."""
+    document = {
+        "version": rule_set.version,
+        "rules": [
+            {
+                "id": rule.id,
+                "kind": rule.kind,
+                "value": rule.value,
+                "action": rule.action,
+                "confidence": rule.confidence,
+                "count": rule.count,
+            }
+            for rule in rule_set.rules
+        ],
+    }
+    canonical = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _reject_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -60,7 +81,10 @@ def _parse_manifest(raw_manifest: bytes) -> RuleSet:
     rules: list[DetectionRule] = []
     seen_ids: set[str] = set()
     for raw_rule in raw_rules:
-        if not isinstance(raw_rule, dict) or set(raw_rule) != _RULE_FIELDS:
+        if not isinstance(raw_rule, dict) or set(raw_rule) not in (
+            _RULE_FIELDS,
+            _RULE_FIELDS | {"count"},
+        ):
             raise InvalidRulePackage("rule has an invalid schema")
 
         rule_id = raw_rule["id"]
@@ -68,6 +92,7 @@ def _parse_manifest(raw_manifest: bytes) -> RuleSet:
         value = raw_rule["value"]
         action = raw_rule["action"]
         confidence = raw_rule["confidence"]
+        count = raw_rule.get("count", 1)
         if not isinstance(rule_id, str) or not _ID_PATTERN.fullmatch(rule_id):
             raise InvalidRulePackage("rule id is invalid")
         if rule_id in seen_ids:
@@ -79,10 +104,14 @@ def _parse_manifest(raw_manifest: bytes) -> RuleSet:
             raise InvalidRulePackage(f"unsupported rule action: {action!r}")
         if confidence not in ("high", "medium", "low"):
             raise InvalidRulePackage(f"unsupported rule confidence: {confidence!r}")
+        if type(count) is not int or not 1 <= count <= _MAX_RULES:
+            raise InvalidRulePackage("rule count must be a bounded positive integer")
         if not isinstance(value, str) or not value or len(value) > _MAX_RULE_VALUE_CHARS:
             raise InvalidRulePackage("rule value is empty or exceeds the size limit")
         if kind == "sha256" and not _SHA256_PATTERN.fullmatch(value):
             raise InvalidRulePackage("sha256 rule must contain 64 lowercase hex characters")
+        if kind == "sha256" and count != 1:
+            raise InvalidRulePackage("sha256 rules cannot represent a YARA source bundle")
         if action == "block" and confidence != "high":
             raise InvalidRulePackage("block rules require high confidence")
 
@@ -93,6 +122,7 @@ def _parse_manifest(raw_manifest: bytes) -> RuleSet:
                 value=value,
                 action=action,  # type: ignore[arg-type]
                 confidence=confidence,  # type: ignore[arg-type]
+                count=count,
             )
         )
 

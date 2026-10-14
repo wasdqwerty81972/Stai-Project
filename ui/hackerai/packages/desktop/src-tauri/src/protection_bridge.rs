@@ -12,8 +12,11 @@ use url::Url;
 
 const PIPE_NAME: &str = r"\\.\pipe\STAI.Protection.v1";
 const PROTOCOL_VERSION: u16 = 1;
-const MAX_FRAME_BYTES: usize = 64 * 1024;
-const IO_TIMEOUT: Duration = Duration::from_secs(3);
+// Match the service protocol limit: status includes the full sensor catalog.
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+static PIPE_REQUEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -272,7 +275,7 @@ struct AgentMessagePayload<'a> {
 }
 
 fn unavailable_error() -> String {
-    "protection service unavailable".to_string()
+    "The Windows protection service pipe is unreachable. The service may be stopped or not installed; scans and real-time protection status cannot be confirmed.".to_string()
 }
 
 fn ensure_local_dashboard(window: &WebviewWindow) -> Result<(), String> {
@@ -353,10 +356,19 @@ async fn exchange_frame(frame: &[u8]) -> Result<Vec<u8>, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::windows::named_pipe::ClientOptions;
 
+    // The service accepts one pipe client at a time. Queue dashboard requests,
+    // then retry if another local client wins the connection between instances.
+    let _guard = PIPE_REQUEST_LOCK.lock().await;
     let result = tokio::time::timeout(IO_TIMEOUT, async {
-        let mut pipe = ClientOptions::new()
-            .open(PIPE_NAME)
-            .map_err(|_| unavailable_error())?;
+        let mut pipe = loop {
+            match ClientOptions::new().open(PIPE_NAME) {
+                Ok(pipe) => break pipe,
+                Err(error) if matches!(error.raw_os_error(), Some(231) | Some(2)) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(_) => return Err(unavailable_error()),
+            }
+        };
         pipe.write_all(frame)
             .await
             .map_err(|_| unavailable_error())?;
@@ -379,6 +391,28 @@ async fn exchange_frame(frame: &[u8]) -> Result<Vec<u8>, String> {
     .await
     .map_err(|_| "protection service request timed out".to_string())?;
     result
+}
+
+#[tauri::command]
+pub(crate) async fn get_device_activity(window: WebviewWindow) -> Result<Value, String> {
+    ensure_local_dashboard(&window)?;
+    let origin = std::env::var("NEXT_PUBLIC_BACKEND_ORIGIN")
+        .unwrap_or_else(|_| "http://127.0.0.1:6764".to_string());
+    let mut url = Url::parse(&origin).map_err(|_| "Invalid local API origin".to_string())?;
+    if url.scheme() != "http" || !matches!(url.host_str(), Some("127.0.0.1") | Some("localhost")) {
+        return Err("Device activity requires the loopback API".to_string());
+    }
+    url.set_path("/api/device/activity");
+    url.set_query(None);
+    url.set_fragment(None);
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| "Unable to create local activity client".to_string())?
+        .get(url).send().await
+        .map_err(|_| "Local activity API is unreachable".to_string())?
+        .error_for_status().map_err(|_| "Local activity API rejected the request".to_string())?;
+    response.json().await.map_err(|_| "Invalid device activity response".to_string())
 }
 
 #[cfg(not(windows))]
@@ -600,7 +634,10 @@ mod tests {
 
     #[test]
     fn bridge_maps_service_unavailable_to_error() {
-        assert_eq!(unavailable_error(), "protection service unavailable");
+        assert_eq!(
+            unavailable_error(),
+            "The Windows protection service pipe is unreachable. The service may be stopped or not installed; scans and real-time protection status cannot be confirmed."
+        );
     }
 
     #[test]
@@ -614,6 +651,8 @@ mod tests {
             counts: None,
             windows_security: None,
             sensor_coverage: None,
+            sensors: None,
+            sensor_error: None,
             last_error: Some("driver not loaded".to_string()),
         };
         let value = serde_json::to_value(status).unwrap();

@@ -479,3 +479,24 @@ def test_sensor_warning_restores_reasoning_level_when_analysis_raises():
         )
 
     assert api.reasoning_level_override == "high"
+
+
+def test_agent_status_exposes_provider_readiness_without_credentials(monkeypatch):
+    provider_status = {
+        "openai_codex_model": "gpt-6-luna",
+        "openai_codex_available": False,
+        "openai_codex_unavailable_reason": "OPENAI_API_KEY or CODEX_API_KEY is not configured.",
+    }
+    agent = SimpleNamespace(
+        cancel_event=threading.Event(),
+        current_investigation=None,
+        task_manager=SimpleNamespace(get_tasks=lambda: []),
+        notes_manager=SimpleNamespace(list_notes=lambda: []),
+        agent_runtime=SimpleNamespace(subagent_manager=SimpleNamespace(active_subagents=[])),
+        orchestrator=SimpleNamespace(_api=SimpleNamespace(get_status=lambda: provider_status)),
+    )
+    monkeypatch.setattr(server, "_get_agent", lambda: agent)
+
+    status = server.agent_status()
+
+    assert status["ai_provider"] == provider_status

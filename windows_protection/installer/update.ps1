@@ -14,12 +14,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $serviceName = "STAIProtection"
-$driverName = "StaiProtection"
+$driverName = "StaiProtectionFilter"
+$legacyDriverName = "StaiProtection"
 $dataRoot = Join-Path $env:ProgramData "STAI\Protection"
 $updateRoot = Join-Path $dataRoot "updates"
 $journalPath = Join-Path $updateRoot "active-update.json"
 $pipeName = "STAI.Protection.v1"
-$maxFrameBytes = 65536
+$maxFrameBytes = 1048576
 $recoveryTaskName = "STAI Protection Update Recovery"
 
 function Get-CertificateEkuOids([System.Security.Cryptography.X509Certificates.X509Certificate2] $Certificate) {
@@ -62,8 +63,11 @@ function Invoke-CheckedProcess([string] $FilePath, [string[]] $ArgumentList, [st
 function Invoke-InfInstall([string] $DriverDirectory) {
     $infPath = Join-Path $DriverDirectory "StaiProtection.inf"
     if (-not (Test-Path -LiteralPath $infPath -PathType Leaf)) { throw "The staged minifilter INF is missing." }
-    $quotedInf = '"' + $infPath + '"'
-    Invoke-CheckedProcess (Join-Path $env:windir "System32\rundll32.exe") @("setupapi.dll,InstallHinfSection", "DefaultInstall", "132", $quotedInf) $DriverDirectory | Out-Null
+    # pnputil installs the package as a primitive driver (DiInstallDriver) and returns
+    # a real exit code. The legacy "rundll32 setupapi.dll,InstallHinfSection
+    # DefaultInstall 132" path is the mechanism Microsoft recommends replacing, and
+    # rundll32 always exits 0, so INF install failures were silently ignored here.
+    Invoke-CheckedProcess (Join-Path $env:windir "System32\pnputil.exe") @("/add-driver", ('"' + $infPath + '"'), "/install") $DriverDirectory | Out-Null
 }
 
 function Ensure-FilterLoaded {
@@ -80,14 +84,17 @@ function Ensure-FilterLoaded {
     try {
         if (-not $process.WaitForExit(15000)) { $process.Kill(); throw "Minifilter state query timed out." }
         $filterList = $process.StandardOutput.ReadToEnd()
-        if ($process.ExitCode -eq 0 -and $filterList -match "(?im)^\s*StaiProtection\s") { return }
+        if ($process.ExitCode -eq 0 -and $filterList -match "(?im)^\s*$([regex]::Escape($driverName))\s") { return }
     } finally { $process.Dispose() }
     Invoke-CheckedProcess $fltmc @("load", $driverName) $env:windir | Out-Null
 }
 
 function Ensure-FilterUnloaded {
     $fltmc = Join-Path $env:windir "System32\fltmc.exe"
-    Invoke-CheckedProcess $fltmc @("unload", $driverName) $env:windir -IgnoreExitCode | Out-Null
+    $filterNames = @($driverName, $legacyDriverName) | Select-Object -Unique
+    foreach ($filterName in $filterNames) {
+        Invoke-CheckedProcess $fltmc @("unload", $filterName) $env:windir -IgnoreExitCode | Out-Null
+    }
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $fltmc
     $startInfo.Arguments = "filters"
@@ -100,7 +107,11 @@ function Ensure-FilterUnloaded {
     try {
         if (-not $process.WaitForExit(15000)) { $process.Kill(); throw "Minifilter unload verification timed out." }
         $filterList = $process.StandardOutput.ReadToEnd()
-        if ($filterList -match "(?im)^\s*StaiProtection\s") { throw "The STAI minifilter is still loaded; update stopped before replacing driver files." }
+        foreach ($filterName in $filterNames) {
+            if ($filterList -match "(?im)^\s*$([regex]::Escape($filterName))\s") {
+                throw "The STAI minifilter '$filterName' is still loaded; update stopped before replacing driver files."
+            }
+        }
     } finally { $process.Dispose() }
 }
 

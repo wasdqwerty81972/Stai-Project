@@ -150,9 +150,19 @@ def build_file_activity_event(path: Path, action: int) -> SensorEvent | None:
 class WindowsFileActivityMonitor:
     """Watch selected enrolled-user folders and forward stable file changes."""
 
-    def __init__(self, roots: list[Path], callback: Callable[[SensorEvent], None], *, settle_seconds: float = 0.8):
+    def __init__(
+        self,
+        roots: list[Path],
+        callback: Callable[[SensorEvent], None],
+        *,
+        settle_seconds: float = 0.8,
+        deduplicator: "SensorEventDeduplicator | None" = None,
+    ):
         self.roots = [Path(root) for root in roots]
         self.callback = callback
+        # Pass the same instance given to WindowsSensorService so a file write
+        # seen by both this watcher and Security event 4663 is reported once.
+        self.deduplicator = deduplicator
         self.settle_seconds = max(0.1, min(5.0, settle_seconds))
         self._stop = threading.Event()
         self._lock = threading.RLock()
@@ -160,6 +170,7 @@ class WindowsFileActivityMonitor:
         self._timers: dict[str, threading.Timer] = {}
         self._errors: dict[str, str] = {}
         self._running = False
+        self.suppressed_duplicates = 0
 
     def start(self) -> bool:
         if platform.system() != "Windows" or not self.roots:

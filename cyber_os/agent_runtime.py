@@ -1413,7 +1413,8 @@ Use only a tool name from the list above — any other name will be rejected.
 
 {considerations}
 
-Respond with ONLY a JSON object:
+When a matching registered function tool is available, call it directly for the next step.
+For providers that do not support function tools, represent the tool action with this JSON object:
 {{
   "action_type": "tool" | "subagent" | "final_answer",
   "tool_name": "tool_name_if_tool",
@@ -1423,7 +1424,7 @@ Respond with ONLY a JSON object:
   "is_recovery": false
 }}
 
-If the investigation is complete and you can provide a final answer:
+If the investigation is complete and you can provide a final answer, return this JSON object:
 {{
   "action_type": "final_answer",
   "response": "your final answer here",
@@ -1431,8 +1432,31 @@ If the investigation is complete and you can provide a final answer:
 }}
 """
 
+        function_tools = []
+        registry = getattr(self.agent.registry, "tools", {})
+        for name in tool_names:
+            tool = registry.get(name)
+            try:
+                manifest = tool.to_manifest() if tool is not None else {"name": name}
+            except Exception:
+                manifest = {"name": name}
+            function_tools.append({
+                "type": "function",
+                "name": name,
+                "description": str(manifest.get("description") or name.replace("_", " ")),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+                "strict": False,
+            })
+
         try:
-            response = self._call_llm(system=system_prompt, user=prompt)
+            call_options = {"system": system_prompt, "user": prompt}
+            if _accepts_keyword(self._call_llm, "tools"):
+                call_options["tools"] = function_tools
+            response = self._call_llm(**call_options)
             if is_ai_error_marker(response):
                 print("[AgentRuntime] Provider returned an error marker; using heuristics.")
                 response = None
@@ -1915,7 +1939,7 @@ Suggest an alternative tool or approach. Return JSON:
         # Default: consider sufficient if output is substantial
         return len(output) > 100
 
-    def _call_llm(self, system: str, user: str, on_delta=None) -> Optional[str]:
+    def _call_llm(self, system: str, user: str, on_delta=None, tools=None) -> Optional[str]:
         """Invoke the configured AI backend, or return None if there isn't one.
 
         None rather than an apology string: the string form used to be returned
@@ -1930,6 +1954,8 @@ Suggest an alternative tool or approach. Return JSON:
             if hasattr(orchestrator, "_call_role"):
                 call = orchestrator._call_role
                 kwargs = {"on_delta": on_delta} if _accepts_keyword(call, "on_delta") else {}
+                if tools is not None and _accepts_keyword(call, "tools"):
+                    kwargs["tools"] = tools
                 return call("investigator", system, user, **kwargs)
             llm = getattr(orchestrator, "llm", None)
             if llm is None:
@@ -1937,12 +1963,16 @@ Suggest an alternative tool or approach. Return JSON:
             if hasattr(llm, "chat_with_role"):
                 call = llm.chat_with_role
                 kwargs = {"on_delta": on_delta} if _accepts_keyword(call, "on_delta") else {}
+                if tools is not None and _accepts_keyword(call, "tools"):
+                    kwargs["tools"] = tools
                 return call("investigator", system, user, **kwargs)
             if hasattr(llm, "chat"):
                 call = llm.chat
                 kwargs = {"system": system, "user": user, "role": "investigator"}
                 if _accepts_keyword(call, "on_delta"):
                     kwargs["on_delta"] = on_delta
+                if tools is not None and _accepts_keyword(call, "tools"):
+                    kwargs["tools"] = tools
                 return call(**kwargs)
         except Exception as exc:
             print(f"[AgentRuntime] LLM call failed: {exc}")

@@ -273,6 +273,25 @@ class PresetToolTests(unittest.TestCase):
             "heuristic proposed a tool the executor would reject",
         )
 
+    def test_model_decision_receives_registered_function_tools(self) -> None:
+        captured = {}
+
+        def decide(*, system, user, tools=None):
+            captured["tools"] = tools
+            return '{"action_type":"tool","tool_name":"network_inspect","arguments":{}}'
+
+        self.runtime._call_llm = decide
+        decision = self.runtime._llm_decide_action(
+            state=self._state("inspect the network"),
+            system_prompt="system prompt",
+            conversation_context="",
+            step_index=1,
+        )
+
+        self.assertEqual(decision.get("tool_name"), "network_inspect")
+        self.assertEqual(captured["tools"][0]["name"], "network_inspect")
+        self.assertEqual(captured["tools"][0]["type"], "function")
+
     def test_defender_request_uses_the_shell_exec_preset(self) -> None:
         if "windows_defender_scan" not in self.runtime._preset_names():
             self.skipTest("preset catalogue unavailable")

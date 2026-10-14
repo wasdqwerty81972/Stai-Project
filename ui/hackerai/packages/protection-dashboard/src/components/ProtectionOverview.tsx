@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -17,6 +18,7 @@ import type {
   ProtectionStatus,
   ScanJob,
 } from "../protection-api";
+import { isDemoRuleVersion, summarizeProtection } from "../protection-status";
 import { EmptyState } from "./EmptyState";
 import { DetectionRow } from "./DetectionRow";
 import { MetricCard } from "./MetricCard";
@@ -25,6 +27,14 @@ import type { DashboardPage } from "./Navigation";
 import { StatusPill } from "./StatusPill";
 
 const count = (value: number | null | undefined) => value ?? "—";
+
+function RulePackageValue({ status }: { status: ProtectionStatus | null }) {
+  const version = status?.rules_version;
+  if (!version || version === "unknown") return <>Not reported</>;
+  if (status?.rules_trusted === false) return <>{version} · not verified</>;
+  if (isDemoRuleVersion(version)) return <>{version} · demo only</>;
+  return <>{version}</>;
+}
 
 function formatTime(value: string | null | undefined) {
   if (!value) return "No completed scan recorded";
@@ -94,23 +104,28 @@ export function ProtectionOverview({
 }) {
   const state = status?.state ?? "unavailable";
   const unavailable = Boolean(statusError) || !status || state === "unavailable";
-  const statusTitle = unavailable
-    ? "Protection service unavailable"
-    : state === "degraded"
-      ? "Protection needs attention"
-      : "Protection is active";
-  const detail = statusError || status?.last_error ||
-    (state === "active"
-      ? "The local service reports its protection components are healthy."
-      : state === "degraded"
-        ? "Some protection components need attention. Review system status for details."
-        : "The local protection service did not confirm an active state.");
-  const evidenceAvailable = status?.state !== "unavailable" && !statusError;
+  const verdict = summarizeProtection(status, statusError);
+  const filterDriverDisconnected =
+    !statusError &&
+    state === "degraded" &&
+    status?.service_state === "running" &&
+    status?.driver_state === "stopped";
+  const detail = statusError || (filterDriverDisconnected
+    ? "The protection service is running, but the Windows file filter driver is not connected. Real-time protection is unavailable."
+    : status?.last_error) || verdict.detail;
+  // Counts and queue depth are only evidence when the service reported a status.
+  const evidenceAvailable = Boolean(status) && state !== "unavailable" && !statusError;
   const counts = evidenceAvailable ? status?.counts : null;
   const escalatedCount = evidenceAvailable && threats
     ? threats.filter((threat) => threat.triage_enqueued).length
     : undefined;
   const canScan = !unavailable;
+  // A success banner requires a connected kernel filter AND real rule coverage.
+  const bannerTone = unavailable
+    ? "unavailable"
+    : verdict.verifiedProtection
+      ? "active"
+      : "degraded";
 
   return (
     <>
@@ -121,13 +136,13 @@ export function ProtectionOverview({
         action={status ? <StatusPill state={state} /> : undefined}
       />
 
-      <section className={`protection-banner banner-${unavailable ? "unavailable" : state}`} aria-labelledby="protection-state-title">
+      <section className={`protection-banner banner-${bannerTone}`} aria-labelledby="protection-state-title">
         <div className="banner-emblem" aria-hidden="true">
-          {unavailable ? <ShieldAlert size={26} /> : state === "active" ? <ShieldCheck size={26} /> : <Activity size={26} />}
+          {unavailable ? <ShieldAlert size={26} /> : verdict.verifiedProtection ? <ShieldCheck size={26} /> : <Activity size={26} />}
         </div>
         <div className="banner-copy">
           <div className="banner-kicker">LOCAL PROTECTION</div>
-          <h2 id="protection-state-title">{statusTitle}</h2>
+          <h2 id="protection-state-title">{verdict.title}</h2>
           <p>{detail}</p>
         </div>
         {unavailable && (
@@ -135,10 +150,25 @@ export function ProtectionOverview({
             <RefreshCw size={15} aria-hidden="true" /> Retry connection
           </button>
         )}
-        {!unavailable && state === "active" && (
+        {verdict.verifiedProtection && (
           <div className="banner-confirmed"><Check size={15} aria-hidden="true" /> Service confirmed</div>
         )}
       </section>
+
+      {verdict.limits.length > 0 && (
+        <div className="inline-alert coverage-gap coverage-limits" role="status">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <div>
+            <strong>Protection coverage is limited</strong>
+            <ul>
+              {verdict.limits.map((limit) => <li key={limit}>{limit}</li>)}
+            </ul>
+            <button className="text-button" onClick={() => onNavigate("Driver Diagnostics")} type="button">
+              Open driver diagnostics <ArrowRight size={14} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {scanError && <div role="alert" className="inline-alert error-alert">{scanError}</div>}
 
@@ -238,7 +268,8 @@ export function ProtectionOverview({
           <div className="health-list">
             <div><span>Filter driver</span><strong>{status?.driver_state ?? "Not reported"}</strong></div>
             <div><span>Protection service</span><strong>{status?.service_state ?? "Not reported"}</strong></div>
-            <div><span>Rule package</span><strong>{status?.rules_version ?? "Not reported"}</strong></div>
+            <div><span>Rule package</span><strong><RulePackageValue status={status} /></strong></div>
+            <div><span>Network telemetry</span><strong>{status?.network_telemetry?.state?.replaceAll("_", " ") ?? "Not reported"}</strong></div>
             <div><span>Registered antivirus</span><strong>{status?.windows_security?.registered_av_provider ?? "Not reported"}</strong></div>
           </div>
           <button className="quiet-link" onClick={() => onNavigate("System Status")} type="button">

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from cyber_os.protection import windows_health
+from cyber_os.protection.models import ThreatIntelEvidence
 from cyber_os.protection.store import DetectionRecord, ProtectionStore
 
 
@@ -141,7 +142,64 @@ def test_scan_job_root_snapshot_column_is_added_to_existing_database(tmp_path: P
     assert job is not None
     assert job.root_snapshot == []
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 6
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+        detection_columns = {row[1] for row in conn.execute("PRAGMA table_info(detections)")}
+        assert {"sha1", "md5", "threat_family", "intel_source", "intel_confidence", "feed_version", "threat_intel_evidence_json"} <= detection_columns
+
+
+def test_intel_evidence_roundtrips_and_v7_database_migrates(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "v7.db"
+    store = ProtectionStore(db)
+    evidence = ThreatIntelEvidence(
+        indicator_type="sha256",
+        indicator_value="a" * 64,
+        source="abusech_malwarebazaar",
+        verification="confirmed",
+        confidence=95,
+        severity="high",
+        feed_version="feed-42",
+        first_seen="2026-10-14T10:00:00",
+        last_seen="2026-10-14T11:00:00",
+        freshness="fresh",
+        corroborations=1,
+        block_eligible=True,
+        decision_reason="verified exact hash",
+    )
+    store.record_detection(_detection(intel_evidence=evidence))
+    store._get_conn().close()
+
+    # Represent a deployed v7 database that predates the evidence JSON column.
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE detections DROP COLUMN threat_intel_evidence_json")
+        conn.execute("UPDATE schema_version SET version = 7")
+
+    migrated = ProtectionStore(db)
+    record = migrated.get_detection("det-block")
+    assert record is not None
+    assert record.intel_evidence is None
+    assert migrated.get_status().counts["detected"] == 1
+    assert migrated._get_conn().execute("SELECT version FROM schema_version").fetchone()[0] == 8
+
+    migrated.record_detection(_detection(detection_id="det-with-intel", intel_evidence=evidence))
+    migrated._get_conn().close()
+    reopened = ProtectionStore(db)
+    assert reopened.get_detection("det-with-intel").intel_evidence == evidence
+
+
+def test_malformed_persisted_intel_evidence_is_ignored(tmp_path: Path) -> None:
+    store = ProtectionStore(tmp_path / "malformed.db")
+    store.record_detection(_detection())
+    with store._transaction() as conn:
+        conn.execute(
+            "UPDATE detections SET threat_intel_evidence_json = ? WHERE detection_id = ?",
+            ("{broken json", "det-block"),
+        )
+
+    record = store.get_detection("det-block")
+    assert record is not None
+    assert record.intel_evidence is None
 
 
 def test_v5_scan_jobs_migrate_to_support_partial_state(tmp_path: Path) -> None:

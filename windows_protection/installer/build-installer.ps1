@@ -107,7 +107,7 @@ if ($Configuration -eq "Release") {
         $allocationDocumentHashMatches = [string]::Equals($allocationDocumentHash, [string]$altitudeRecord.official_record_sha256, [StringComparison]::OrdinalIgnoreCase)
     }
     if ($altitudeRecord.issuer -ne "Microsoft Hardware Dev Center" -or
-        $altitudeRecord.filter_name -ne "StaiProtection" -or $recordAltitude -ne $evidenceAltitude -or
+        $altitudeRecord.filter_name -ne "StaiProtectionFilter" -or $recordAltitude -ne $evidenceAltitude -or
         -not $altitudeRecord.reference_id -or -not $sourceIsMicrosoft -or
         -not $altitudeRecord.reviewed_by -or -not $altitudeRecord.reviewed_utc -or
         -not $allocationDocumentPath -or -not $allocationDocumentHashMatches) {

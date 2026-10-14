@@ -9,6 +9,7 @@ import {
   ScanLine,
   Archive,
   Settings as SettingsIcon,
+  Cpu,
   ArrowRight,
   Lock,
   type LucideIcon,
@@ -30,6 +31,7 @@ import { ProtectionThreatActivity } from "./protection/ProtectionThreatActivity"
 import { ProtectionQuarantine } from "./protection/ProtectionQuarantine";
 import { ProtectionAgent } from "./protection/ProtectionAgent";
 import { ProtectionSystemStatus } from "./protection/ProtectionSystemStatus";
+import { ProcessMonitorView } from "./protection/ProcessMonitorView";
 import { formatTimestamp } from "./protection/ProtectionPrimitives";
 
 type View =
@@ -38,6 +40,7 @@ type View =
   | "system"
   | "threats"
   | "scans"
+  | "processes"
   | "quarantine"
   | "settings";
 
@@ -47,6 +50,7 @@ const NAV: { id: View; label: string; Icon: LucideIcon }[] = [
   { id: "system", label: "System Status", Icon: Shield },
   { id: "threats", label: "Threat Activity", Icon: ShieldAlert },
   { id: "scans", label: "Scans", Icon: ScanLine },
+  { id: "processes", label: "Processes", Icon: Cpu },
   { id: "quarantine", label: "Quarantine", Icon: Archive },
   { id: "settings", label: "Settings", Icon: SettingsIcon },
 ];
@@ -302,6 +306,8 @@ export function SvsProtectionDashboard() {
               onCancel={handleCancelScan}
             />
           ) : null}
+
+          {view === "processes" ? <ProcessMonitorView /> : null}
 
           {view === "quarantine" ? <ProtectionQuarantine /> : null}
 

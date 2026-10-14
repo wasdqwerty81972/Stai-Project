@@ -6,6 +6,7 @@ import hashlib
 import os
 import stat
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -111,29 +112,136 @@ def _read_digest(
     return digest
 
 
+def _namespace(index: int) -> str:
+    return f"stai_{index}"
+
+
+class _RuleIndex:
+    """Derived lookups for one rule set, built once instead of once per file.
+
+    ``scan_path`` runs per file, so anything proportional to the rule count has
+    to be hoisted out of it: the package validator admits up to 100k rules, and
+    both the old linear SHA-256 sweep (~23 ms/file at that cap) and recompiling
+    the YARA sources for every file dominated a full-system scan.
+    """
+
+    __slots__ = ("sha256", "yara", "_compiled", "_compile_error", "compiled_ids", "failed_ids")
+
+    def __init__(self, rules: tuple[DetectionRule, ...]) -> None:
+        sha256: dict[str, list[DetectionRule]] = {}
+        yara_rules: list[DetectionRule] = []
+        for rule in rules:
+            if rule.kind == "sha256":
+                sha256.setdefault(rule.value, []).append(rule)
+            elif rule.kind == "yara":
+                yara_rules.append(rule)
+        self.sha256: dict[str, tuple[DetectionRule, ...]] = {
+            digest: tuple(matches) for digest, matches in sha256.items()
+        }
+        self.yara: tuple[DetectionRule, ...] = tuple(yara_rules)
+        self._compiled: object | None = None
+        self._compile_error: _YaraFailure | None = None
+        self.compiled_ids: tuple[str, ...] = ()
+        self.failed_ids: tuple[str, ...] = ()
+
+    def compiled_yara(self) -> object:
+        """Compile the signed YARA sources once, skipping sources that fail.
+
+        Compiling every source in one batch is the fast path. A single invalid
+        source aborted that batch and silently disabled YARA matching for
+        *every* rule, so a failed batch is retried rule by rule and the valid
+        rules are kept. ``_YaraFailure`` is raised only when nothing compiles.
+        """
+
+        if self._compile_error is not None:
+            raise self._compile_error
+        if self._compiled is not None:
+            return self._compiled
+        try:
+            self._compiled = self._compile()
+        except _YaraFailure as exc:
+            # Import availability and compile outcomes are deterministic for a
+            # given rule set, so the failure is remembered instead of retried
+            # for every scanned file.
+            self._compile_error = exc
+            raise
+        return self._compiled
+
+    def _compile(self) -> object:
+        try:
+            import yara
+        except ImportError as exc:
+            raise _YaraFailure("YARA runtime is unavailable") from exc
+
+        sources = {
+            _namespace(index): rule.value for index, rule in enumerate(self.yara)
+        }
+        try:
+            compiled = yara.compile(sources=sources)
+        except Exception:
+            pass
+        else:
+            self.compiled_ids = tuple(rule.id for rule in self.yara)
+            self.failed_ids = ()
+            return compiled
+
+        valid: dict[str, str] = {}
+        compiled_ids: list[str] = []
+        failed_ids: list[str] = []
+        for index, rule in enumerate(self.yara):
+            namespace = _namespace(index)
+            try:
+                yara.compile(sources={namespace: rule.value})
+            except Exception:
+                failed_ids.append(rule.id)
+                continue
+            valid[namespace] = rule.value
+            compiled_ids.append(rule.id)
+
+        if not valid:
+            raise _YaraFailure("signed YARA rules could not be compiled")
+        try:
+            compiled = yara.compile(sources=valid)
+        except Exception as exc:
+            raise _YaraFailure("signed YARA rules could not be compiled") from exc
+        self.compiled_ids = tuple(compiled_ids)
+        self.failed_ids = tuple(failed_ids)
+        return compiled
+
+
+# Single-entry cache keyed on rule-set identity. Keying on equality instead
+# would have to hash every rule on every scan, which costs more than the linear
+# sweep it replaces. The tuple is held so its id can never be reused.
+_rule_index_cache: tuple[tuple[DetectionRule, ...], _RuleIndex] | None = None
+
+
+def rule_index(rules: tuple[DetectionRule, ...]) -> _RuleIndex:
+    """Return the derived index for ``rules``, rebuilding only when it changes."""
+    global _rule_index_cache
+    cached = _rule_index_cache
+    if cached is not None and cached[0] is rules:
+        return cached[1]
+    index = _RuleIndex(rules)
+    _rule_index_cache = (rules, index)
+    return index
+
+
 def _match_yara(
     path: Path,
     rules: tuple[DetectionRule, ...],
     timeout_seconds: int,
 ) -> tuple[DetectionRule, ...]:
-    yara_rules = tuple(rule for rule in rules if rule.kind == "yara")
-    if not yara_rules:
+    index = rule_index(rules)
+    if not index.yara:
         return ()
 
-    try:
-        import yara
-    except ImportError as exc:
-        raise _YaraFailure("YARA runtime is unavailable") from exc
-
-    sources = {f"stai_{index}": rule.value for index, rule in enumerate(yara_rules)}
-    try:
-        compiled = yara.compile(sources=sources)
-    except Exception as exc:
-        raise _YaraFailure("signed YARA rules could not be compiled") from exc
+    compiled = index.compiled_yara()
 
     try:
         matches = compiled.match(filepath=str(path), timeout=timeout_seconds)
     except Exception as exc:
+        import yara
+
         yara_timeout = getattr(yara, "TimeoutError", None)
         if isinstance(exc, TimeoutError) or (
             isinstance(yara_timeout, type) and isinstance(exc, yara_timeout)
@@ -141,12 +249,24 @@ def _match_yara(
             raise _YaraTimeout("YARA match exceeded its time budget") from exc
         raise _YaraFailure("YARA scan failed") from exc
 
-    matched_namespaces = {match.namespace for match in matches}
-    return tuple(
-        rule
-        for index, rule in enumerate(yara_rules)
-        if f"stai_{index}" in matched_namespaces
-    )
+    rule_by_namespace = {
+        _namespace(position): rule for position, rule in enumerate(index.yara)
+    }
+    matched_rules: list[DetectionRule] = []
+    for match in matches:
+        if match.namespace not in rule_by_namespace:
+            continue
+        bundle = rule_by_namespace[match.namespace]
+        match_id = f"{bundle.id}:{match.rule}" if bundle.count > 1 else bundle.id
+        metadata = getattr(match, "meta", {}) or {}
+        author = metadata.get("author") or metadata.get("Author")
+        if bundle.count > 1 and isinstance(author, str) and author.strip():
+            # DRL 1.1 requires the rule author to be included in match messages.
+            # The rule id is returned through the existing verdict/UI path.
+            safe_author = " ".join(author.split())[:160]
+            match_id = f"{match_id} (author: {safe_author})"
+        matched_rules.append(replace(bundle, id=match_id, count=1))
+    return tuple(matched_rules)
 
 
 def _unknown(
@@ -240,11 +360,7 @@ def scan_path(
             reason_code="read_error",
         )
 
-    matching_rules = [
-        rule
-        for rule in rules.rules
-        if rule.kind == "sha256" and rule.value == digest
-    ]
+    matching_rules = list(rule_index(rules.rules).sha256.get(digest, ()))
     if yara_error is not None:
         blocking_hash_rule = next(
             (

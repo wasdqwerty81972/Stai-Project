@@ -1,6 +1,6 @@
 """Deterministic local file protection primitives for Windows."""
 
-from .models import DetectionRule, RuleSet, ScanVerdict
+from .models import DetectionRule, RuleSet, ScanVerdict, ThreatIntelEvidence
 from .rule_package import InvalidRulePackage, RulePackage
 from .scanner import scan_path
 from .store import (
@@ -10,6 +10,7 @@ from .store import (
     QuarantineItem,
     ScanJob,
     WindowsSecurityStatus,
+    ThreatIntelStore,
 )
 from .quarantine import QuarantineResult, list_quarantine_items, quarantine_file, restore_quarantine
 from .service import ProtectionConfig, ProtectionService
@@ -29,6 +30,8 @@ __all__ = [
     "RuleSet",
     "ScanJob",
     "ScanVerdict",
+    "ThreatIntelEvidence",
+    "ThreatIntelStore",
     "WindowsSecurityStatus",
     "get_windows_security_status",
     "list_quarantine_items",

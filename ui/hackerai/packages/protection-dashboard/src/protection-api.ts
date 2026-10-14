@@ -10,11 +10,24 @@ export interface ProtectionCounts {
   quarantined: number | null;
 }
 
+export interface NetworkTelemetryStatus {
+  /** "not_configured" when the service was built without a WFP monitor. */
+  state: string;
+  startup_error?: string | null;
+  error?: string | null;
+}
+
 export interface ProtectionStatus {
   state: ProtectionState;
   driver_state: string | null;
   service_state: string | null;
   rules_version: string | null;
+  /** The service only sets this when it validated the signed rule package. */
+  rules_trusted?: boolean | null;
+  rule_count?: number | null;
+  sha256_rule_count?: number | null;
+  yara_rule_count?: number | null;
+  rules_fingerprint?: string | null;
   last_scan: string | null;
   counts: Partial<ProtectionCounts> | null;
   windows_security: {
@@ -25,6 +38,13 @@ export interface ProtectionStatus {
   sensor_coverage: Record<string, string | boolean | null> | null;
   sensors: SensorRuntimeStatus | null;
   sensor_error: string | null;
+  network_telemetry?: NetworkTelemetryStatus | null;
+  threat_intel?: {
+    state: "advisory" | "unavailable" | "degraded";
+    integrity_ok: boolean;
+    block_eligible_records: number;
+    activation: "inactive";
+  } | null;
   last_error: string | null;
 }
 
@@ -110,6 +130,9 @@ export interface ScanSchedule {
 
 export interface DetectionRecord {
   detection_id: string;
+  sha256?: string;
+  rule_id?: string;
+  rule_version?: string;
   action: "block" | "allow";
   confidence: "high" | "medium" | "low";
   severity: string;
@@ -119,6 +142,23 @@ export interface DetectionRecord {
   created_at: string;
   triage_enqueued: boolean;
   summary?: string | null;
+  threat_intel_evidence?: ThreatIntelEvidence | null;
+}
+
+export interface ThreatIntelEvidence {
+  indicator_type: "sha256";
+  indicator_value: string;
+  source: string;
+  verification: string;
+  confidence: number;
+  severity: string;
+  feed_version: string;
+  first_seen: string;
+  last_seen: string;
+  freshness: string;
+  corroborations: number;
+  block_eligible: boolean;
+  decision_reason: string;
 }
 
 export interface TriageRecord {
@@ -219,6 +259,52 @@ function invokeProtection<T>(command: string, args?: Record<string, unknown>): P
 
 export const getProtectionStatus = () =>
   invokeProtection<ProtectionStatus>("get_protection_status");
+
+export interface ProcessAssessment {
+  classification: "known_threat" | "needs_review" | "no_known_match" | "unavailable" | "pending";
+  entropy: number | null;
+  reason: string;
+  rule_id: string | null;
+  rule_version: string | null;
+  sha256: string | null;
+  sampled_bytes: number;
+}
+
+export interface LiveProcess {
+  pid: number;
+  process_identity?: string | null;
+  name: string;
+  username: string | null;
+  exe: string | null;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  status: string;
+  visibility_errors?: string[];
+  assessment: ProcessAssessment;
+}
+
+export interface DeviceActivity {
+  observed_at: string;
+  collecting?: boolean;
+  processes: LiveProcess[];
+  connections: Array<{ pid: number | null; process_name: string; process_identity?: string | null; ownership_status?: string; protocol: string; local_address: string; remote_address: string; state: string }>;
+  network: { download_bytes_sec: number | null; upload_bytes_sec: number | null; bytes_received: number | null; bytes_sent: number | null };
+    database: {
+      available: boolean;
+      version: string | null;
+      rule_count: number | null;
+      sha256_rule_count?: number | null;
+      yara_rule_count?: number | null;
+      demo: boolean;
+      analysis_available?: boolean;
+      active_in_protection_service?: boolean;
+      coverage: string;
+    };
+  errors: string[];
+  cpu_count: number;
+}
+
+export const getDeviceActivity = () => invokeProtection<DeviceActivity>("get_device_activity");
 
 export const startScan = (scope: ScanScope) =>
   invokeProtection<ScanJob>("start_protection_scan", { scope });

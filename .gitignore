@@ -5,6 +5,9 @@ __pycache__/
 *.pyc
 node_modules/
 .next/
+tools/node-v22.22.3/
+tools/next-cache-backup-*/
+tools/next-dev-cache-backup-*/
 .vscode/
 .pnpm/
 dist/

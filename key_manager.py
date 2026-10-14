@@ -1,16 +1,16 @@
 """
 key_manager.py
 
-Manages API access with OmniRoute as primary and Gemini keys as fallback.
+Manages API access with the authenticated Codex CLI as primary and Gemini keys as fallback.
 
-OmniRoute (Antigravity) is an OpenAI-compatible gateway running locally that
-routes to all connected providers (Gemini, OpenAI, Claude, etc.).
-Endpoint: http://localhost:20128/v1
+The Codex CLI uses the user's existing Codex login, so no separate OpenAI API key
+is required. Direct OpenAI Responses API remains an optional fallback.
+Legacy RoleKeyManager helpers can still use OmniRoute when explicitly enabled.
 
 Architecture:
-  - OmniRoute client  — used for ALL roles via OpenAI-compatible SDK.
-                        Routes to best available model automatically.
-  - Gemini fallback   — 4 Gemini keys used if OmniRoute is unreachable.
+  - Codex CLI          — authenticated `codex exec` requests using CODEX_CLI_MODEL.
+  - OpenAI API         — optional direct Responses API fallback when an API key is configured.
+  - Gemini fallback    — configured Gemini keys when other providers are unavailable.
 
   - client_for_role(i)  -> Returns an OmniRouteClient wrapper that looks
                            identical to the old Gemini client interface.
@@ -24,7 +24,11 @@ Use MockRoleKeyManager() for offline demos — no real keys or internet needed.
 """
 
 import itertools
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -55,8 +59,13 @@ OMNIROUTE_BASE_URL = os.environ.get("OMNIROUTE_BASE_URL", "http://localhost:2012
 OMNIROUTE_API_KEY  = os.environ.get("OMNIROUTE_API_KEY",  "")
 OMNIROUTE_MODEL    = os.environ.get("OMNIROUTE_MODEL",    "auto/coding")
 GEMINI_MODEL       = os.environ.get("GEMINI_MODEL",       "gemini-3.5-flash-lite")
+OPENAI_API_KEY     = os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY", "")
+OPENAI_CODEX_MODEL = os.environ.get("OPENAI_CODEX_MODEL", "gpt-6-luna")
+OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "medium")
+CODEX_CLI_PATH = os.environ.get("CODEX_CLI_PATH") or shutil.which("codex")
+CODEX_CLI_MODEL = os.environ.get("CODEX_CLI_MODEL", OPENAI_CODEX_MODEL)
 
-# Set to True to use OmniRoute as primary, with automatic Gemini fallback
+# Legacy RoleKeyManager setting; AiApi uses authenticated Codex CLI first.
 ENABLE_OMNIROUTE = False  # TEMPORARILY DISABLED FOR TESTING
 
 
@@ -265,13 +274,13 @@ class RoleKeyManager:
 
     def _try_init_omniroute(self):
         if not ENABLE_OMNIROUTE:
-            print("[KeyManager] OmniRoute disabled via ENABLE_OMNIROUTE flag — using Gemini only")
+            print("[KeyManager] OmniRoute is disabled for legacy role-key calls")
             return
         if not _OPENAI_AVAILABLE:
-            print("[KeyManager] openai package not installed — OmniRoute disabled, using Gemini only")
+            print("[KeyManager] openai package not installed; OmniRoute unavailable for legacy role-key calls")
             return
         if not OMNIROUTE_API_KEY:
-            print("[KeyManager] OMNIROUTE_API_KEY is not configured — using Gemini only")
+            print("[KeyManager] OMNIROUTE_API_KEY is not configured; legacy role-key calls will use Gemini")
             return
         try:
             raw = _OpenAI(base_url=OMNIROUTE_BASE_URL, api_key=OMNIROUTE_API_KEY)
@@ -279,7 +288,7 @@ class RoleKeyManager:
             self._omniroute_available = True
             print(f"[KeyManager] OmniRoute connected at {OMNIROUTE_BASE_URL} (model: {OMNIROUTE_MODEL})")
         except Exception as e:
-            print(f"[KeyManager] OmniRoute init failed: {e} — falling back to Gemini")
+            print(f"[KeyManager] OmniRoute init failed ({type(e).__name__}); legacy role-key calls will use Gemini")
 
     def _load_gemini_keys(self, keys: Optional[list]) -> list:
         manager_fallback = [
@@ -785,7 +794,7 @@ class AiApi:
     Unified AI API interface for all agents.
     
     Abstracts away:
-    - OmniRoute (primary) vs Gemini (fallback) 
+    - Codex CLI primary, with optional direct OpenAI and Gemini fallbacks
     - Role-based key management (planner, designer, coder, reviewer, reporter)
     - Rate limiting, retries, fallback logic
     - Cybersecurity-specific roles (threat_intel, malware_analyst, network_defender, etc.)
@@ -837,6 +846,56 @@ class AiApi:
         else:
             from key_manager import RoleKeyManager
             self._km = RoleKeyManager()
+
+        self._codex_model = OPENAI_CODEX_MODEL
+        self._codex_reasoning_effort = OPENAI_REASONING_EFFORT
+        self._codex_cli_path = CODEX_CLI_PATH
+        self._codex_cli_model = CODEX_CLI_MODEL
+        self._codex_cli_authenticated = False
+        self._codex_cli_unavailable_reason = (
+            "Codex CLI was not found. Install it or set CODEX_CLI_PATH."
+            if not self._codex_cli_path and not use_mock
+            else None
+        )
+        if not use_mock and self._codex_cli_path:
+            try:
+                login_status = subprocess.run(
+                    [self._codex_cli_path, "login", "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                self._codex_cli_authenticated = login_status.returncode == 0
+                if not self._codex_cli_authenticated:
+                    self._codex_cli_unavailable_reason = (
+                        "Codex CLI is installed but not logged in. Run `codex login`."
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self._codex_cli_unavailable_reason = (
+                    f"Codex CLI login check failed ({type(exc).__name__})."
+                )
+
+        self._codex_client = None
+        self._codex_unavailable_reason = None
+        if not use_mock and OPENAI_API_KEY and _OPENAI_AVAILABLE:
+            try:
+                self._codex_client = _OpenAI(api_key=OPENAI_API_KEY)
+            except Exception as exc:
+                # Do not log credential values or provider exception payloads.
+                self._codex_unavailable_reason = (
+                    f"OpenAI client initialization failed ({type(exc).__name__})"
+                )
+                print(f"[KeyManager] OpenAI client initialization failed ({type(exc).__name__}); using Gemini fallback")
+        elif not use_mock and OPENAI_API_KEY and not _OPENAI_AVAILABLE:
+            self._codex_unavailable_reason = "The openai package is not installed."
+            print("[KeyManager] openai package is not installed; using Gemini fallback")
+        elif not use_mock and not self._codex_cli_authenticated:
+            self._codex_unavailable_reason = "OPENAI_API_KEY or CODEX_API_KEY is not configured."
+            print(
+                "[KeyManager] Codex CLI is not authenticated and no OpenAI API key is configured; "
+                "using Gemini fallback."
+            )
         
         self._vision_supported = True  # Will be set to False if vision fails
         # Scoped by the API server for a serialized user run. None keeps the
@@ -892,61 +951,233 @@ class AiApi:
         Returns:
             _SimpleResponse with .choices[0].message.content
         """
-        client, label = self._get_client_for_role("coder")
-        
-        # Build proper Gemini config
-        if _GENAI_AVAILABLE:
-            config = _genai_types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=temperature,
-                top_p=top_p,
-                tools=None,
-            )
+        return self.chat_with_role(
+            "coder", system, user, temperature=temperature, top_p=top_p,
+            max_retries=max_retries,
+        )
+
+    def _chat_with_codex(self, system: str, user: str, on_delta=None, tools=None) -> _SimpleResponse:
+        """Call the configured OpenAI reasoning model before Gemini fallback."""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        effort = getattr(self, "reasoning_level_override", None) or self._codex_reasoning_effort
+        params = {
+            "model": self._codex_model,
+            "input": messages,
+            "reasoning": {"effort": effort},
+        }
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
+
+        if on_delta is None:
+            response = self._codex_client.responses.create(**params)
+            function_calls = [
+                item for item in getattr(response, "output", []) or []
+                if getattr(item, "type", None) == "function_call"
+            ]
+            if function_calls:
+                allowed_names = {tool.get("name") for tool in tools or []}
+                for call in function_calls:
+                    name = getattr(call, "name", None)
+                    if name not in allowed_names:
+                        continue
+                    raw_arguments = getattr(call, "arguments", "{}") or "{}"
+                    arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                    if not isinstance(arguments, dict):
+                        raise ValueError(f"OpenAI returned invalid arguments for function {name}")
+                    decision = {
+                        "action_type": "tool",
+                        "tool_name": name,
+                        "arguments": arguments,
+                    }
+                    return _SimpleResponse(json.dumps(decision), model=self._codex_model)
+            text = getattr(response, "output_text", "") or ""
         else:
-            class _Cfg:
-                def __init__(self, system_instruction, temperature, top_p):
-                    self.system_instruction = system_instruction
-                    self.temperature = temperature
-                    self.top_p = top_p
-                    self.tools = None
-                    self.model_copy = None
-            config = _Cfg(system, temperature, top_p)
-        contents = self._build_contents(system, user)
-        
-        last_error = None
-        backoff = 1.0
-        
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model=self._select_model(client, model),
-                    contents=contents,
-                    config=config
-                )
-                text = "".join(p.text or "" for p in response.candidates[0].content.parts)
-                if not text.strip():
-                    text = "[The model returned an empty response. Please rephrase your request.]"
-                return _SimpleResponse(text, model=label)
-            except Exception as e:
-                last_error = e
-                error_code = getattr(e, "code", None) or getattr(e, "status_code", None)
-                is_rate_limit = error_code == 429 or "429" in str(e) or "rate" in str(e).lower()
-                
-                if is_rate_limit and attempt < max_retries - 1:
-                    time.sleep(min(backoff, 32))
-                    backoff *= 2
+            text_parts = []
+            for event in self._codex_client.responses.create(**params, stream=True):
+                if getattr(event, "type", None) == "response.output_text.delta":
+                    delta = getattr(event, "delta", "") or ""
+                    if delta:
+                        text_parts.append(delta)
+                        on_delta(delta)
+            text = "".join(text_parts)
+
+        if not text.strip():
+            raise RuntimeError("OpenAI returned an empty response")
+        return _SimpleResponse(text, model=self._codex_model)
+
+    def _chat_with_codex_cli(
+        self,
+        system: str,
+        user: str,
+        on_delta=None,
+        tools=None,
+        image_bytes: Optional[bytes] = None,
+        mime_type: str = "image/png",
+    ) -> _SimpleResponse:
+        """Use the authenticated Codex CLI as the model provider."""
+        cli_path = getattr(self, "_codex_cli_path", None)
+        if not cli_path:
+            raise RuntimeError("Codex CLI executable is not configured.")
+
+        model = getattr(self, "_codex_cli_model", CODEX_CLI_MODEL)
+        effort = getattr(self, "reasoning_level_override", None) or getattr(
+            self, "_codex_reasoning_effort", OPENAI_REASONING_EFFORT
+        )
+        prompt = (
+            f"{system}\n\n"
+            "STAI provides the user message below. Respond to it directly. Do not inspect "
+            "project files, run shell commands, or use your own tools."
+            f"\n\nUser message:\n{user}"
+        )
+        allowed_tools: set[str] = set()
+        if tools:
+            allowed_tools = {
+                str(tool.get("name"))
+                for tool in tools
+                if isinstance(tool, dict) and tool.get("name")
+            }
+            if not allowed_tools:
+                raise ValueError("Codex CLI tool routing requires named host tools.")
+            prompt += (
+                "\n\nThe host application exposes these functions; do not execute them. "
+                "When a function is required, your entire final message must be exactly one "
+                "JSON object shaped like "
+                '{"action_type":"tool","tool_name":"FUNCTION_NAME","arguments":{},"response":""}. '
+                "Otherwise return exactly one JSON object shaped like "
+                '{"action_type":"response","tool_name":null,"arguments":{},"response":"YOUR ANSWER"}. '
+                "Do not use markdown fences, alternate field names, or extra text. Available functions:\n"
+                + json.dumps(tools, ensure_ascii=True)
+            )
+
+        with tempfile.TemporaryDirectory(prefix="stai-codex-") as working_directory:
+            command = [
+                cli_path,
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "--disable",
+                "shell_tool",
+                "--disable",
+                "unified_exec",
+                "--disable",
+                "unified_exec_tty",
+                "--disable",
+                "shell_snapshot",
+                "--skip-git-repo-check",
+                "--cd",
+                working_directory,
+                "--model",
+                model,
+                "--config",
+                f'model_reasoning_effort="{effort}"',
+            ]
+            if image_bytes is not None:
+                image_extensions = {
+                    "image/png": ".png",
+                    "image/jpeg": ".jpg",
+                    "image/webp": ".webp",
+                    "image/gif": ".gif",
+                    "image/bmp": ".bmp",
+                }
+                extension = image_extensions.get(mime_type.lower())
+                if extension is None:
+                    raise ValueError(f"Codex CLI does not support image type {mime_type!r}.")
+                image_path = os.path.join(working_directory, f"request{extension}")
+                with open(image_path, "wb") as image_file:
+                    image_file.write(image_bytes)
+                command.extend(["--image", image_path])
+
+            command.append("-")
+
+            result = subprocess.run(
+                command,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=working_directory,
+                check=False,
+            )
+
+        if result.returncode != 0:
+            failure_detail = None
+            for line in result.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                raise
-        
-        raise RuntimeError(f"All retries exhausted: {last_error}")
+                if event.get("type") == "error":
+                    failure_detail = event.get("message")
+                    break
+            detail = f": {failure_detail}" if failure_detail else ""
+            raise RuntimeError(
+                f"Codex CLI request failed with exit code {result.returncode}{detail}"
+            )
+
+        messages = []
+        for line in result.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                event.get("type") == "item.completed"
+                and isinstance(event.get("item"), dict)
+                and event["item"].get("type") == "agent_message"
+                and isinstance(event["item"].get("text"), str)
+            ):
+                messages.append(event["item"]["text"])
+        if not messages or not messages[-1].strip():
+            raise RuntimeError("Codex CLI completed without returning an assistant message.")
+
+        text = messages[-1].strip()
+        if allowed_tools:
+            if text.startswith("```") and text.endswith("```"):
+                text = text[3:-3].strip()
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
+            try:
+                decision = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Codex CLI returned an invalid host-tool response.") from exc
+            if not isinstance(decision, dict):
+                raise RuntimeError("Codex CLI returned an invalid host-tool response.")
+            action_type = decision.get("action_type")
+            if action_type == "tool":
+                tool_name = decision.get("tool_name")
+                arguments = decision.get("arguments")
+                if tool_name not in allowed_tools or not isinstance(arguments, dict):
+                    raise RuntimeError("Codex CLI selected an invalid host tool or arguments.")
+                text = json.dumps({
+                    "action_type": "tool",
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                })
+            elif action_type == "response" and isinstance(decision.get("response"), str):
+                text = decision["response"].strip()
+            else:
+                raise RuntimeError("Codex CLI returned an invalid host-tool response.")
+            if not text:
+                raise RuntimeError("Codex CLI returned an empty response.")
+
+        if on_delta is not None:
+            on_delta(text)
+        return _SimpleResponse(text, model=model)
 
     def chat_with_role(self, role: str, system: str, user: str, 
                        temperature: float = 0.3, top_p: float = 0.9,
-                       max_retries: int = 3, on_delta=None) -> _SimpleResponse:
+                       max_retries: int = 3, on_delta=None, tools=None) -> _SimpleResponse:
         """
         Chat completion with a specific role (planner, designer, coder, reviewer, reporter, analyst).
         
-        Each role uses its dedicated API key for consistent behavior and quota isolation.
+        Authenticated Codex CLI is the primary provider; configured direct OpenAI
+        and role-key providers remain fallbacks.
         
         Args:
             role: One of "planner", "designer", "coder", "reviewer", "reporter", "analyst"
@@ -957,6 +1188,49 @@ class AiApi:
             max_retries: Max retry attempts
         """
         role_index = self._ROLE_MAP.get(role.lower(), 0)
+
+        if getattr(self, "_codex_cli_authenticated", False):
+            emitted_stream_delta = False
+
+            def stream_cli_delta(delta):
+                nonlocal emitted_stream_delta
+                emitted_stream_delta = True
+                on_delta(delta)
+
+            try:
+                return self._chat_with_codex_cli(
+                    system,
+                    user,
+                    on_delta=stream_cli_delta if on_delta is not None else None,
+                    tools=tools,
+                )
+            except Exception as exc:
+                if emitted_stream_delta:
+                    raise RuntimeError(
+                        "Codex CLI request failed after partial output; automatic provider retry was stopped"
+                    ) from exc
+                detail = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+                print(f"[KeyManager] Codex CLI request failed ({detail}); trying configured fallback")
+
+        codex_client = getattr(self, "_codex_client", None)
+        if codex_client is not None:
+            emitted_stream_delta = False
+            def stream_codex_delta(delta):
+                nonlocal emitted_stream_delta
+                emitted_stream_delta = True
+                on_delta(delta)
+            try:
+                return self._chat_with_codex(
+                    system, user,
+                    on_delta=stream_codex_delta if on_delta is not None else None,
+                    tools=tools,
+                )
+            except Exception as exc:
+                if emitted_stream_delta:
+                    raise RuntimeError(
+                        "OpenAI streaming failed after partial output; automatic provider retry was stopped"
+                    ) from exc
+                print(f"[KeyManager] OpenAI request failed ({type(exc).__name__}); falling back to Gemini")
         
         if _GENAI_AVAILABLE:
             config_values = dict(
@@ -1079,6 +1353,17 @@ class AiApi:
             temperature: Sampling temperature
             max_retries: Max retry attempts
         """
+        if getattr(self, "_codex_cli_authenticated", False):
+            try:
+                return self._chat_with_codex_cli(
+                    system,
+                    user,
+                    image_bytes=image_bytes,
+                    mime_type=mime_type,
+                )
+            except Exception as exc:
+                print(f"[KeyManager] Codex CLI vision request failed ({type(exc).__name__}); trying Gemini")
+
         client, label = self._get_client_for_role("coder")  # Vision uses coder role
         
         vision_part = _make_vision_part(image_bytes, mime_type)
@@ -1149,11 +1434,36 @@ class AiApi:
         return self.chat_with_role(role, system + json_instruction, user, temperature=temperature)
 
     def get_status(self) -> dict:
-        """Get status of all keys (OmniRoute + Gemini fallback)."""
+        """Get provider readiness without returning any credential material."""
+        keys = self._km.status()
+        omniroute_available = any(
+            key.get("label") == "omniroute" and key.get("available") for key in keys
+        )
+        codex_available = getattr(self, "_codex_client", None) is not None
+        codex_cli_authenticated = getattr(self, "_codex_cli_authenticated", False)
         return {
-            "keys": self._km.status(),
-            "omniroute_available": any(k.get("label") == "omniroute" and k.get("available") for k in self._km.status()),
-            "mode": "omniroute" if any(k.get("label") == "omniroute" for k in self._km.status()) else "gemini_fallback"
+            "keys": keys,
+            "codex_cli_authenticated": codex_cli_authenticated,
+            "codex_cli_model": getattr(self, "_codex_cli_model", CODEX_CLI_MODEL),
+            "codex_cli_unavailable_reason": getattr(
+                self, "_codex_cli_unavailable_reason", None
+            ),
+            "openai_codex_configured": bool(OPENAI_API_KEY),
+            "openai_codex_available": codex_available,
+            "openai_codex_model": getattr(self, "_codex_model", OPENAI_CODEX_MODEL),
+            "openai_codex_unavailable_reason": getattr(
+                self, "_codex_unavailable_reason", None
+            ),
+            "omniroute_available": omniroute_available,
+            "mode": (
+                "codex_cli"
+                if codex_cli_authenticated
+                else "openai_codex"
+                if codex_available
+                else "omniroute"
+                if omniroute_available
+                else "gemini_fallback"
+            ),
         }
 
     @staticmethod

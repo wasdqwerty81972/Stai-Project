@@ -50,22 +50,44 @@ class WebSearchTool(CyberToolPlugin):
                 "select all squares containing a duck",
             )
             if any(marker.casefold() in body_text.casefold() for marker in blocked_markers):
-                return {
-                    "success": False,
-                    "provider": "DuckDuckGo",
-                    "blocked": True,
-                    "results": [],
-                    "error": (
-                        "DuckDuckGo requires human verification for this search, so no results were retrieved. "
-                        "Do not answer the search query as if it were verified."
-                    ),
-                }
+                results = []
+
             if not results:
+                # DuckDuckGo intermittently serves an anti-bot/error page from
+                # this persistent browser. Retry the same query through Bing
+                # before reporting a failure to the agent.
+                browser.navigate(f"https://www.bing.com/search?q={quote(query)}")
+                bing_page = browser.page.evaluate('''() => {
+                    const bodyText = document.body?.innerText || '';
+                    const results = [];
+                    document.querySelectorAll('li.b_algo').forEach(el => {
+                        const titleEl = el.querySelector('h2 a');
+                        const snippetEl = el.querySelector('.b_caption p, p');
+                        if (titleEl) {
+                            results.push({
+                                title: titleEl.innerText.trim(),
+                                url: titleEl.href,
+                                snippet: snippetEl ? snippetEl.innerText.trim() : ''
+                            });
+                        }
+                    });
+                    return {title: document.title, bodyText, results};
+                }''')
+                results = bing_page.get("results") or []
+                if not results:
+                    return {
+                        "success": False,
+                        "provider": "DuckDuckGo and Bing",
+                        "results": [],
+                        "error": (
+                            "Both DuckDuckGo and Bing returned no parseable search results. "
+                            "No web results were retrieved; do not answer as if the search succeeded."
+                        ),
+                    }
                 return {
-                    "success": False,
-                    "provider": "DuckDuckGo",
-                    "results": [],
-                    "error": "DuckDuckGo returned no parseable search results.",
+                    "success": True,
+                    "provider": "Bing",
+                    "results": results,
                 }
             
             return {

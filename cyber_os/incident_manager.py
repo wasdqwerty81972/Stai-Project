@@ -161,8 +161,15 @@ class IncidentManager:
                         self.incidents[inc_id] = Incident.from_dict(inc_data)
                     for find_id, find_data in data.get('findings', {}).items():
                         self.findings[find_id] = Finding.from_dict(find_data)
-            except Exception:
-                pass
+            except (OSError, ValueError, TypeError) as exc:
+                # Starting with an empty incident store silently is how a
+                # corrupt file turned into "no incidents on record", and the
+                # next _save() then overwrote the file that still held them.
+                print(
+                    f"[!] IncidentManager could not read {self.storage_path} "
+                    f"({type(exc).__name__}: {exc}); starting with an empty store. "
+                    "The existing file will be overwritten on the next write."
+                )
 
     def _save(self):
         os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)

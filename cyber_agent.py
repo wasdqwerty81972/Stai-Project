@@ -501,7 +501,7 @@ class CyberSecurityOrchestrator:
     """
     Multi-agent AI orchestrator for cybersecurity operations.
     
-    Uses AiApi (OmniRoute/Gemini) with specialized cybersecurity roles:
+    Uses AiApi (Codex CLI/OpenAI/Gemini) with specialized cybersecurity roles:
       - threat_intel_analyst   — IOC enrichment, attribution, campaign tracking
       - malware_analyst        — static/dynamic analysis, family classification, C2 extraction
       - network_defender       — traffic analysis, beaconing detection, firewall recommendations
@@ -526,15 +526,20 @@ class CyberSecurityOrchestrator:
         *,
         stream_response: bool = False,
         on_delta=None,
+        tools=None,
     ) -> str:
         if self.use_mock:
             from key_manager import MockRoleKeyManager
             return MockRoleKeyManager._CANNED.get(role, MockRoleKeyManager._CANNED["default"])
         try:
-            resp = self._api.chat_with_role(
-                role, system, user, temperature=0.2, max_retries=2,
-                on_delta=on_delta or (self.response_delta_callback if stream_response else None),
-            )
+            call_options = {
+                "temperature": 0.2,
+                "max_retries": 2,
+                "on_delta": on_delta or (self.response_delta_callback if stream_response else None),
+            }
+            if tools is not None:
+                call_options["tools"] = tools
+            resp = self._api.chat_with_role(role, system, user, **call_options)
             content = resp.choices[0].message.content
             # Guard against empty model output (Gemini can return this on content-filtered prompts)
             if not content or not content.strip():
@@ -614,6 +619,7 @@ class CyberAgent:
         self.cancel_event = threading.Event()
         self.investigations = InvestigationState(root=os.path.join(self.workspace_path, ".sessions"))
         self.current_investigation: Optional[Dict[str, Any]] = None
+        self._investigation_lock = threading.Lock()
         self.audit_logger = AuditLogger()
         self.guardrails = AutomatedGuardrailManager(auto_approve_read_only=True, auto_remediate_critical=True)
 
@@ -925,14 +931,20 @@ class CyberAgent:
             rl = RiskLevel(risk_level) if isinstance(risk_level, str) else risk_level
             if rl == RiskLevel.READ_ONLY and self.guardrails.auto_approve_read_only:
                 return True
-            if self.guardrails.auto_remediate_critical and rl in {
-                RiskLevel.MODIFIES_SYSTEM, RiskLevel.DESTRUCTIVE, RiskLevel.KERNEL_INTERVENTION,
-            }:
+            # Only reversible system modifications may auto-remediate.
+            # DESTRUCTIVE and KERNEL_INTERVENTION actions previously
+            # auto-approved on any caller-supplied threat_score >= 8, so an
+            # autonomous daemon could terminate processes with no human
+            # approval and no policy-engine decision.
+            if self.guardrails.auto_remediate_critical and rl == RiskLevel.MODIFIES_SYSTEM:
                 if details.get("threat_score", 0) >= 8:
-                    print(f"[AUTO-POLICY] Auto-approving critical action: {action_name}")
+                    print(f"[AUTO-POLICY] Auto-approving reversible containment action: {action_name}")
                     return True
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            # A risk level that cannot be coerced must not quietly skip the
+            # automated-policy branch and look like a clean fall-through to the
+            # approval card; log it, then let the approval path decide.
+            print(f"[!] Could not evaluate auto-policy for '{action_name}': {type(exc).__name__}: {exc}")
 
         # If a legacy approval_callback is registered (PySide6 desktop shell),
         # use it synchronously — that path already shows a QMessageBox.
@@ -1559,10 +1571,34 @@ class CyberAgent:
         except (AttributeError, OSError):
             return False
 
+    def _begin_investigation(self, objective: str, session_id: str) -> Dict[str, Any]:
+        """Open an investigation, reusing an identical one that is still running.
+
+        Every chat turn used to call ``investigations.create`` unconditionally,
+        so a retried request, a double-clicked Send button or a reconnecting
+        client each opened another "running" investigation for the same
+        objective. The duplicates then raced on the same findings ledger and
+        the UI showed several concurrent investigations for one question.
+        """
+        with self._investigation_lock:
+            existing = self.current_investigation
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") == "running"
+                and existing.get("session_id") == session_id
+                and (existing.get("objective") or "").strip() == (objective or "").strip()
+            ):
+                print(
+                    "[i] Reusing in-flight investigation "
+                    f"{existing.get('investigation_id')} for an identical objective."
+                )
+                return existing
+            return self.investigations.create(objective, session_id=session_id)
+
     def process_chat_command(self, user_input: str, session_id: str = "default", conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Process a chat request and publish concise lifecycle events for the UI."""
         self.cancel_event.clear()
-        self.current_investigation = self.investigations.create(user_input, session_id=session_id)
+        self.current_investigation = self._begin_investigation(user_input, session_id)
         self._publish_ui_event("investigation_started", "Investigation started", "running", objective=user_input)
         self._publish_ui_event("agent_started", "Understanding the request", "running")
         self._publish_model_info("CyberSecurityOrchestrator")

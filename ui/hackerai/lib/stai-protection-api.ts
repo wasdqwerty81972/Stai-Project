@@ -124,6 +124,100 @@ export interface ProtectionTriage {
   updated_at?: string;
 }
 
+export interface MonitoredProcess {
+  pid: number;
+  instance_id: string;
+  identity_verified: boolean;
+  name: string;
+  parent_pid?: number | null;
+  create_time?: number | null;
+  exe?: string | null;
+  username?: string | null;
+  status: string;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+  thread_count?: number | null;
+  io_read_bytes?: number | null;
+  io_write_bytes?: number | null;
+  io_semantics?: string | null;
+  network_connection_count?: number | null;
+  entropy_score?: number | null;
+  entropy_state?: string;
+  entropy_source?: string | null;
+  entropy_threshold?: number | null;
+  auto_scan_status?: string;
+  scan_status?: string | null;
+  scan_action?: string | null;
+  scan_rule_id?: string | null;
+  scan_sha256?: string | null;
+  scan_error?: string | null;
+  observed_at?: string;
+}
+
+export interface ProcessMonitorHealth {
+  state: string;
+  source?: "protection_service" | "local_fallback" | "unavailable";
+  source_error?: string | null;
+  event_source: string;
+  event_source_name?: string | null;
+  event_source_error?: string | null;
+  dropped_events: number;
+  last_reconcile_seconds_ago?: number | null;
+  sample_interval_seconds: number;
+  reconcile_interval_seconds: number;
+  sampling_profile?: "low" | "normal" | "high" | "custom";
+  last_error?: string | null;
+}
+
+export interface ProcessMonitorSnapshot {
+  sequence: number;
+  observed_at: string;
+  processes: MonitoredProcess[];
+  health: ProcessMonitorHealth;
+}
+
+export interface ProcessConnection {
+  pid: number | null;
+  instance_id: string | null;
+  process_name: string;
+  ownership_status: string;
+  family: string;
+  protocol: string;
+  local_address: string | null;
+  local_port: number | null;
+  remote_address: string | null;
+  remote_port: number | null;
+  state: string;
+  throughput_bytes_per_second: number | null;
+}
+
+export interface ProcessScanResult {
+  instance_id: string;
+  pid: number;
+  executable: string;
+  status: string;
+  action: string;
+  rule_id: string | null;
+  rule_version: string;
+  sha256: string | null;
+  reason: string;
+  reason_code: string;
+  detection_id: string | null;
+  quarantine: { state: string; error: string | null } | null;
+}
+
+export interface ProcessMonitorEvent {
+  type: "snapshot" | "process_added" | "process_removed" | "process_metrics_updated" | "health" | "heartbeat";
+  sequence?: number;
+  process?: MonitoredProcess;
+  instance_id?: string;
+  health?: ProcessMonitorHealth;
+  processes?: MonitoredProcess[];
+  observed_at?: string;
+  timestamp?: string;
+  resync?: boolean;
+}
+
 /** Error carrying the HTTP status so callers can distinguish 501/503/404. */
 export class ProtectionApiError extends Error {
   readonly status: number;
@@ -167,6 +261,84 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getProtectionStatus(): Promise<ProtectionStatus> {
   return request<ProtectionStatus>("/api/protection/status");
+}
+
+/** Connect to the authenticated local process stream; reconnect with bounded backoff. */
+export function subscribeToProcessMonitor(
+  onEvent: (event: ProcessMonitorEvent) => void,
+  onState: (state: "connecting" | "connected" | "disconnected" | "error") => void,
+): () => void {
+  const backend = new URL(getBackendOrigin());
+  const protocol = backend.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${protocol}//${backend.host}/api/antivirus/process-monitor/stream`;
+  let socket: WebSocket | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let closed = false;
+  let attempt = 0;
+
+  const connect = () => {
+    if (closed) return;
+    onState("connecting");
+    try {
+      socket = new WebSocket(url);
+      socket.onopen = () => {
+        attempt = 0;
+        onState("connected");
+      };
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(String(message.data)) as ProcessMonitorEvent;
+          onEvent(event);
+        } catch {
+          onState("error");
+        }
+      };
+      socket.onerror = () => onState("error");
+      socket.onclose = () => {
+        socket = null;
+        if (closed) return;
+        onState("disconnected");
+        const delay = Math.min(10_000, 500 * 2 ** Math.min(attempt++, 5));
+        timer = setTimeout(connect, delay);
+      };
+    } catch {
+      onState("error");
+      timer = setTimeout(connect, 2_000);
+    }
+  };
+
+  connect();
+  return () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    socket?.close();
+    socket = null;
+  };
+}
+
+export function getProcessConnections(
+  instanceId: string,
+): Promise<{ instance_id: string; available: boolean; connections: ProcessConnection[] }> {
+  return request(`/api/antivirus/processes/${encodeURIComponent(instanceId)}/connections`);
+}
+
+export function getProcessDetails(instanceId: string): Promise<MonitoredProcess> {
+  return request(`/api/antivirus/processes/${encodeURIComponent(instanceId)}`);
+}
+
+export function scanProcessExecutable(instanceId: string): Promise<ProcessScanResult> {
+  return request(`/api/antivirus/processes/${encodeURIComponent(instanceId)}/scan`, {
+    method: "POST",
+  });
+}
+
+export function setProcessMonitorProfile(
+  profile: "low" | "normal" | "high",
+): Promise<ProcessMonitorHealth> {
+  return request("/api/antivirus/process-monitor/profile", {
+    method: "POST",
+    body: JSON.stringify({ profile }),
+  });
 }
 
 export function startScan(scope: ScanScope): Promise<ScanJob> {

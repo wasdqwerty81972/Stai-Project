@@ -8,6 +8,7 @@ export function DetectionRow({
   detection: DetectionRecord;
   onOpen?: (detection: DetectionRecord) => void;
 }) {
+  const intel = detection.threat_intel_evidence;
   const content = (
     <>
       <span className="detection-symbol" aria-hidden="true">
@@ -15,12 +16,17 @@ export function DetectionRow({
       </span>
       <span className="detection-copy">
         <strong>{detection.file_path || "Path not reported"}</strong>
-        <span>
-          {detection.severity} · {detection.confidence} confidence · rule action: {detection.action}
-        </span>
+        {intel ? (
+          <span>
+            Advisory exact SHA-256 match · {intel.source} · {intel.verification} · {intel.freshness}
+          </span>
+        ) : (
+          <span>{detection.severity} · {detection.confidence} confidence · rule action: {detection.action}</span>
+        )}
+        {intel && <code className="detection-hash">{intel.indicator_value}</code>}
       </span>
       <span className="detection-state">
-        {detection.triage_enqueued ? "Queued for AI review" : "Recorded"}
+        {intel ? "Advisory only" : detection.triage_enqueued ? "Queued for AI review" : "Recorded"}
       </span>
       {onOpen && <ArrowUpRight size={16} className="detection-arrow" aria-hidden="true" />}
     </>

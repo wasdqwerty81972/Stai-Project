@@ -47,21 +47,37 @@ def _response(status: int) -> mock.MagicMock:
     return response
 
 
+def _patch_open(**kwargs: object) -> "mock._patch":
+    """Patch the seam `_http_ready` actually calls.
+
+    `_http_ready` builds an opener and calls `opener.open(...)`, so patching
+    `urllib.request.urlopen` intercepts nothing: the probe would reach the real
+    network and every assertion would be decided by whether localhost happened
+    to be listening. Patch `OpenerDirector.open`, which is what
+    `build_opener().open` resolves to.
+    """
+    return mock.patch.object(urllib.request.OpenerDirector, "open", **kwargs)
+
+
 class HttpReadyTests(unittest.TestCase):
     """Only a 2xx/3xx response means the route is ready to serve."""
 
+    def test_the_probe_does_not_reach_the_network(self) -> None:
+        # Regression guard for the mock seam itself. If `_http_ready` is ever
+        # reimplemented on a different transport, this fails loudly instead of
+        # letting the suite silently make real connections and pass by luck.
+        with _patch_open(return_value=_response(200)) as opened:
+            self.assertTrue(_http_ready("http://127.0.0.1:6764/health"))
+        self.assertEqual(opened.call_count, 1)
+
     def test_a_200_is_ready(self) -> None:
-        with mock.patch.object(
-            urllib.request, "urlopen", return_value=_response(200)
-        ):
+        with _patch_open(return_value=_response(200)):
             self.assertTrue(_http_ready("http://127.0.0.1:6764/health"))
 
     def test_a_3xx_is_ready(self) -> None:
         # The gate accepts anything below 400 (`200 <= status < 400`), so a
-        # redirect surfaced by urlopen still counts as the server responding.
-        with mock.patch.object(
-            urllib.request, "urlopen", return_value=_response(302)
-        ):
+        # redirect surfaced by the opener still counts as the server responding.
+        with _patch_open(return_value=_response(302)):
             self.assertTrue(_http_ready("http://127.0.0.1:6764/health"))
 
     def test_a_404_is_not_ready(self) -> None:
@@ -69,44 +85,49 @@ class HttpReadyTests(unittest.TestCase):
         # readiness route is missing is no longer accepted as ready. This is
         # safe because the launcher now probes /health and / (both answer 2xx
         # when ready), not an incidental route like /robots.txt that 404s.
-        with mock.patch.object(
-            urllib.request, "urlopen", side_effect=_http_error(404)
-        ):
+        with _patch_open(side_effect=_http_error(404)):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
 
     def test_a_403_is_not_ready(self) -> None:
-        with mock.patch.object(
-            urllib.request, "urlopen", side_effect=_http_error(403)
-        ):
+        with _patch_open(side_effect=_http_error(403)):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
 
     def test_a_500_is_not_ready(self) -> None:
         # Whether the server is merely listening is no longer enough: a 5xx on
         # the readiness route means the service is not actually serving yet.
-        with mock.patch.object(
-            urllib.request, "urlopen", side_effect=_http_error(500)
-        ):
+        with _patch_open(side_effect=_http_error(500)):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
 
     def test_a_refused_connection_is_not_ready(self) -> None:
-        with mock.patch.object(
-            urllib.request,
-            "urlopen",
-            side_effect=urllib.error.URLError("connection refused"),
-        ):
+        with _patch_open(side_effect=urllib.error.URLError("connection refused")):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
 
     def test_a_timeout_is_not_ready(self) -> None:
-        with mock.patch.object(urllib.request, "urlopen", side_effect=TimeoutError()):
+        with _patch_open(side_effect=TimeoutError()):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
 
     def test_a_dns_failure_is_not_ready(self) -> None:
-        with mock.patch.object(
-            urllib.request,
-            "urlopen",
-            side_effect=urllib.error.URLError("name resolution failed"),
-        ):
+        with _patch_open(side_effect=urllib.error.URLError("name resolution failed")):
             self.assertFalse(_http_ready("http://127.0.0.1:6763/"))
+
+
+class RedirectHandlingTests(unittest.TestCase):
+    """`follow_redirects=False` treats a 3xx as "the route answered"."""
+
+    def test_an_unfollowed_redirect_is_ready(self) -> None:
+        # With redirects suppressed the opener raises instead of returning a
+        # response, so the 3xx arrives on the HTTPError path and must still
+        # count as the server serving that route.
+        with _patch_open(side_effect=_http_error(302)):
+            self.assertTrue(
+                _http_ready("http://127.0.0.1:6764/health", follow_redirects=False)
+            )
+
+    def test_an_unfollowed_404_is_still_not_ready(self) -> None:
+        with _patch_open(side_effect=_http_error(404)):
+            self.assertFalse(
+                _http_ready("http://127.0.0.1:6764/health", follow_redirects=False)
+            )
 
 
 class FrontendProbeTargetTests(unittest.TestCase):

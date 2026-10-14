@@ -224,5 +224,11 @@ class SessionManager:
                     session = Session.from_dict(data)
                     with self._lock:
                         self.sessions[session_id] = session
-                except Exception:
-                    pass
+                except (OSError, ValueError, KeyError) as exc:
+                    # A truncated or hand-edited session file used to vanish
+                    # silently, so an investigation's history simply was not
+                    # there and nothing said why.
+                    print(
+                        f"[!] Skipping unreadable session {session_id}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )

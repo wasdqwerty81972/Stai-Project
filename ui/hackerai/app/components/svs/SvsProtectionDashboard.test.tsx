@@ -7,6 +7,10 @@ import {
 } from "@testing-library/react";
 import {
   getProtectionStatus,
+  getProcessConnections,
+  getProcessDetails,
+  scanProcessExecutable,
+  setProcessMonitorProfile,
   listThreats,
   startScan,
   getScan,
@@ -16,6 +20,7 @@ import {
   getTriage,
   getAgentHistory,
   sendAgentMessage,
+  subscribeToProcessMonitor,
   type ProtectionStatus,
   type ThreatRecord,
   type ScanJob,
@@ -25,6 +30,10 @@ import { SvsProtectionDashboard } from "./SvsProtectionDashboard";
 
 jest.mock("@/lib/stai-protection-api", () => ({
   getProtectionStatus: jest.fn(),
+  getProcessConnections: jest.fn(),
+  getProcessDetails: jest.fn(),
+  scanProcessExecutable: jest.fn(),
+  setProcessMonitorProfile: jest.fn(),
   listThreats: jest.fn(),
   startScan: jest.fn(),
   getScan: jest.fn(),
@@ -34,6 +43,7 @@ jest.mock("@/lib/stai-protection-api", () => ({
   getTriage: jest.fn(),
   getAgentHistory: jest.fn(),
   sendAgentMessage: jest.fn(),
+  subscribeToProcessMonitor: jest.fn(),
 }));
 
 const activeStatus: ProtectionStatus = {
@@ -126,6 +136,16 @@ beforeEach(() => {
   // Defaults are overridden per test. getTriage / getAgentHistory reject to
   // mirror the backend's current 501 responses so the UI degrades honestly.
   jest.mocked(getProtectionStatus).mockResolvedValue(activeStatus);
+  jest.mocked(getProcessConnections).mockResolvedValue({ instance_id: "", available: true, connections: [] });
+  jest.mocked(getProcessDetails).mockResolvedValue({
+    pid: 0, instance_id: "", identity_verified: false, name: "unknown", status: "running",
+    cpu_percent: null, memory_bytes: null,
+  });
+  jest.mocked(scanProcessExecutable).mockRejectedValue(new Error("unavailable"));
+  jest.mocked(setProcessMonitorProfile).mockResolvedValue({
+    state: "running", event_source: "degraded", dropped_events: 0,
+    sample_interval_seconds: 5, reconcile_interval_seconds: 5, sampling_profile: "normal",
+  });
   jest.mocked(listThreats).mockResolvedValue([]);
   jest.mocked(listQuarantine).mockResolvedValue([]);
   jest.mocked(startScan).mockResolvedValue(runningJob);
@@ -148,9 +168,44 @@ beforeEach(() => {
     tool_calls: [],
     response_action: null,
   });
+  jest.mocked(subscribeToProcessMonitor).mockImplementation((onEvent, onState) => {
+    onState("connected");
+    onEvent({
+      type: "snapshot",
+      sequence: 1,
+      processes: [{
+        pid: 9024,
+        instance_id: "9024:0x1",
+        identity_verified: true,
+        name: "sample-app.exe",
+        status: "running",
+        cpu_percent: 12.5,
+        memory_bytes: 1048576,
+      }],
+      health: {
+        state: "running",
+        event_source: "degraded",
+        dropped_events: 0,
+        sample_interval_seconds: 1,
+        reconcile_interval_seconds: 5,
+      },
+    });
+    return jest.fn();
+  });
 });
 
 describe("SvsProtectionDashboard", () => {
+  it("opens the live Processes tab and renders real monitor snapshots", async () => {
+    render(<SvsProtectionDashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Processes" }));
+
+    expect(await screen.findByText("sample-app.exe")).toBeInTheDocument();
+    expect(screen.getByText("12.5%")).toBeInTheDocument();
+    expect(screen.getByText("1.0 MB")).toBeInTheDocument();
+    expect(screen.getByText("Snapshot reconciliation")).toBeInTheDocument();
+    expect(subscribeToProcessMonitor).toHaveBeenCalled();
+  });
+
   it("renders the active state with distinct detection/blocked/quarantine counts", async () => {
     render(<SvsProtectionDashboard />);
 

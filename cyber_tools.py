@@ -695,9 +695,17 @@ class AutomatedGuardrailManager(GuardrailManager):
         if risk_level == RiskLevel.READ_ONLY and self.auto_approve_read_only:
             return True
 
-        if self.auto_remediate_critical and risk_level in [RiskLevel.MODIFIES_SYSTEM, RiskLevel.DESTRUCTIVE, RiskLevel.KERNEL_INTERVENTION]:
+        # Auto-remediation is limited to reversible system modifications
+        # (firewall rules, quarantine). DESTRUCTIVE and KERNEL_INTERVENTION
+        # actions previously auto-approved on any caller-supplied
+        # threat_score >= 8, which let an autonomous daemon terminate
+        # processes and revert registry keys with no human approval and no
+        # policy-engine decision. That contradicted this project's stated
+        # safety principle (see cyber_os/approval_engine.py) that destructive
+        # and kernel operations always require explicit human approval.
+        if self.auto_remediate_critical and risk_level == RiskLevel.MODIFIES_SYSTEM:
             if details.get("threat_score", 0) >= 8:
-                print(f"[AUTO-POLICY] Auto-approving critical action: {action_name}")
+                print(f"[AUTO-POLICY] Auto-approving reversible containment action: {action_name}")
                 return True
 
         return super().request_approval(action_name, risk_level, details)
@@ -806,9 +814,17 @@ class KernelInterceptionDaemon:
                 if foreign_ip in self.blacklisted_endpoints:
                     pid = int(conn["pid"]) if conn["pid"].isdigit() else 0
                     print(f"\n[!] [RING-0 ALERT] Malicious Socket Activity: {foreign_ip} (PID: {pid})")
-                    self.orchestrator.execute_tool("block_ip", {"ip_address": foreign_ip}, threat_score=10)
+                    # These calls used to pass threat_score=10, which trips
+                    # AutomatedGuardrailManager.auto_remediate_critical and
+                    # auto-approves a DESTRUCTIVE action with no human approval
+                    # and no policy-engine decision. An unattended daemon
+                    # matching a hardcoded IP list must not be able to kill
+                    # processes or edit the firewall on its own authority, so
+                    # the score is no longer forced and the normal approval
+                    # path decides.
+                    self.orchestrator.execute_tool("block_ip", {"ip_address": foreign_ip})
                     if pid > 0:
-                        self.orchestrator.execute_tool("terminate_process", {"pid": pid}, threat_score=10)
+                        self.orchestrator.execute_tool("terminate_process", {"pid": pid})
             time.sleep(interval)
 
 
