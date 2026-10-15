@@ -122,10 +122,11 @@ def _get(provider: str, url: str, headers: Dict[str, str], api_key: str) -> Dict
 
     _throttle(provider)
     try:
-        response = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT)
+        response = requests.get(url, headers=headers, timeout=_REQUEST_TIMEOUT, allow_redirects=False)
     except Exception as exc:  # network failure, DNS, TLS, timeout
-        logger.error("%s request failed: %s", provider, exc)
-        return _unknown("request_failed", f"{provider} request failed: {exc}")
+        error = _scrub(str(exc), api_key, *headers.values())
+        logger.error("%s request failed: %s", provider, error)
+        return _unknown("request_failed", f"{provider} request failed: {error}")
 
     if response.status_code == 200:
         try:
@@ -713,6 +714,7 @@ _FEED_PARSERS = {
 #: Uncompressed-size ceiling for a zipped feed member. A feed that claims to
 #: expand past this is treated as hostile (zip bomb) rather than ingested.
 _MAX_FEED_MEMBER_BYTES = 1024 * 1024 * 1024
+_MAX_FEED_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
 
 def unzip_feed_member(raw: bytes, member: Optional[str] = None) -> bytes:
@@ -729,13 +731,26 @@ def unzip_feed_member(raw: bytes, member: Optional[str] = None) -> bytes:
         infos = archive.infolist()
         if not infos:
             raise ValueError("zipped feed is empty")
-        info = next((i for i in infos if i.filename == member), infos[0])
+        if member is not None:
+            matches = [info for info in infos if info.filename == member]
+            if len(matches) != 1:
+                raise ValueError("zipped feed must contain exactly one requested member")
+            info = matches[0]
+        else:
+            info = infos[0]
+        if info.is_dir():
+            raise ValueError("zipped feed member must be a file")
         if info.file_size > _MAX_FEED_MEMBER_BYTES:
             raise ValueError(
                 f"zipped feed member {info.filename!r} expands to {info.file_size} bytes, "
                 f"above the {_MAX_FEED_MEMBER_BYTES} ceiling"
             )
-        return archive.read(info)
+        # Bound the actual stream as well as the archive's advertised size.
+        with archive.open(info) as stream:
+            content = stream.read(_MAX_FEED_MEMBER_BYTES + 1)
+        if len(content) > _MAX_FEED_MEMBER_BYTES:
+            raise ValueError("zipped feed member exceeds the expansion ceiling")
+        return content
 
 
 def parse_feed(feed_format: str, payload: Any, source: str) -> list[FeedRecord]:
@@ -751,9 +766,19 @@ def http_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: floa
     _assert_metadata_only(url)
     import urllib.request
 
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, response_headers, newurl):
+            # Custom Auth-Key headers must never follow a provider redirect.
+            # Refusing all redirects also preserves the metadata-only URL check.
+            return None
+
     request = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    opener = urllib.request.build_opener(NoRedirect())
+    with opener.open(request, timeout=timeout) as response:
+        content = response.read(_MAX_FEED_DOWNLOAD_BYTES + 1)
+    if len(content) > _MAX_FEED_DOWNLOAD_BYTES:
+        raise ValueError("feed download exceeds the compressed download ceiling")
+    return content
 
 
 def ingest_feed(
@@ -804,9 +829,10 @@ def ingest_feed(
     except SampleDownloadRefused:
         raise
     except Exception as exc:
-        logger.error("feed %s failed: %s", feed_name, exc)
-        store.finish_feed_run(run_id, status="failed", error=str(exc))
-        return {"status": "fetch_failed", "feed": feed_name, "ingested": 0, "error": str(exc)}
+        error = _scrub(str(exc), auth_key, *headers.values())
+        logger.error("feed %s failed: %s", feed_name, error)
+        store.finish_feed_run(run_id, status="failed", error=error)
+        return {"status": "fetch_failed", "feed": feed_name, "ingested": 0, "error": error}
 
     indicators = [_to_indicator(record, version) for record in records]
     counters = store.upsert_indicators(indicators, feed_version=version)

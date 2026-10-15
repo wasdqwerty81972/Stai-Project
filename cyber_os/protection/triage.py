@@ -31,8 +31,12 @@ _RELATIVE_PATH = re.compile(
     r"(?:[\\/][A-Za-z0-9_.~-]+)+\.[A-Za-z0-9]{1,16}\b"
 )
 _EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_FILE_DIGEST = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:[a-f0-9]{64}|[a-f0-9]{40}|[a-f0-9]{32})(?![A-Za-z0-9])"
+)
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:password|passphrase|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*[^\s,;]+"
+    r"(?i)\b(?:password|passphrase|secret|token|api[_-]?key|authorization)\b\s*[:=]\s*"
+    r"""(?:"[^"\r\n]*(?:"|$)|'[^'\r\n]*(?:'|$)|bearer\s+[^\s,;]+|[^\s,;]+)"""
 )
 _SECRET_PHRASE = re.compile(
     r"(?i)\b(?:my\s+)?(?:password|passphrase|secret|token|api[_-]?key|authorization)\b"
@@ -397,6 +401,7 @@ class ProtectionTriage:
         text = _BEARER.sub("[redacted credential]", text)
         text = _TOKEN_SHAPE.sub("[redacted credential]", text)
         text = _EMAIL.sub("[redacted identity]", text)
+        text = _FILE_DIGEST.sub("[redacted file hash]", text)
         text = re.sub(r"(?i)\b(?:user(?:name)?|account)\s*[:=]\s*[^\s,;]+", "[redacted identity]", text)
         return text.strip()[:MAX_TURN_CHARS]
 

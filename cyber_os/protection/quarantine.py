@@ -72,6 +72,32 @@ def _atomic_move(src: Path, dst: Path) -> None:
     os.replace(src, dst)
 
 
+def _restore_move(src: Path, dst: Path) -> None:
+    """Move without replacing a destination created after our existence check."""
+    if os.name == "nt":
+        # Unlike replace(), Windows rename() fails if the destination exists.
+        os.rename(src, dst)
+    else:
+        # POSIX rename() replaces existing files. Creating a hard link fails
+        # atomically on a conflict and preserves the quarantine permissions.
+        os.link(src, dst, follow_symlinks=False)
+        src.unlink()
+
+
+def _has_reparse_component(path: Path) -> bool:
+    """Reject symbolic links and Windows junctions without following them."""
+    for component in (path, *path.parents):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+        ):
+            return True
+    return False
+
+
 _EVERYONE_SID = "*S-1-1-0"
 
 
@@ -168,14 +194,14 @@ def quarantine_file(
         post_move_hash = _digest_file(quarantined_path)
     except OSError as e:
         try:
-            _atomic_move(quarantined_path, source)
+            _restore_move(quarantined_path, source)
         except OSError:
             pass
         return QuarantineResult(success=False, error=f"post-move verification failed: {e}")
 
     if post_move_hash != current_hash:
         try:
-            _atomic_move(quarantined_path, source)
+            _restore_move(quarantined_path, source)
         except OSError:
             pass
         return QuarantineResult(success=False, error="hash changed during quarantine move")
@@ -221,7 +247,7 @@ def quarantine_file(
             )
     except Exception as e:
         try:
-            _atomic_move(quarantined_path, source)
+            _restore_move(quarantined_path, source)
         except OSError:
             pass
         else:
@@ -243,11 +269,21 @@ def restore_quarantine(
         row = cursor.fetchone()
         if not row:
             return QuarantineResult(success=False, error="quarantine item not found")
-        if row["restore_result"] is not None:
+        if row["restore_result"] == "restored":
             return QuarantineResult(success=False, error=f"already {row['restore_result']}")
 
     quarantined_path = Path(row["quarantined_path"])
     original_path = Path(row["original_path"])
+
+    try:
+        if _has_reparse_component(quarantined_path) or _has_reparse_component(original_path):
+            return QuarantineResult(success=False, error="restore path contains a symbolic link or reparse point")
+        if quarantined_path.resolve().parent != Path(quarantine_root).resolve():
+            return QuarantineResult(success=False, error="quarantined file is outside quarantine root")
+        if quarantined_path.name != f"{item_id}{QUARANTINE_SUFFIX}":
+            return QuarantineResult(success=False, error="quarantined filename does not match item")
+    except OSError as e:
+        return QuarantineResult(success=False, error=f"cannot validate restore paths: {e}")
 
     if not quarantined_path.exists():
         with store._transaction() as conn:
@@ -273,6 +309,8 @@ def restore_quarantine(
     if rules is not None:
         from .scanner import scan_path
         verdict = scan_path(quarantined_path, rules)
+        if verdict.status == "unknown":
+            return QuarantineResult(success=False, error="restore refused: current scan could not verify file")
         if verdict.status == "detected" and verdict.action == "block":
             with store._transaction() as conn:
                 conn.execute(
@@ -284,7 +322,10 @@ def restore_quarantine(
                 error=f"restore refused: file still matches block rule {verdict.rule_id}",
             )
 
-    original_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        original_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return QuarantineResult(success=False, error=f"cannot prepare restore directory: {e}")
 
     if original_path.exists():
         try:
@@ -318,16 +359,13 @@ def restore_quarantine(
                     success=False,
                     error="original location has different file - manual resolution required",
                 )
-        except OSError:
-            pass
+        except OSError as e:
+            return QuarantineResult(success=False, error=f"cannot verify existing original file: {e}")
 
     try:
-        _atomic_move(quarantined_path, original_path)
+        _restore_move(quarantined_path, original_path)
     except OSError as e:
         return QuarantineResult(success=False, error=f"restore move failed: {e}")
-
-    # The file is cleared for use again, so drop the quarantine deny-execute ACE.
-    _allow_execute(original_path)
 
     try:
         restored_hash = _digest_file(original_path)
@@ -336,6 +374,9 @@ def restore_quarantine(
 
     if restored_hash != current_hash:
         return QuarantineResult(success=False, error="hash mismatch after restore")
+
+    # Preserve containment until the destination bytes have been verified.
+    _allow_execute(original_path)
 
     with store._transaction() as conn:
         conn.execute(

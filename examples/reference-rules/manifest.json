@@ -1,0 +1,8 @@
+{
+  "version": "stai-inert-examples-1",
+  "rules": [
+    {"id":"example-marker-text","kind":"yara","value":"rule STAI_Example_Marker_Text { meta: author = \"STAI\" description = \"Harmless demonstration marker; not malware intelligence\" strings: $marker = \"STAI_EXAMPLE_TEXT_MARKER_V1\" condition: filesize < 4096 and $marker }","action":"observe","confidence":"medium"},
+    {"id":"example-marker-pair","kind":"yara","value":"rule STAI_Example_Marker_Pair { meta: author = \"STAI\" description = \"Harmless two-marker demonstration; not malware intelligence\" strings: $a = \"STAI_EXAMPLE_PAIR_ALPHA_V1\" $b = \"STAI_EXAMPLE_PAIR_BETA_V1\" condition: filesize < 4096 and all of them }","action":"observe","confidence":"medium"},
+    {"id":"example-marker-header","kind":"yara","value":"rule STAI_Example_Marker_Header { meta: author = \"STAI\" description = \"Harmless offset-constrained demonstration; not malware intelligence\" strings: $header = \"STAI_EXAMPLE_HEADER_V1\" condition: filesize < 4096 and $header at 0 }","action":"observe","confidence":"medium"}
+  ]
+}

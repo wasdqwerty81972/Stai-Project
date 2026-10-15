@@ -1,0 +1,27 @@
+{
+  "catalogue_version": "stai-truebot-reference-20261015",
+  "reviewed_on": "2026-10-15",
+  "status": "unsigned-review-candidate",
+  "contains_samples": false,
+  "sources": [
+    {
+      "id": "AA23-187A",
+      "publisher": "CISA, FBI, MS-ISAC, CCCS",
+      "url": "https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-187a",
+      "published_on": "2023-07-06",
+      "location": "Tables 4 and 5; SHA-256 values associated with Truebot",
+      "rule_ids": ["cisa-aa23-187a-truebot-e0178ab0", "cisa-aa23-187a-truebot-4862618f", "cisa-aa23-187a-truebot-fe746402", "cisa-aa23-187a-truebot-7d752444"]
+    },
+    {
+      "id": "AA23-131A",
+      "publisher": "CISA, FBI",
+      "url": "https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-131a",
+      "published_on": "2023-05-11",
+      "location": "Table 6; ld.txt identified as TrueBot malware",
+      "rule_ids": ["cisa-aa23-131a-truebot-c0f8aeeb"]
+    }
+  ],
+  "first_seen": null,
+  "last_seen": null,
+  "notes": "Publication dates are historical source dates, not current sightings. Review date does not refresh indicator freshness. Hash facts only; no report text, upstream YARA, or executable samples are redistributed. No claim of CISA endorsement or upstream signature."
+}

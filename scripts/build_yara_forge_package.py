@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import re
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,18 +147,35 @@ def build_extended_bundle(source: str, *, release: str, archive_sha256: str) -> 
 
 
 def _read_archive(path: Path, expected_sha256: str, *, tier: str) -> str:
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != expected_sha256:
-        raise ValueError("YARA Forge archive SHA-256 does not match the pinned digest")
-    with zipfile.ZipFile(path) as archive:
-        rule_path = _EXTENDED_RULE_PATH if tier == "extended" else _CORE_RULE_PATH
-        try:
-            entry = archive.getinfo(rule_path)
-        except KeyError as exc:
-            raise ValueError(f"YARA Forge archive does not contain {tier} rules") from exc
-        if entry.file_size > _MAX_ARCHIVE_BYTES:
-            raise ValueError(f"YARA Forge {tier} file exceeds the input size limit")
-        return archive.read(entry).decode("utf-8")
+    # Spool the bounded, hashed bytes so the file cannot be replaced between
+    # verification and decompression. Large archives spill to disk, not RAM.
+    with path.open("rb") as source, tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as verified:
+        if path.stat().st_size > _MAX_ARCHIVE_BYTES:
+            raise ValueError("YARA Forge archive exceeds the input size limit")
+        digest = hashlib.sha256()
+        total = 0
+        while chunk := source.read(min(1024 * 1024, _MAX_ARCHIVE_BYTES - total + 1)):
+            total += len(chunk)
+            if total > _MAX_ARCHIVE_BYTES:
+                raise ValueError("YARA Forge archive exceeds the input size limit")
+            digest.update(chunk)
+            verified.write(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("YARA Forge archive SHA-256 does not match the pinned digest")
+        verified.seek(0)
+        with zipfile.ZipFile(verified) as archive:
+            rule_path = _EXTENDED_RULE_PATH if tier == "extended" else _CORE_RULE_PATH
+            try:
+                entry = archive.getinfo(rule_path)
+            except KeyError as exc:
+                raise ValueError(f"YARA Forge archive does not contain {tier} rules") from exc
+            if entry.file_size > _MAX_RULE_SOURCE_BYTES:
+                raise ValueError(f"YARA Forge {tier} file exceeds the input size limit")
+            with archive.open(entry) as member:
+                raw_source = member.read(_MAX_RULE_SOURCE_BYTES + 1)
+            if len(raw_source) > _MAX_RULE_SOURCE_BYTES:
+                raise ValueError(f"YARA Forge {tier} file exceeds the input size limit")
+            return raw_source.decode("utf-8")
 
 
 def build_signed_package(
@@ -180,7 +198,8 @@ def build_signed_package(
         import yara
     except ImportError as exc:
         raise RuntimeError("yara-python is required to validate the imported package") from exc
-    yara.compile(source=bundle.source)
+    # Match runtime isolation: signed source must not import local unsigned files.
+    yara.compile(source=bundle.source, includes=False)
 
     key_bytes = private_key_path.read_bytes()
     private_key = serialization.load_pem_private_key(key_bytes, password=None)

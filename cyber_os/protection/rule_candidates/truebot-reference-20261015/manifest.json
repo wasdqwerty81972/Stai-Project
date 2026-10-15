@@ -1,0 +1,10 @@
+{
+  "version": "stai-truebot-reference-20261015",
+  "rules": [
+    {"id":"cisa-aa23-187a-truebot-e0178ab0","kind":"sha256","value":"e0178ab0893a4f25c68ded11e74ad90403443e413413501d138e0b08a910471e","action":"observe","confidence":"medium"},
+    {"id":"cisa-aa23-187a-truebot-4862618f","kind":"sha256","value":"4862618fcf15ba4ad15df35a8dcb0bdb79647b455fea6c6937c7d050815494b0","action":"observe","confidence":"medium"},
+    {"id":"cisa-aa23-187a-truebot-fe746402","kind":"sha256","value":"fe746402c74ac329231ae1b5dffa8229b509f4c15a0f5085617f14f0c1579040","action":"observe","confidence":"medium"},
+    {"id":"cisa-aa23-187a-truebot-7d752444","kind":"sha256","value":"7d75244449fb5c25d8f196a43a6eb9e453652b2185392376e7d44c21bd8431e7","action":"observe","confidence":"medium"},
+    {"id":"cisa-aa23-131a-truebot-c0f8aeeb","kind":"sha256","value":"c0f8aeeb2d11c6e751ee87c40ee609aceb1c1036706a5af0d3d78738b6cc4125","action":"observe","confidence":"medium"}
+  ]
+}

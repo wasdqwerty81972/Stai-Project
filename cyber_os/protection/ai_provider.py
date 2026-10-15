@@ -113,6 +113,8 @@ class GeminiProtectionProvider:
         history: list[dict[str, str]],
         message: str,
     ) -> str:
+        from .triage import ProtectionTriage
+
         safe_context = _safe_context(context)
         turns: list[dict[str, str]] = []
         remaining_history_chars = 8000
@@ -125,13 +127,19 @@ class GeminiProtectionProvider:
                 or remaining_history_chars <= 0
             ):
                 continue
-            bounded_content = content[: min(2000, remaining_history_chars)]
+            # Reapply privacy filtering at the outbound boundary even if a
+            # caller bypasses the normal triage session path.
+            bounded_content = ProtectionTriage._sanitize_for_provider(
+                content[: min(2000, remaining_history_chars)]
+            )
             remaining_history_chars -= len(bounded_content)
             turns.append({"role": role, "text": bounded_content})
         context_text = "Event metadata (JSON): " + json.dumps(
             safe_context, separators=(",", ":"), ensure_ascii=True
         )
-        user_text = context_text + "\nQuestion: " + str(message)[:2000]
+        user_text = context_text + "\nQuestion: " + ProtectionTriage._sanitize_for_provider(
+            str(message)[:2000]
+        )
         turns.append({"role": "user", "text": user_text})
         return self._generate(_CHAT_SYSTEM, turns)
 
@@ -139,7 +147,10 @@ class GeminiProtectionProvider:
         if not self.available:
             raise RuntimeError("protection analysis provider is not configured")
         contents = [
-            {"role": turn["role"], "parts": [{"text": turn["text"]}]}
+            {
+                "role": "model" if turn["role"] == "assistant" else turn["role"],
+                "parts": [{"text": turn["text"]}],
+            }
             for turn in turns
         ]
         body = json.dumps(
