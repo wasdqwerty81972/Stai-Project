@@ -1,4 +1,5 @@
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +22,28 @@ from ui.api_server import (
 def request(host="127.0.0.1", origin=None):
     headers = [] if origin is None else [(b"origin", origin.encode())]
     return Request({"type": "http", "client": (host, 12345), "headers": headers})
+
+
+def _force_local_registry(registry) -> ExitStack:
+    """Pin the process-monitor provider to a local registry.
+
+    ``_get_process_monitor_provider()`` prefers the protection service whenever
+    its pipe answers, so patching ``_get_process_registry`` alone is not enough:
+    on a host where the service is actually running, the endpoints reach the
+    real service and these tests see live PIDs instead of the fake registry.
+    Making the service path deterministically unavailable is the same idiom the
+    provider-selection tests below already use.
+    """
+    stack = ExitStack()
+    stack.enter_context(patch("ui.api_server.os.name", "nt"))
+    stack.enter_context(patch("ui.api_server._get_process_registry", return_value=registry))
+    stack.enter_context(
+        patch(
+            "cyber_os.protection.windows_pipe_client.get_process_monitor_status",
+            side_effect=TimeoutError("service pipe unavailable in test"),
+        )
+    )
+    return stack
 
 
 class Registry:
@@ -82,7 +105,7 @@ class ProcessMonitorApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_snapshot_and_health_are_real_registry_values(self):
         registry = Registry()
-        with patch("ui.api_server._get_process_registry", return_value=registry):
+        with _force_local_registry(registry):
             snapshot = await antivirus_processes(request())
             health = await antivirus_process_monitor_status(request())
         self.assertEqual(snapshot["processes"][0]["pid"], 42)
@@ -153,14 +176,14 @@ class ProcessMonitorApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_connections_are_scoped_to_the_exact_instance(self):
         registry = Registry()
-        with patch("ui.api_server._get_process_registry", return_value=registry):
+        with _force_local_registry(registry):
             result = await antivirus_process_connections("42:0x1", request())
         self.assertEqual(len(result["connections"]), 1)
         self.assertEqual(result["connections"][0]["instance_id"], "42:0x1")
 
     async def test_event_cursor_reports_gap_and_returns_resync_snapshot(self):
         registry = Registry()
-        with patch("ui.api_server._get_process_registry", return_value=registry):
+        with _force_local_registry(registry):
             result = await antivirus_process_events(request(), after_sequence=3)
         self.assertTrue(result["resync_required"])
         self.assertEqual(result["snapshot"]["sequence"], 12)
@@ -168,7 +191,7 @@ class ProcessMonitorApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_cursor_returns_incremental_events_when_contiguous(self):
         registry = Registry()
-        with patch("ui.api_server._get_process_registry", return_value=registry):
+        with _force_local_registry(registry):
             result = await antivirus_process_events(request(), after_sequence=11)
         self.assertFalse(result["resync_required"])
         self.assertEqual(result["events"][0]["sequence"], 12)
@@ -204,7 +227,7 @@ class ProcessMonitorApiTests(unittest.IsolatedAsyncioTestCase):
 
         registry = StreamingRegistry()
         ws = WebSocket()
-        with patch("ui.api_server._get_process_registry", return_value=registry):
+        with _force_local_registry(registry):
             await antivirus_process_stream(ws)
         self.assertEqual(ws.sent[0]["type"], "snapshot")
         self.assertEqual(ws.sent[0]["sequence"], 12)

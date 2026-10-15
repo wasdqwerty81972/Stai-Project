@@ -13,7 +13,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-_WMI_E_TIMED_OUT = 0x80041069
+_DISP_E_EXCEPTION = 0x80020009
+# wbemErrTimedout (0x80043001) is what SWbemEventSource.NextEvent actually
+# returns on this host when its window closes with no process event. 0x80041069
+# is retained from the previous implementation and is still asserted by
+# tests/test_windows_process_events.py; it is unverified against a live
+# provider, so it stays accepted rather than being dropped.
+_WMI_E_TIMED_OUT = 0x80043001
+_WMI_TIMEOUT_CODES = frozenset({0x80043001, 0x80041069})
 _WMI_EPOCH_SECONDS = 11_644_473_600
 
 
@@ -56,6 +63,38 @@ def decode_process_event(event: Any, action: str) -> dict[str, Any] | None:
         "event_time": event_time,
         "source": "Win32_ProcessTrace",
     }
+
+
+def _is_wmi_timeout(exc: BaseException) -> bool:
+    """True when a NextEvent() call merely expired with no event to report.
+
+    ``SWbemEventSource.NextEvent`` raises wbemErrTimedout whenever its window
+    closes without a process starting or stopping -- the normal case on an idle
+    machine. pywin32 surfaces that as DISP_E_EXCEPTION with the real WBEM code
+    buried in ``excepinfo[5]``, so checking ``com_error.hresult`` alone never
+    matches and a benign tick gets misread as a dead subscription.
+    """
+    candidates: list[int] = []
+    hresult = getattr(exc, "hresult", None)
+    if isinstance(hresult, int):
+        candidates.append(hresult & 0xFFFFFFFF)
+    excepinfo = getattr(exc, "excepinfo", None)
+    if isinstance(excepinfo, (tuple, list)) and len(excepinfo) >= 6:
+        scode = excepinfo[5]
+        if isinstance(scode, int):
+            candidates.append(scode & 0xFFFFFFFF)
+    if _WMI_TIMEOUT_CODES & set(candidates):
+        return True
+    # Some providers report the timeout only in the description text while the
+    # numeric code stays DISP_E_EXCEPTION.
+    if _DISP_E_EXCEPTION in candidates and isinstance(excepinfo, (tuple, list)):
+        description = next(
+            (part for part in excepinfo if isinstance(part, str) and "timed out" in part.lower()),
+            None,
+        )
+        if description is not None:
+            return True
+    return False
 
 
 def _default_wmi_factory() -> Any:
@@ -152,8 +191,7 @@ class WindowsProcessEventSource:
                 except Exception as exc:
                     if self._stop.is_set():
                         break
-                    hresult = getattr(exc, "hresult", None)
-                    if isinstance(hresult, int) and (hresult & 0xFFFFFFFF) == _WMI_E_TIMED_OUT:
+                    if _is_wmi_timeout(exc):
                         continue
                     message = f"{class_name} subscription failed: {exc}"
                     with self._lock:
