@@ -1,0 +1,403 @@
+"use server";
+
+import type Stripe from "stripe";
+import { stripe } from "../../app/api/stripe";
+import { api } from "@/convex/_generated/api";
+import {
+  isExpectedBillingContextError,
+  isExpectedSubscriptionLookupError,
+} from "@/lib/actions/billing-action-errors";
+import { getBillingActionContext } from "@/lib/actions/billing-context";
+import {
+  parseCancellationReasonInput,
+  stripeCancellationFeedback,
+  type CancellationReasonInputLike,
+} from "@/lib/billing/cancellation-reason-input";
+import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  releaseSubscriptionSchedule,
+  subscriptionScheduleId,
+} from "@/lib/billing/subscription-schedule";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  PAID_FUNNEL_EVENTS,
+  cancellationCompletionInsertId,
+  paidFunnelProperties,
+  planLookupKeyToTier,
+  subscriptionChurnHealthProperties,
+} from "@/lib/analytics/paid-funnel";
+import {
+  priceBillingInterval,
+  subscriptionMrrDollars,
+} from "@/lib/billing/subscription-mrr";
+import type { SubscriptionTier } from "@/types";
+import {
+  proMonthlyPricingAssignmentFromMetadata,
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentAssignment,
+} from "@/lib/experiments/pro-monthly-pricing";
+
+type CancelSubscriptionInput = {
+  cancellationReason?: CancellationReasonInputLike;
+};
+
+type SubscriptionItemContext = {
+  price: Stripe.Price;
+  quantity: number;
+};
+
+type SubscriptionContext = {
+  id: string;
+  status: Stripe.Subscription.Status;
+  items: SubscriptionItemContext[];
+  priceId?: string;
+  plan?: string;
+  tier?: SubscriptionTier;
+  billingInterval?: ReturnType<typeof priceBillingInterval>;
+  billingIntervalCount?: number;
+  currentPeriodEnd?: number;
+  cancelAtPeriodEnd: boolean;
+  scheduleId?: string;
+  pricingExperiment?: ProMonthlyPricingExperimentAssignment;
+};
+
+function parseCreatedAtMs(value: unknown): number | undefined {
+  const raw = (value as { createdAt?: unknown; created_at?: unknown }) ?? {};
+  const createdAt = raw.createdAt ?? raw.created_at;
+
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt === "string" || typeof createdAt === "number") {
+    const timestamp = new Date(createdAt).getTime();
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  return undefined;
+}
+
+function subscriptionTierFromLookupKey(
+  lookupKey: string | null | undefined,
+): SubscriptionTier | undefined {
+  return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
+}
+
+function subscriptionItemsMrrDollars(
+  items: SubscriptionItemContext[],
+): number | undefined {
+  if (items.length === 0) return undefined;
+
+  let totalMrrDollars = 0;
+  for (const item of items) {
+    const itemMrrDollars = subscriptionMrrDollars(item);
+    if (itemMrrDollars === undefined) return undefined;
+    totalMrrDollars += itemMrrDollars;
+  }
+
+  return totalMrrDollars;
+}
+
+async function getActiveSubscriptionContext(
+  stripeCustomerId: string,
+): Promise<SubscriptionContext> {
+  const subscriptions = await stripe.subscriptions.list({
+    customer: stripeCustomerId,
+    status: "all",
+    limit: 10,
+    expand: ["data.items.data.price"],
+  });
+  const currentSubscription = subscriptions.data.find((subscription) =>
+    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+  );
+
+  if (!currentSubscription) {
+    throw new Error("No active subscription found");
+  }
+
+  const items = currentSubscription.items.data.map((item) => ({
+    price: item.price,
+    quantity: item.quantity ?? 1,
+  }));
+  const primaryItem =
+    items.find((item) =>
+      Boolean(subscriptionTierFromLookupKey(item.price.lookup_key)),
+    ) ?? items[0];
+  const price = primaryItem?.price;
+  const billingInterval = priceBillingInterval(price);
+  const billingIntervalCount = price?.recurring?.interval_count;
+  const hasSharedBillingInterval = items.every(
+    (item) =>
+      priceBillingInterval(item.price) === billingInterval &&
+      item.price.recurring?.interval_count === billingIntervalCount,
+  );
+
+  return {
+    id: currentSubscription.id,
+    status: currentSubscription.status,
+    items,
+    priceId: price?.id,
+    plan: price?.lookup_key ?? undefined,
+    tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    billingInterval: hasSharedBillingInterval ? billingInterval : undefined,
+    billingIntervalCount: hasSharedBillingInterval
+      ? billingIntervalCount
+      : undefined,
+    currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
+    cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
+    scheduleId: subscriptionScheduleId(currentSubscription),
+    pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
+      currentSubscription.metadata,
+      price?.lookup_key,
+    ),
+  };
+}
+
+function shouldCancelImmediately(status: Stripe.Subscription.Status) {
+  return status === "past_due" || status === "unpaid";
+}
+
+export default async function cancelSubscriptionAction(
+  input: CancelSubscriptionInput,
+) {
+  const cancellationReason = parseCancellationReasonInput(
+    input.cancellationReason,
+  );
+  const startedAt = Date.now();
+  const context = await getBillingActionContext().catch((error) => {
+    if (isExpectedBillingContextError(error)) {
+      throw error;
+    }
+
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      stage: "billing_context",
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  });
+  const { organizationId, user, stripeCustomerId } = context;
+  const billingFields = {
+    userId: user.id,
+    org_id: organizationId,
+    stripe_customer_id: stripeCustomerId,
+  };
+
+  let subscriptionContext: SubscriptionContext;
+  try {
+    subscriptionContext = await getActiveSubscriptionContext(stripeCustomerId);
+  } catch (error) {
+    if (isExpectedSubscriptionLookupError(error)) {
+      throw error;
+    }
+
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      ...billingFields,
+      stage: "stripe_subscription_lookup",
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  }
+
+  const cancelImmediately = shouldCancelImmediately(subscriptionContext.status);
+
+  if (subscriptionContext.cancelAtPeriodEnd && !cancelImmediately) {
+    return {
+      canceled: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: subscriptionContext.currentPeriodEnd,
+      alreadyScheduled: true,
+    };
+  }
+
+  const now = Date.now();
+  const accountCreatedAt = parseCreatedAtMs(user);
+  const accountAgeDays = accountCreatedAt
+    ? Math.max(0, Math.floor((now - accountCreatedAt) / 86_400_000))
+    : undefined;
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  let cancellationStartRecorded = false;
+  let shouldEmitCancellationCompleted = true;
+
+  if (serviceKey) {
+    try {
+      await getConvexClient().mutation(
+        api.cancellationReasons.recordCancellationStarted,
+        {
+          serviceKey,
+          userId: user.id,
+          organizationId,
+          stripeCustomerId,
+          stripeSubscriptionId: subscriptionContext.id,
+          stripePriceId: subscriptionContext.priceId,
+          plan: subscriptionContext.plan,
+          subscriptionTier: subscriptionContext.tier,
+          reasonCategory: cancellationReason.reasonCategory,
+          reasonSubcategory: cancellationReason.reasonSubcategory,
+          reasonDetails: cancellationReason.reasonDetails,
+          accountCreatedAt,
+          accountAgeDays,
+          startedAt: now,
+          source: "in_app",
+        },
+      );
+      cancellationStartRecorded = true;
+    } catch (error) {
+      phLogger.error("Failed to record cancellation reason", {
+        userId: user.id,
+        org_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        error,
+      });
+    }
+  } else {
+    phLogger.error("Failed to record cancellation reason", {
+      userId: user.id,
+      org_id: organizationId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+      error: new Error("CONVEX_SERVICE_ROLE_KEY is not set"),
+    });
+  }
+
+  let updatedSubscription: Stripe.Subscription;
+  try {
+    // A pending retention downgrade would block the cancellation update.
+    await releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+      ...billingFields,
+      stripe_subscription_id: subscriptionContext.id,
+      reason: "cancellation",
+    });
+    const cancellationDetails = {
+      feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
+      comment: cancellationReason.reasonDetails,
+    } as const;
+
+    updatedSubscription = cancelImmediately
+      ? await stripe.subscriptions.cancel(subscriptionContext.id, {
+          cancellation_details: cancellationDetails,
+          invoice_now: false,
+          prorate: false,
+        })
+      : await stripe.subscriptions.update(subscriptionContext.id, {
+          cancel_at_period_end: true,
+          cancellation_details: cancellationDetails,
+        });
+  } catch (error) {
+    phLogger.error("billing_subscription_cancellation_action_failed", {
+      event: "billing_subscription_cancellation_action_failed",
+      ...billingFields,
+      stage: cancelImmediately
+        ? "stripe_subscription_cancel"
+        : "stripe_subscription_update",
+      stripe_subscription_id: subscriptionContext.id,
+      duration_ms: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  }
+
+  const completedAt = updatedSubscription.canceled_at
+    ? updatedSubscription.canceled_at * 1000
+    : Date.now();
+  const subscriptionMrr = subscriptionItemsMrrDollars(
+    subscriptionContext.items,
+  );
+
+  if (serviceKey) {
+    try {
+      const result = await getConvexClient().mutation(
+        api.cancellationReasons.markCancellationCompleted,
+        {
+          serviceKey,
+          stripeSubscriptionId: subscriptionContext.id,
+          stripeCustomerId,
+          userIds: [user.id],
+          organizationId,
+          subscriptionTier: subscriptionContext.tier,
+          stripeCancellationReason:
+            updatedSubscription.cancellation_details?.reason ?? undefined,
+          cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+          completedAt,
+        },
+      );
+      shouldEmitCancellationCompleted =
+        !cancellationStartRecorded || result.updatedCount > 0;
+    } catch (error) {
+      phLogger.warn("cancellation_reason_completion_update_failed", {
+        userId: user.id,
+        org_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        error,
+      });
+    }
+  }
+
+  phLogger.event(
+    PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
+    paidFunnelProperties({
+      userId: user.id,
+      org_id: organizationId,
+      subscription_tier: subscriptionContext.tier,
+      plan: subscriptionContext.plan,
+      stripe_price_lookup_key: subscriptionContext.plan,
+      reason_category: cancellationReason.reasonCategory,
+      reason_subcategory: cancellationReason.reasonSubcategory,
+      reason_details_length: cancellationReason.reasonDetails.length,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+      ...proMonthlyPricingExperimentProperties(
+        subscriptionContext.pricingExperiment,
+      ),
+    }),
+  );
+  if (shouldEmitCancellationCompleted) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      paidFunnelProperties({
+        userId: user.id,
+        org_id: organizationId,
+        subscription_tier: subscriptionContext.tier,
+        plan: subscriptionContext.plan,
+        stripe_price_lookup_key: subscriptionContext.plan,
+        billing_interval: subscriptionContext.billingInterval,
+        billing_interval_count: subscriptionContext.billingIntervalCount,
+        subscription_item_count: subscriptionContext.items.length,
+        reason_category: cancellationReason.reasonCategory,
+        reason_subcategory: cancellationReason.reasonSubcategory,
+        cancellation_reason: "cancellation_requested",
+        ...subscriptionChurnHealthProperties("cancellation_requested"),
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: subscriptionMrr,
+        at_risk_mrr_dollars: subscriptionMrr,
+        cancellation_completion_type: cancelImmediately
+          ? "immediate_in_app"
+          : "scheduled_in_app",
+        cancel_at_period_end: updatedSubscription.cancel_at_period_end,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        stripe_price_id: subscriptionContext.priceId,
+        ...proMonthlyPricingExperimentProperties(
+          subscriptionContext.pricingExperiment,
+        ),
+        $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
+      }),
+    );
+  }
+
+  return {
+    canceled: true,
+    cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end,
+    ...(updatedSubscription.cancel_at_period_end
+      ? {
+          currentPeriodEnd:
+            subscriptionCurrentPeriodEndMs(updatedSubscription) ??
+            subscriptionContext.currentPeriodEnd,
+        }
+      : {}),
+    alreadyScheduled: false,
+  };
+}

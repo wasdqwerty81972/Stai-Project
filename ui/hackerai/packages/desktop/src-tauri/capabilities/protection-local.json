@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "protection-local",
+  "description": "Protection dashboard IPC for the bundled STAI local UI only.",
+  "windows": ["main", "svs-agent"],
+  "local": true,
+  "platforms": ["windows"],
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "allow-protection-bridge"
+  ]
+}

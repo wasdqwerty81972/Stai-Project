@@ -1,0 +1,1538 @@
+[
+  {
+    "id": 1,
+    "name": "Process Creation",
+    "description": "Detects whenever a new program or process starts.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 2,
+    "name": "Process Termination",
+    "description": "Records when a running process exits or is terminated.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 3,
+    "name": "Parent Process",
+    "description": "Identifies the program responsible for launching another process.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 4,
+    "name": "Command-Line Execution",
+    "description": "Captures available commands and arguments used when launching programs.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 5,
+    "name": "Executable Path",
+    "description": "Records where a running executable originated on disk.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 6,
+    "name": "Process Restart",
+    "description": "Identifies programs that unexpectedly stop and restart repeatedly.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 7,
+    "name": "Process Execution Identity",
+    "description": "Identifies the user or service account running a process.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 8,
+    "name": "Process Duration",
+    "description": "Measures how long processes run, identifying abnormal lifetimes.",
+    "category": "Process lifecycle sensors"
+  },
+  {
+    "id": 9,
+    "name": "Executable Hash",
+    "description": "Computes file hashes to identify executables and detect changes.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 10,
+    "name": "Digital Signature",
+    "description": "Checks whether executables have valid digital signatures.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 11,
+    "name": "Executable Origin",
+    "description": "Tracks available file-origin information, including downloaded files.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 12,
+    "name": "Process Privilege Level",
+    "description": "Detects processes running with elevated security privileges.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 13,
+    "name": "Trusted Publisher",
+    "description": "Checks whether an executable's signing publisher is trusted.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 14,
+    "name": "Executable Replacement",
+    "description": "Detects changes to an executable between observations.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 15,
+    "name": "Suspicious Execution Location",
+    "description": "Flags execution from unusual or high-risk directories.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 16,
+    "name": "Binary Metadata",
+    "description": "Inspects executable type, architecture, version and metadata.",
+    "category": "Execution integrity sensors"
+  },
+  {
+    "id": 17,
+    "name": "Process Handle Access",
+    "description": "Monitors one process requesting access to another process.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 18,
+    "name": "Remote Thread Creation",
+    "description": "Detects threads created inside another process.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 19,
+    "name": "Cross-Process Memory Read",
+    "description": "Detects monitored attempts to read another process's memory.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 20,
+    "name": "Cross-Process Memory Write",
+    "description": "Detects monitored attempts to modify another process's memory.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 21,
+    "name": "Handle Duplication",
+    "description": "Monitors duplication of handles that reference other processes.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 22,
+    "name": "Process Tampering",
+    "description": "Identifies suspicious modification of a running process's image.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 23,
+    "name": "Thread Context Changes",
+    "description": "Observes unusual changes to execution context where instrumentation supports them.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 24,
+    "name": "Process Injection Indicators",
+    "description": "Correlates process-access, memory and thread events indicating possible injection.",
+    "category": "Cross-process activity sensors"
+  },
+  {
+    "id": 25,
+    "name": "Executable Memory Allocation",
+    "description": "Monitors memory regions allocated with executable permissions.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 26,
+    "name": "Memory Permission Changes",
+    "description": "Detects changes between writable, readable and executable memory permissions.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 27,
+    "name": "Unusual Memory Mapping",
+    "description": "Identifies abnormal or unexpected memory mappings.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 28,
+    "name": "Unsigned Executable Mapping",
+    "description": "Flags executable memory mappings associated with untrusted code.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 29,
+    "name": "Memory Map Changes",
+    "description": "Tracks relevant changes in process memory layout.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 30,
+    "name": "In-Memory Executable Image",
+    "description": "Identifies indications of executable code loaded directly into memory.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 31,
+    "name": "Shared Memory Mapping",
+    "description": "Observes potentially suspicious shared-memory regions between processes.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 32,
+    "name": "Abnormal Memory Access",
+    "description": "Identifies unusual memory-access behavior through supported telemetry and correlations.",
+    "category": "Memory security sensors"
+  },
+  {
+    "id": 33,
+    "name": "PowerShell Execution",
+    "description": "Monitors PowerShell launches and available script execution logs.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 34,
+    "name": "Command Prompt Execution",
+    "description": "Tracks CMD launches and command-line arguments.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 35,
+    "name": "Bash/Shell Execution",
+    "description": "Monitors shell execution on supported systems.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 36,
+    "name": "Python Execution",
+    "description": "Tracks Python interpreter launches and scripts when observable.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 37,
+    "name": "JavaScript Runtime Execution",
+    "description": "Tracks Node.js and other supported script-host execution.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 38,
+    "name": "WMI Execution",
+    "description": "Detects execution initiated through Windows Management Instrumentation.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 39,
+    "name": "Office Macro Execution",
+    "description": "Observes available Office macro security and execution events.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 40,
+    "name": "Script Host Activity",
+    "description": "Monitors script hosts such as Windows Script Host.",
+    "category": "Script and interpreter sensors"
+  },
+  {
+    "id": 41,
+    "name": "DLL Loading",
+    "description": "Records dynamic libraries loaded into monitored processes.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 42,
+    "name": "Kernel Driver Loading",
+    "description": "Records drivers loaded into the operating-system kernel.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 43,
+    "name": "Module Signature",
+    "description": "Validates digital signatures associated with loaded modules.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 44,
+    "name": "DLL Search Path",
+    "description": "Checks risky or unexpected DLL search-path configurations.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 45,
+    "name": "Unsigned Module",
+    "description": "Identifies loaded modules without valid trusted signatures.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 46,
+    "name": "New Driver Installation",
+    "description": "Detects newly installed kernel drivers.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 47,
+    "name": "Driver Configuration",
+    "description": "Monitors changes to driver settings or startup configuration.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 48,
+    "name": "Module Integrity",
+    "description": "Identifies unexpected changes to monitored library files or code integrity state.",
+    "category": "Libraries and driver sensors"
+  },
+  {
+    "id": 49,
+    "name": "File Creation",
+    "description": "Detects newly created files in monitored locations.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 50,
+    "name": "File Modification",
+    "description": "Detects changes to existing files.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 51,
+    "name": "File Deletion",
+    "description": "Records deletion of monitored files.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 52,
+    "name": "File Rename",
+    "description": "Tracks file renaming operations.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 53,
+    "name": "File Move",
+    "description": "Tracks files moved between monitored directories or volumes.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 54,
+    "name": "Protected File Access",
+    "description": "Observes available access events for sensitive files and directories.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 55,
+    "name": "File Permission Changes",
+    "description": "Detects modifications to file access controls and ownership.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 56,
+    "name": "Bulk File Operations",
+    "description": "Identifies unusually large numbers of file changes over short periods.",
+    "category": "Filesystem operation sensors"
+  },
+  {
+    "id": 57,
+    "name": "File Hash Changes",
+    "description": "Detects when a monitored file's cryptographic hash changes.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 58,
+    "name": "File Signature Validity",
+    "description": "Verifies whether signed files retain valid signatures.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 59,
+    "name": "Download Origin",
+    "description": "Reads available metadata identifying where files originated.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 60,
+    "name": "Alternate Data Streams",
+    "description": "Monitors Windows alternate data streams and associated metadata.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 61,
+    "name": "Archive Extraction",
+    "description": "Detects available indicators of ZIP and other archive extraction operations.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 62,
+    "name": "Suspicious File Types",
+    "description": "Flags mismatches between extensions, file headers and expected types.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 63,
+    "name": "File Entropy Changes",
+    "description": "Measures unusual changes in file content randomness as a possible detection signal.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 64,
+    "name": "Symbolic Link Operations",
+    "description": "Tracks symbolic links, junctions and relevant link changes.",
+    "category": "File provenance and metadata sensors"
+  },
+  {
+    "id": 65,
+    "name": "Registry Autorun",
+    "description": "Detects programs added to Windows startup registry locations.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 66,
+    "name": "Startup Folder",
+    "description": "Monitors programs and shortcuts added to startup folders.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 67,
+    "name": "Scheduled Task",
+    "description": "Detects creation and modification of scheduled tasks.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 68,
+    "name": "Service Persistence",
+    "description": "Detects newly installed or modified background services.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 69,
+    "name": "WMI Subscription",
+    "description": "Detects persistent WMI event subscriptions that can trigger execution.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 70,
+    "name": "Logon Script",
+    "description": "Monitors changes to scripts executed during user login.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 71,
+    "name": "Extension Startup",
+    "description": "Monitors supported browser or application extensions configured to start automatically.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 72,
+    "name": "Boot Persistence",
+    "description": "Detects modifications enabling programs to run during system startup.",
+    "category": "Persistence sensors"
+  },
+  {
+    "id": 73,
+    "name": "Registry Key Creation",
+    "description": "Records new Windows registry keys in monitored locations.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 74,
+    "name": "Registry Key Deletion",
+    "description": "Detects removal of monitored registry keys.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 75,
+    "name": "Registry Value Modification",
+    "description": "Records changes to security-relevant registry values.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 76,
+    "name": "Group Policy Changes",
+    "description": "Detects changes to Windows Group Policy settings.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 77,
+    "name": "Hosts File Changes",
+    "description": "Monitors modifications to local hostname mappings.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 78,
+    "name": "DNS Resolver Configuration",
+    "description": "Detects changes to configured DNS servers and resolver settings.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 79,
+    "name": "Proxy Configuration",
+    "description": "Detects changes to system and application proxy settings.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 80,
+    "name": "Environment Variables",
+    "description": "Monitors security-relevant changes to system and user environment variables.",
+    "category": "Registry and configuration sensors"
+  },
+  {
+    "id": 81,
+    "name": "Bootloader Integrity",
+    "description": "Detects changes to operating-system boot configuration.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 82,
+    "name": "Secure Boot State",
+    "description": "Checks whether Secure Boot is enabled and reports changes.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 83,
+    "name": "Code Integrity Policy",
+    "description": "Monitors changes to OS code-signing and integrity enforcement settings.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 84,
+    "name": "TPM Security State",
+    "description": "Checks available Trusted Platform Module security and health indicators.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 85,
+    "name": "Kernel Integrity Events",
+    "description": "Monitors available kernel code-integrity or protection violations.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 86,
+    "name": "Hypervisor Security State",
+    "description": "Checks virtualization-based security and hypervisor protection status.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 87,
+    "name": "Boot Anomaly",
+    "description": "Identifies unexpected boot failures, recovery events or unusual startup behavior.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 88,
+    "name": "Driver Enforcement Policy",
+    "description": "Detects changes to kernel driver-signing enforcement settings.",
+    "category": "Boot and kernel integrity sensors"
+  },
+  {
+    "id": 89,
+    "name": "DNS Query",
+    "description": "Records domains requested by local programs.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 90,
+    "name": "DNS Response",
+    "description": "Records available DNS answers, including resolved addresses.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 91,
+    "name": "DNS Failure",
+    "description": "Detects repeated failed domain lookups.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 92,
+    "name": "DNS Server Changes",
+    "description": "Detects modifications to configured DNS servers.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 93,
+    "name": "Suspicious Domain Patterns",
+    "description": "Identifies unusual domain lengths, randomness or subdomain patterns.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 94,
+    "name": "Repeated Lookup Failures",
+    "description": "Detects bursts of unsuccessful queries associated with a process or domain.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 95,
+    "name": "DNS-over-HTTPS Configuration",
+    "description": "Monitors changes to encrypted DNS settings where visible.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 96,
+    "name": "DNS Address Changes",
+    "description": "Detects unusual changes in resolved addresses for monitored domains.",
+    "category": "DNS sensors"
+  },
+  {
+    "id": 97,
+    "name": "Outbound Connection",
+    "description": "Detects connections initiated toward remote systems.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 98,
+    "name": "Inbound Connection",
+    "description": "Detects connections received from external systems.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 99,
+    "name": "Listening Ports",
+    "description": "Identifies processes opening ports for incoming connections.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 100,
+    "name": "Connection Termination",
+    "description": "Records when monitored network sessions close.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 101,
+    "name": "Process-Network Mapping",
+    "description": "Associates network activity with the responsible local process.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 102,
+    "name": "Network Traffic Volume",
+    "description": "Measures bytes transferred by connections or applications.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 103,
+    "name": "Destination Changes",
+    "description": "Flags unusual changes in remote destinations contacted by a process.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 104,
+    "name": "Connection Frequency",
+    "description": "Identifies unusual connection bursts or repeated periodic connections.",
+    "category": "Network connection sensors"
+  },
+  {
+    "id": 105,
+    "name": "Allowed Firewall Traffic",
+    "description": "Records traffic permitted by available firewall auditing.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 106,
+    "name": "Blocked Firewall Traffic",
+    "description": "Records connections rejected by local firewall policies.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 107,
+    "name": "Firewall Rule Changes",
+    "description": "Detects firewall rules being added, removed or modified.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 108,
+    "name": "Firewall Policy State",
+    "description": "Checks whether required firewall protections remain enabled.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 109,
+    "name": "VPN Activation",
+    "description": "Detects VPN connections and changes in VPN state.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 110,
+    "name": "Proxy Activation",
+    "description": "Detects changes indicating a proxy has been activated.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 111,
+    "name": "Unexpected Exposed Ports",
+    "description": "Identifies services unexpectedly becoming reachable.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 112,
+    "name": "Firewall Configuration Drift",
+    "description": "Compares current firewall settings against an approved baseline.",
+    "category": "Firewall and tunneling sensors"
+  },
+  {
+    "id": 113,
+    "name": "SMB Activity",
+    "description": "Monitors available Windows file-sharing connection and access events.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 114,
+    "name": "RDP Activity",
+    "description": "Detects Remote Desktop connections and session events.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 115,
+    "name": "SSH Activity",
+    "description": "Detects SSH connections and authentication activity where logged.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 116,
+    "name": "HTTP Metadata",
+    "description": "Collects permitted HTTP connection/request metadata without assuming encrypted content access.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 117,
+    "name": "LDAP Activity",
+    "description": "Monitors directory-service connections and available audit records.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 118,
+    "name": "DHCP Activity",
+    "description": "Detects address assignments and configuration changes.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 119,
+    "name": "mDNS Activity",
+    "description": "Monitors local multicast DNS activity where supported.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 120,
+    "name": "ICMP Activity",
+    "description": "Records observable ICMP network activity and unusual patterns.",
+    "category": "Network protocol sensors"
+  },
+  {
+    "id": 121,
+    "name": "ARP/Neighbor Changes",
+    "description": "Detects changes in IP-to-hardware address mappings.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 122,
+    "name": "Default Gateway Changes",
+    "description": "Detects modifications to the network's default gateway.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 123,
+    "name": "Wi-Fi Connection",
+    "description": "Records when the device connects or disconnects from wireless networks.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 124,
+    "name": "SSID Changes",
+    "description": "Identifies changes in the connected wireless network identity.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 125,
+    "name": "Network Adapter Changes",
+    "description": "Detects network interfaces appearing, disappearing or changing state.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 126,
+    "name": "DHCP Configuration Changes",
+    "description": "Monitors changes to DHCP-derived network settings.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 127,
+    "name": "Bluetooth Pairing",
+    "description": "Detects new Bluetooth device pairings and changes.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 128,
+    "name": "Routing Table Changes",
+    "description": "Identifies unexpected modifications to network routes.",
+    "category": "Local network sensors"
+  },
+  {
+    "id": 129,
+    "name": "Successful Login",
+    "description": "Records successful user authentication events.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 130,
+    "name": "Failed Login",
+    "description": "Detects unsuccessful login attempts.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 131,
+    "name": "Account Lockout",
+    "description": "Identifies accounts locked after repeated authentication failures.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 132,
+    "name": "Remote Login",
+    "description": "Detects logins through RDP, SSH and other supported remote-access methods.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 133,
+    "name": "Session Termination",
+    "description": "Records user logout and session termination events.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 134,
+    "name": "Authentication Method Changes",
+    "description": "Detects security-relevant changes to allowed authentication methods.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 135,
+    "name": "Authentication Policy Changes",
+    "description": "Monitors changes to password, lockout and other login policies.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 136,
+    "name": "MFA Authentication Outcomes",
+    "description": "Collects successful or failed multifactor authentication events from supported identity integrations.",
+    "category": "Authentication sensors"
+  },
+  {
+    "id": 137,
+    "name": "User Account Creation",
+    "description": "Detects newly created user accounts.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 138,
+    "name": "User Account Deletion",
+    "description": "Records user accounts being removed.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 139,
+    "name": "Group Membership Changes",
+    "description": "Detects users being added to or removed from security groups.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 140,
+    "name": "Administrator Elevation",
+    "description": "Monitors available events involving elevation to administrative privileges.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 141,
+    "name": "Privilege Assignment",
+    "description": "Detects important changes to privileges granted to accounts.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 142,
+    "name": "Account Policy Changes",
+    "description": "Monitors changes to account expiration, restrictions and security settings.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 143,
+    "name": "Unusual Account Activation",
+    "description": "Flags unexpected enabling or reactivation of inactive accounts.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 144,
+    "name": "Service Account Usage",
+    "description": "Identifies unusual authentication or execution involving service accounts.",
+    "category": "Accounts and privileges sensors"
+  },
+  {
+    "id": 145,
+    "name": "Browser Extension Installation",
+    "description": "Detects newly installed extensions where browser integration permits.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 146,
+    "name": "Browser Extension Removal",
+    "description": "Records extensions being removed.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 147,
+    "name": "Browser Extension Permissions",
+    "description": "Detects changes to permissions requested or granted to extensions.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 148,
+    "name": "Browser Security Policies",
+    "description": "Monitors changes to browser security configuration.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 149,
+    "name": "Browser Download Metadata",
+    "description": "Records permitted metadata about downloads, such as filename and origin.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 150,
+    "name": "Browser Security Warnings",
+    "description": "Collects available security-warning events through supported integrations.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 151,
+    "name": "Browser Version and Updates",
+    "description": "Monitors browser version changes and outdated installations.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 152,
+    "name": "Suspicious Navigation Metadata",
+    "description": "Flags potentially dangerous website navigation using privacy-preserving, consent-based metadata.",
+    "category": "Browser security sensors"
+  },
+  {
+    "id": 153,
+    "name": "Email Attachment Metadata",
+    "description": "Examines permitted attachment metadata for potentially suspicious files.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 154,
+    "name": "Email Link Reputation",
+    "description": "Checks accessible message links against known security indicators.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 155,
+    "name": "Suspicious Attachment Alerts",
+    "description": "Collects attachment-related alerts from connected email security services.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 156,
+    "name": "OAuth Application Consent",
+    "description": "Detects new third-party application permissions in supported accounts.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 157,
+    "name": "Email Account Sign-In Alerts",
+    "description": "Collects security alerts about unusual email-account sign-ins.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 158,
+    "name": "Mailbox Forwarding Changes",
+    "description": "Detects new or modified email forwarding rules.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 159,
+    "name": "Integration Token Changes",
+    "description": "Monitors creation, revocation or permission changes of connected application tokens.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 160,
+    "name": "Public Sharing Changes",
+    "description": "Detects documents or files being made publicly accessible through connected services.",
+    "category": "Email and collaboration sensors"
+  },
+  {
+    "id": 161,
+    "name": "Application Installation",
+    "description": "Detects newly installed software.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 162,
+    "name": "Application Removal",
+    "description": "Detects software being uninstalled.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 163,
+    "name": "Package Updates",
+    "description": "Tracks installed application package updates.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 164,
+    "name": "Application Publisher Changes",
+    "description": "Identifies unexpected changes in software publisher information.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 165,
+    "name": "Application Version Changes",
+    "description": "Records version upgrades, downgrades and replacements.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 166,
+    "name": "Vulnerability Inventory",
+    "description": "Matches installed software versions against known vulnerability records where possible.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 167,
+    "name": "Application Updater Changes",
+    "description": "Monitors changes to update services and configurations.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 168,
+    "name": "Application Permission Changes",
+    "description": "Detects security-relevant changes to application permissions.",
+    "category": "Application security sensors"
+  },
+  {
+    "id": 169,
+    "name": "USB Device Insertion",
+    "description": "Detects USB devices connected to the system.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 170,
+    "name": "USB Device Removal",
+    "description": "Records USB devices being disconnected.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 171,
+    "name": "Removable Storage Mount",
+    "description": "Detects external storage drives being mounted.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 172,
+    "name": "Device Class Changes",
+    "description": "Identifies changes in how connected devices are classified by the OS.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 173,
+    "name": "HID Device Detection",
+    "description": "Detects new human-interface devices such as keyboards and mice.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 174,
+    "name": "Bluetooth Device Detection",
+    "description": "Records newly connected Bluetooth devices.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 175,
+    "name": "External Storage Activity",
+    "description": "Monitors permitted file activity involving removable drives.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 176,
+    "name": "Camera/Microphone Permission Changes",
+    "description": "Detects changes to supported application access permissions for cameras and microphones.",
+    "category": "USB and peripheral sensors"
+  },
+  {
+    "id": 177,
+    "name": "Antivirus Protection Status",
+    "description": "Checks whether installed antivirus protection is active.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 178,
+    "name": "Firewall Protection Status",
+    "description": "Checks whether firewall protection is enabled.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 179,
+    "name": "Antivirus Signature Updates",
+    "description": "Monitors security definition and signature update status.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 180,
+    "name": "Security Service Health",
+    "description": "Detects failures of important security-related services.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 181,
+    "name": "Tamper Protection State",
+    "description": "Observes available settings that protect security software from unauthorized changes.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 182,
+    "name": "Quarantine Events",
+    "description": "Records files quarantined or restored by supported security products.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 183,
+    "name": "Antivirus Scan Results",
+    "description": "Collects available scan results and threat detections.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 184,
+    "name": "Exploit Protection Settings",
+    "description": "Detects changes to operating-system exploit mitigation settings.",
+    "category": "Security product sensors"
+  },
+  {
+    "id": 185,
+    "name": "CPU Utilization",
+    "description": "Monitors processor utilization and unusual resource spikes.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 186,
+    "name": "Memory Utilization",
+    "description": "Tracks RAM usage and memory pressure.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 187,
+    "name": "Disk Utilization",
+    "description": "Monitors disk capacity and resource usage.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 188,
+    "name": "Network Interface Health",
+    "description": "Detects disconnected or malfunctioning network interfaces.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 189,
+    "name": "Process Crash",
+    "description": "Records application crashes and abnormal process failures.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 190,
+    "name": "System Crash",
+    "description": "Records operating-system crashes and unexpected shutdowns.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 191,
+    "name": "Critical Service Failure",
+    "description": "Detects important services unexpectedly stopping or failing.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 192,
+    "name": "Storage Health",
+    "description": "Monitors available disk-health and storage error indicators.",
+    "category": "System health sensors"
+  },
+  {
+    "id": 193,
+    "name": "Event Log Clearing",
+    "description": "Detects security or system logs being cleared.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 194,
+    "name": "Audit Policy Modification",
+    "description": "Detects changes to auditing configurations.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 195,
+    "name": "Logging Disabled",
+    "description": "Detects when important event logging is turned off.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 196,
+    "name": "Event Loss",
+    "description": "Monitors telemetry loss or dropped events reported by collectors.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 197,
+    "name": "System Clock Changes",
+    "description": "Records significant changes to system time.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 198,
+    "name": "Sysmon Service State",
+    "description": "Detects Sysmon starting, stopping or unexpectedly failing.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 199,
+    "name": "Log Retention Changes",
+    "description": "Monitors modifications to logging retention or size policies.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 200,
+    "name": "Log Ingestion Failure",
+    "description": "Detects when SVS-Cyber cannot reliably ingest expected log events.",
+    "category": "Auditing and logging sensors"
+  },
+  {
+    "id": 201,
+    "name": "Container Creation",
+    "description": "Detects new containers started through supported runtimes.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 202,
+    "name": "Container Deletion",
+    "description": "Records container removal.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 203,
+    "name": "Container Process Execution",
+    "description": "Monitors processes started inside monitored containers.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 204,
+    "name": "Container Image Pull",
+    "description": "Records container images downloaded from registries.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 205,
+    "name": "Privileged Container",
+    "description": "Identifies containers launched with elevated permissions.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 206,
+    "name": "Container Volume Mount",
+    "description": "Monitors host directories or volumes mounted into containers.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 207,
+    "name": "Virtual Machine Configuration",
+    "description": "Detects changes to supported virtual-machine settings.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 208,
+    "name": "Container Security Policy",
+    "description": "Monitors changes to container privilege and security policies.",
+    "category": "Virtual machine and container sensors"
+  },
+  {
+    "id": 209,
+    "name": "Linux Audit Events",
+    "description": "Collects configured Linux audit subsystem events.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 210,
+    "name": "eBPF Security Events",
+    "description": "Collects process, networking or other security events from supported eBPF programs.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 211,
+    "name": "fanotify Filesystem Events",
+    "description": "Monitors supported filesystem access and modification events.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 212,
+    "name": "sudo Activity",
+    "description": "Records privilege elevation performed through sudo.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 213,
+    "name": "PAM Authentication",
+    "description": "Collects authentication events from the Linux PAM system.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 214,
+    "name": "systemd Service Changes",
+    "description": "Detects changes to systemd service definitions and service state.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 215,
+    "name": "Linux Capability Changes",
+    "description": "Identifies changes to file or process capabilities where observable.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 216,
+    "name": "Kernel Module Changes",
+    "description": "Detects Linux kernel modules being loaded or unloaded.",
+    "category": "Linux-specific sensors"
+  },
+  {
+    "id": 217,
+    "name": "EndpointSecurity Execution",
+    "description": "Collects supported process execution events using Apple's EndpointSecurity framework.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 218,
+    "name": "Process Fork Events",
+    "description": "Detects new processes created through fork operations.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 219,
+    "name": "EndpointSecurity File Events",
+    "description": "Monitors supported file access and modification events.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 220,
+    "name": "Filesystem Mount Events",
+    "description": "Records storage volumes being mounted and unmounted.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 221,
+    "name": "launchd Persistence",
+    "description": "Detects changes to launch agents and launch daemons.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 222,
+    "name": "TCC Permission Changes",
+    "description": "Monitors changes to supported macOS privacy permissions.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 223,
+    "name": "System Extension Changes",
+    "description": "Detects installed, activated or removed system extensions.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 224,
+    "name": "Code Signing Integrity",
+    "description": "Checks code signatures and trust information for monitored applications.",
+    "category": "macOS-specific sensors"
+  },
+  {
+    "id": 225,
+    "name": "App Installation",
+    "description": "Detects app installation events visible to SVS-Cyber.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 226,
+    "name": "App Updates",
+    "description": "Detects changes to installed apps.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 227,
+    "name": "App Permissions",
+    "description": "Identifies application permissions accessible through Android's supported APIs.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 228,
+    "name": "Local VPN Metadata",
+    "description": "Monitors permitted network metadata through a user-authorized VPN service.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 229,
+    "name": "Network Connectivity Changes",
+    "description": "Detects Wi-Fi, cellular and connection-state changes.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 230,
+    "name": "Security Patch Level",
+    "description": "Checks the device's reported Android security patch level.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 231,
+    "name": "Device Security Posture",
+    "description": "Checks accessible device security settings and integrity indicators.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 232,
+    "name": "Application Usage Metadata",
+    "description": "Collects permitted app usage events through Android's restricted usage-access APIs.",
+    "category": "Android-specific sensors"
+  },
+  {
+    "id": 233,
+    "name": "Cloud IAM Role Changes",
+    "description": "Detects changes to roles and access permissions through supported cloud audit APIs.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 234,
+    "name": "Cloud Audit Events",
+    "description": "Ingests security-relevant activity from cloud audit logs.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 235,
+    "name": "API Credential Changes",
+    "description": "Detects creation, modification or revocation of cloud API credentials.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 236,
+    "name": "Cloud VM Creation",
+    "description": "Records new virtual machines provisioned in connected cloud environments.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 237,
+    "name": "Object Storage Permissions",
+    "description": "Detects changes to cloud storage bucket or object access policies.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 238,
+    "name": "Cloud Firewall Changes",
+    "description": "Monitors modifications to cloud networking and security-group rules.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 239,
+    "name": "Cloud Security Logging State",
+    "description": "Checks whether required cloud audit logging remains enabled.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 240,
+    "name": "Unusual Cloud Data Export",
+    "description": "Flags abnormal data-transfer or export patterns based on available audit metadata.",
+    "category": "Cloud integration sensors"
+  },
+  {
+    "id": 241,
+    "name": "Router Firewall Logs",
+    "description": "Collects firewall events from supported routers or gateways.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 242,
+    "name": "DHCP Lease Activity",
+    "description": "Tracks devices receiving IP address leases from connected infrastructure.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 243,
+    "name": "DNS Resolver Logs",
+    "description": "Collects domain-resolution logs from supported network DNS servers.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 244,
+    "name": "Network Device Inventory",
+    "description": "Detects new, removed or changed devices in an authorized network inventory.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 245,
+    "name": "Gateway Configuration",
+    "description": "Detects changes to router or network gateway settings.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 246,
+    "name": "VPN Gateway Activity",
+    "description": "Monitors available VPN gateway connection and authentication logs.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 247,
+    "name": "Network IDS Alerts",
+    "description": "Ingests detections generated by compatible intrusion detection systems.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 248,
+    "name": "Infrastructure Health",
+    "description": "Monitors health and availability of connected routers, firewalls and network services.",
+    "category": "Router and network infrastructure sensors"
+  },
+  {
+    "id": 249,
+    "name": "Sensor Heartbeat",
+    "description": "Confirms active collectors continue reporting within expected intervals.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 250,
+    "name": "Agent Process Health",
+    "description": "Detects crashes, restarts or unexpected termination of SVS-Cyber components.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 251,
+    "name": "Event Queue Health",
+    "description": "Monitors telemetry queues for excessive backlog and processing delays.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 252,
+    "name": "Dropped Event Counter",
+    "description": "Measures events lost because of overload, filtering errors or collection failures.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 253,
+    "name": "Configuration Integrity",
+    "description": "Detects unauthorized or unexpected changes to SVS-Cyber configuration.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 254,
+    "name": "Sensor Restart Events",
+    "description": "Records sensors unexpectedly restarting or repeatedly failing.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 255,
+    "name": "Sensor Permission Failures",
+    "description": "Detects loss of permissions required for monitoring capabilities.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  },
+  {
+    "id": 256,
+    "name": "Investigation Pipeline Health",
+    "description": "Verifies that detected events reach triage, investigation and response components successfully.",
+    "category": "SVS-Cyber self-protection and reliability sensors"
+  }
+]

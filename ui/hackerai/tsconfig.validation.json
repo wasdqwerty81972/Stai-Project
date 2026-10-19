@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "global.d.ts",
+    "app/layout.tsx",
+    "app/(chat)/layout.tsx",
+    "app/(chat)/HomePageClient.tsx",
+    "app/(chat)/c/[id]/page.tsx",
+    "app/components/StaiChatWorkspace.tsx",
+    "app/api/chat/route.ts",
+    "lib/stai-api.ts"
+  ],
+  "exclude": ["node_modules", ".next"]
+}

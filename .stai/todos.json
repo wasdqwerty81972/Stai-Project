@@ -1,0 +1,27 @@
+[
+  {
+    "id": "1",
+    "text": "Search web for React latest version",
+    "status": "pending"
+  },
+  {
+    "id": "2",
+    "text": "Visit source 1: react.dev (official)",
+    "status": "pending"
+  },
+  {
+    "id": "3",
+    "text": "Visit source 2: npmjs.com",
+    "status": "pending"
+  },
+  {
+    "id": "4",
+    "text": "Visit source 3: GitHub releases",
+    "status": "pending"
+  },
+  {
+    "id": "5",
+    "text": "Compare findings and conclude",
+    "status": "pending"
+  }
+]

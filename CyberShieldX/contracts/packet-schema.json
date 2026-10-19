@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Cyber Shield X Packet Schema",
+  "description": "Shared behavioral contract for the packet model used by both the Swift and TypeScript implementations. The packet identifiers, synthetic addresses, protocol enums, and simulation ticks are all deterministic integers; wall-clock time is never used for scoring or state transitions.",
+  "definitions": {
+    "PacketId": { "type": "string", "description": "Globally unique stable identifier for a packet, e.g. pkt_0001.", "pattern": "^pkt_[0-9a-f]{4}$" },
+    "Protocol": { "type": "string", "enum": ["TCP", "UDP", "ICMP", "DNS", "SMB", "RDP", "SSH", "HTTP", "HTTPS", "NETBIOS"] },
+    "SyntheticAddress": {
+      "type": "object",
+      "description": "Synthetic, privacy-preserving addresses. Source and destination are never real IPs.",
+      "properties": {
+        "ip": { "type": "string", "pattern": "^10\\.0\\.[0-9]{1,3}\\.[0-9]{1,3}$" },
+        "hostId": { "type": "string", "pattern": "^h[0-9a-f]{3}$" },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535 }
+      },
+      "required": ["ip", "hostId", "port"]
+    },
+    "PacketKind": { "type": "string", "enum": ["SAFE", "SUSPICIOUS"] },
+    "PacketState": { "type": "string", "enum": ["CREATED", "INSPECTING", "HOLDING_INTERCEPT", "ALLOWED", "DROPPED", "ESCALATED"] }
+  },
+  "type": "object",
+  "properties": {
+    "id": { "$ref": "#/definitions/PacketId" },
+    "tick": { "type": "integer", "minimum": 0, "description": "Integer simulation tick at which the packet was created." },
+    "protocol": { "$ref": "#/definitions/Protocol" },
+    "source": { "$ref": "#/definitions/SyntheticAddress" },
+    "destination": { "$ref": "#/definitions/SyntheticAddress" },
+    "kind": { "$ref": "#/definitions/PacketKind" },
+    "size": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "payload": { "type": "string", "maxLength": 256 },
+    "flags": { "type": "object", "properties": { "isRepeated": { "type": "boolean" }, "isPortScan": { "type": "boolean" } }, "additionalProperties": false },
+    "state": { "$ref": "#/definitions/PacketState" }
+  },
+  "required": ["id", "tick", "protocol", "source", "destination", "kind", "size", "payload", "flags", "state"],
+  "additionalProperties": false
+}

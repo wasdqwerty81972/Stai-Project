@@ -1,0 +1,74 @@
+; StaiProtection.inf - Installation file for STAI Minifilter Driver
+; Development package. Build output is unsigned; installation requires a valid
+; signature and a Microsoft-assigned minifilter altitude.
+;
+; The architecture-decorated [DefaultInstall.NTamd64] sections below are the
+; CORRECT and documented construct for this package - do not "modernise" them
+; into [Manufacturer]/[Models]/[DDInstall]. Per Microsoft's INF DefaultInstall
+; reference, DefaultInstall is to be used only for class filter drivers, file
+; system filters, and kernel driver services with no devnode, which is exactly
+; what this minifilter is. Adding a [Manufacturer] section would additionally
+; break Universal INF validation and driver-package signing, and would disqualify
+; the package from primitive-driver handling. Install it with
+; "pnputil /add-driver StaiProtection.inf /install", not with the legacy
+; rundll32 setupapi.dll,InstallHinfSection path.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %STAI_PROVIDER%
+DriverVer   = 10/12/2026,1.0.0.0
+CatalogFile = StaiProtection.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+StaiProtection.DriverFiles = 12
+
+[SourceDisksNames]
+1 = %STAI_DISK_NAME%
+
+[SourceDisksFiles]
+StaiProtection.sys = 1
+
+[DefaultInstall.NTamd64]
+OptionDesc = %STAI_SERVICE_DESC%
+CopyFiles  = StaiProtection.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService = %STAI_DRIVER_SERVICE_NAME%,,StaiProtection.Service
+
+[StaiProtection.DriverFiles]
+StaiProtection.sys
+
+[StaiProtection.Service]
+DisplayName    = %STAI_SERVICE_DISPLAY_NAME%
+Description    = %STAI_SERVICE_DESC%
+ServiceBinary  = %12%\StaiProtection.sys
+Dependencies   = FltMgr
+ServiceType    = 2
+; Auto-load the minifilter at boot so file-operation coverage resumes after restart.
+StartType      = 2
+ErrorControl   = 1
+LoadOrderGroup = "FSFilter Anti-Virus"
+AddReg         = StaiProtection.AddReg
+
+[StaiProtection.AddReg]
+HKR,"Parameters","DebugFlags",0x00010001,0x0
+HKR,"Parameters\Instances","DefaultInstance",0x00000000,%STAI_INSTANCE_NAME%
+HKR,"Parameters\Instances\%STAI_INSTANCE_NAME%","Altitude",0x00000000,%STAI_ALTITUDE%
+HKR,"Parameters\Instances\%STAI_INSTANCE_NAME%","Flags",0x00010001,0x0
+
+[Strings]
+STAI_PROVIDER       = "STAI Project"
+STAI_DRIVER_SERVICE_NAME = "StaiProtectionFilter"
+STAI_SERVICE_DISPLAY_NAME = "STAI Minifilter Protection Driver"
+STAI_SERVICE_DESC   = "STAI File System Minifilter Protection Driver"
+STAI_DISK_NAME      = "STAI Minifilter Installation Media"
+STAI_INSTANCE_NAME  = "StaiProtection Instance"
+; RELEASE BLOCKER: 329999 is an unallocated placeholder in the antivirus altitude
+; range, used for VM debugging only. It can collide with a real filter and must be
+; replaced with an altitude allocated by Microsoft (fsfilter@microsoft.com) before
+; this package ships or is signed for production.
+STAI_ALTITUDE       = "329999"

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "production_ready": false,
+  "gates": {
+    "microsoft_signed_driver": {
+      "passed": false,
+      "evidence": null
+    },
+    "allocated_altitude": {
+      "passed": false,
+      "value": "329999",
+      "evidence": null
+    },
+    "clean_windows_vm_validation": {
+      "passed": false,
+      "evidence": null
+    },
+    "signed_release_artifacts": {
+      "passed": false,
+      "test_signature": true,
+      "evidence": null
+    },
+    "approved_service_publisher": {
+      "passed": false,
+      "evidence": "release-policy.json is intentionally blocked and has no approved publisher thumbprints."
+    }
+  },
+  "limitations": [
+    "The current minifilter altitude is a VM-only debug value.",
+    "A local WDK-built unsigned development package exists under windows_protection/driver/x64/Release; no Microsoft-signed production package is present.",
+    "No production publisher thumbprint has been approved or pinned in release-policy.json.",
+    "No isolated Windows 10/11 end-to-end install and enforcement evidence is recorded.",
+    "STAI has not been evaluated by an independent antivirus testing laboratory."
+  ]
+}

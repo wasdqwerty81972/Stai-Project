@@ -1,0 +1,9 @@
+[
+  {
+    "severity": "high",
+    "description": "Test finding",
+    "finding_id": "f-20260823-c7bb91bf",
+    "timestamp": "2026-08-23T19:16:31.416735+00:00",
+    "status": "new"
+  }
+]

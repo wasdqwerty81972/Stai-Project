@@ -1,0 +1,63 @@
+{
+  "description": "Independent oracle computed from the shared contract rule weights. Both the Swift and TypeScript engines must reproduce these exact values for the same fixtures. All scores are the sum of applicable rule weights, clamped to [0,100] via min(100, ...). Rounding is round-half-to-even to 2 decimals (integer weights here, so no fractional parts).",
+  "rule_weights": {
+    "suspicious_destination_port": { "445": 25, "139": 25, "135": 25, "3389": 25, "22": 15 },
+    "protocol_anomaly": { "UDP@443": 20 },
+    "known_bad_source": 30,
+    "payload_indicator": { "brute-force": 25, "beacon": 10, "SMB negotiate": 5, "RDP connection": 5 },
+    "connection_burst": 15,
+    "port_scan_pattern": 20
+  },
+  "known_bad_sources": ["h100", "h200", "h400", "h600"],
+  "safe_traffic": {
+    "packetCount": 12,
+    "generated": 12,
+    "flagged": 0,
+    "held_after_inspection": 0,
+    "allowed_after_inspection": 12,
+    "dropped": 0,
+    "escalated": 0,
+    "pass_percentage": 100.0,
+    "scores": [0, 0, 0, 0, 0, 15, 0, 0, 0, 0, 0, 15],
+    "severities": ["SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE", "SAFE"]
+  },
+  "suspicious_traffic": {
+    "packetCount": 8,
+    "generated": 8,
+    "flagged": 8,
+    "held_after_inspection": 8,
+    "allowed_after_inspection": 0,
+    "dropped": 0,
+    "escalated": 0,
+    "pass_percentage": 0.0,
+    "scores": [75, 75, 75, 75, 60, 60, 60, 70],
+    "severities": ["HIGH", "HIGH", "HIGH", "HIGH", "SUSPICIOUS", "SUSPICIOUS", "SUSPICIOUS", "SUSPICIOUS"]
+  },
+  "safe_then_suspicious_combined": {
+    "generated": 20,
+    "flagged": 8,
+    "held_after_inspection": 8,
+    "allowed_after_inspection": 12,
+    "pass_percentage": 60.0
+  },
+  "operator_actions_suspicious": {
+    "description": "After all 8 suspicious packets are held, applying APPROVE to 3, DROP to 3, ESCALATE to 1, and leaving 1 held yields the stated counters. Held gauge reflects the remaining held packet.",
+    "actions": [
+      { "action": "APPROVE", "target": "pkt_0001" },
+      { "action": "APPROVE", "target": "pkt_0002" },
+      { "action": "APPROVE", "target": "pkt_0003" },
+      { "action": "DROP", "target": "pkt_0004" },
+      { "action": "DROP", "target": "pkt_0005" },
+      { "action": "DROP", "target": "pkt_0006" },
+      { "action": "ESCALATE", "target": "pkt_0007" }
+    ],
+    "expected": {
+      "allowed": 3,
+      "dropped": 3,
+      "escalated": 1,
+      "held": 1,
+      "resolved": 6,
+      "pass_percentage": 50.0
+    }
+  }
+}

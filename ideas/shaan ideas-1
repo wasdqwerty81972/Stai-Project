@@ -1,0 +1,545 @@
+import socket
+import ssl
+import dns.resolver
+import dns.reversename
+import requests
+import hashlib
+import ipaddress
+import re
+from urllib.parse import urlparse
+from typing import List
+
+# --- Functional OSINT & Recon ---
+
+class OSINTRecon:
+    """Functional OSINT using DNS, RDAP, and public data sources."""
+    
+    @staticmethod
+    def enumerate_subdomains(domain: str, wordlist: List[str] = None) -> Dict[str, Any]:
+        """Resolve common subdomains via DNS."""
+        if wordlist is None:
+            wordlist = ["www", "mail", "ftp", "admin", "api", "dev", "staging", "test", "portal", "vpn", "cloud", "git", "jira", "wiki", "blog", "shop", "support", "cdn", "static", "app"]
+        found = []
+        for sub in wordlist:
+            fqdn = f"{sub}.{domain}"
+            try:
+                answers = dns.resolver.resolve(fqdn, 'A', lifetime=3)
+                ips = [str(r) for r in answers]
+                found.append({"subdomain": fqdn, "ip": ips[0], "all_ips": ips})
+            except Exception:
+                pass
+        return {"domain": domain, "subdomains_found": len(found), "subdomains": found}
+    
+    @staticmethod
+    def reverse_dns_lookup(ip_address: str) -> Dict[str, Any]:
+        """Perform reverse DNS lookup."""
+        try:
+            rev = dns.reversename.from_address(ip_address)
+            answers = dns.resolver.resolve(rev, 'PTR', lifetime=5)
+            hostnames = [str(r).rstrip('.') for r in answers]
+            return {"ip": ip_address, "hostnames": hostnames}
+        except Exception as e:
+            return {"ip": ip_address, "hostnames": [], "error": str(e)}
+    
+    @staticmethod
+    def dns_record_enumeration(domain: str, record_type: str = "A") -> Dict[str, Any]:
+        """Enumerate DNS records."""
+        try:
+            answers = dns.resolver.resolve(domain, record_type, lifetime=5)
+            records = [str(r) for r in answers]
+            return {"domain": domain, "type": record_type, "records": records}
+        except Exception as e:
+            return {"domain": domain, "type": record_type, "records": [], "error": str(e)}
+    
+    @staticmethod
+    def check_cloudflare(domain: str) -> Dict[str, Any]:
+        """Check if domain is behind Cloudflare via DNS."""
+        try:
+            answers = dns.resolver.resolve(domain, 'A', lifetime=5)
+            cf_ips = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"]
+            for r in answers:
+                ip = str(r)
+                for cidr in cf_ips:
+                    if ipaddress.ip_address(ip) in ipaddress.ip_network(cidr):
+                        return {"domain": domain, "behind_cloudflare": True, "ip": ip}
+            return {"domain": domain, "behind_cloudflare": False}
+        except Exception as e:
+            return {"domain": domain, "behind_cloudflare": None, "error": str(e)}
+
+
+class WebRecon:
+    """Functional web reconnaissance using HTTP requests."""
+    
+    @staticmethod
+    def http_headers(url: str, timeout: int = 10) -> Dict[str, Any]:
+        """Fetch and analyze HTTP security headers."""
+        try:
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
+            resp = requests.get(url, timeout=timeout, allow_redirects=True, verify=False)
+            headers = dict(resp.headers)
+            security_headers = {
+                "Strict-Transport-Security": headers.get("Strict-Transport-Security", "MISSING"),
+                "Content-Security-Policy": headers.get("Content-Security-Policy", "MISSING"),
+                "X-Frame-Options": headers.get("X-Frame-Options", "MISSING"),
+                "X-Content-Type-Options": headers.get("X-Content-Type-Options", "MISSING"),
+                "Referrer-Policy": headers.get("Referrer-Policy", "MISSING"),
+                "Permissions-Policy": headers.get("Permissions-Policy", "MISSING"),
+            }
+            missing = [k for k, v in security_headers.items() if v == "MISSING"]
+            server = headers.get("Server", "unknown")
+            return {
+                "url": url,
+                "status_code": resp.status_code,
+                "final_url": resp.url,
+                "server": server,
+                "security_headers": security_headers,
+                "missing_security_headers": missing,
+                "score": max(0, 5 - len(missing))
+            }
+        except Exception as e:
+            return {"url": url, "error": str(e)}
+    
+    @staticmethod
+    def robots_txt(url: str, timeout: int = 10) -> Dict[str, Any]:
+        """Fetch and parse robots.txt."""
+        try:
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
+            parsed = urlparse(url)
+            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            resp = requests.get(robots_url, timeout=timeout)
+            if resp.status_code == 200:
+                disallow = re.findall(r"Disallow:\s*(.+)", resp.text, re.IGNORECASE)
+                allow = re.findall(r"Allow:\s*(.+)", resp.text, re.IGNORECASE)
+                sitemaps = re.findall(r"Sitemap:\s*(.+)", resp.text, re.IGNORECASE)
+                return {
+                    "url": robots_url,
+                    "found": True,
+                    "disallow_paths": [d.strip() for d in disallow],
+                    "allow_paths": [a.strip() for a in allow],
+                    "sitemaps": [s.strip() for s in sitemaps]
+                }
+            return {"url": robots_url, "found": False, "status": resp.status_code}
+        except Exception as e:
+            return {"url": url, "error": str(e)}
+    
+    @staticmethod
+    def tech_fingerprint(url: str, timeout: int = 10) -> Dict[str, Any]:
+        """Basic technology fingerprinting from HTTP headers and content."""
+        try:
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
+            resp = requests.get(url, timeout=timeout, allow_redirects=True, verify=False)
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+            tech = []
+            if "x-powered-by" in headers:
+                tech.append({"name": headers["x-powered-by"], "category": "backend"})
+            if "server" in headers:
+                tech.append({"name": headers["server"], "category": "server"})
+            if "x-aspnet-version" in headers:
+                tech.append({"name": f"ASP.NET {headers['x-aspnet-version']}", "category": "framework"})
+            if "x-aspnetmvc-version" in headers:
+                tech.append({"name": f"ASP.NET MVC {headers['x-aspnetmvc-version']}", "category": "framework"})
+            if "x-drupal-cache" in headers or "drupal" in resp.text.lower()[:1000]:
+                tech.append({"name": "Drupal", "category": "cms"})
+            if "x-generator" in headers and "wordpress" in headers["x-generator"].lower():
+                tech.append({"name": "WordPress", "category": "cms"})
+            if "react" in resp.text.lower()[:5000] or "next.js" in resp.text.lower()[:5000]:
+                tech.append({"name": "React/Next.js", "category": "frontend"})
+            if "wp-content" in resp.text:
+                tech.append({"name": "WordPress", "category": "cms"})
+            if "joomla" in resp.text.lower():
+                tech.append({"name": "Joomla", "category": "cms"})
+            return {"url": url, "technologies": tech, "detected": len(tech) > 0}
+        except Exception as e:
+            return {"url": url, "error": str(e)}
+    
+    @staticmethod
+    def directory_listing_check(url: str, paths: List[str] = None, timeout: int = 5) -> Dict[str, Any]:
+        """Check for common sensitive paths."""
+        if paths is None:
+            paths = ["/admin", "/login", "/wp-admin", "/.git", "/.env", "/backup", "/config", "/robots.txt", "/sitemap.xml", "/api", "/graphql", "/swagger", "/actuator"]
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        found = []
+        for path in paths:
+            try:
+                resp = requests.get(f"{url}{path}", timeout=timeout, allow_redirects=False, verify=False)
+                if resp.status_code in [200, 301, 302, 403]:
+                    found.append({"path": path, "status": resp.status_code, "accessible": resp.status_code == 200})
+            except Exception:
+                pass
+        return {"url": url, "sensitive_paths": found, "count": len(found)}
+
+
+# --- Functional Email Security ---
+
+class EmailSecurityAnalyzer:
+    """Functional email security checks via DNS lookups."""
+    
+    @staticmethod
+    def check_spf(domain: str) -> Dict[str, Any]:
+        """Check SPF record."""
+        try:
+            answers = dns.resolver.resolve(domain, 'TXT', lifetime=5)
+            spf_records = [str(r).strip('"') for r in answers if "v=spf1" in str(r).lower()]
+            if not spf_records:
+                return {"domain": domain, "spf_found": False, "records": [], "status": "MISSING"}
+            record = spf_records[0]
+            includes = re.findall(r"include:([^\s]+)", record)
+            ip4 = re.findall(r"ip4:([^\s]+)", record)
+            mx = "mx" in record.lower()
+            all_mechanism = re.search(r"\s(all|~all|-all|\?all)\s", record)
+            all_policy = all_mechanism.group(1) if all_mechanism else "unknown"
+            return {
+                "domain": domain,
+                "spf_found": True,
+                "record": record,
+                "includes": includes,
+                "ip4_ranges": ip4,
+                "uses_mx": mx,
+                "all_policy": all_policy,
+                "status": "SOFTFAIL" if all_policy == "~all" else "HARDFAIL" if all_policy == "-all" else "NEUTRAL" if all_policy == "?all" else "PASS"
+            }
+        except Exception as e:
+            return {"domain": domain, "spf_found": False, "error": str(e)}
+    
+    @staticmethod
+    def check_dmarc(domain: str) -> Dict[str, Any]:
+        """Check DMARC record."""
+        try:
+            dmarc_domain = f"_dmarc.{domain}"
+            answers = dns.resolver.resolve(dmarc_domain, 'TXT', lifetime=5)
+            dmarc_records = [str(r).strip('"') for r in answers if "v=dmarc1" in str(r).lower()]
+            if not dmarc_records:
+                return {"domain": domain, "dmarc_found": False, "record": None, "status": "MISSING"}
+            record = dmarc_records[0]
+            policy = re.search(r"p=(none|quarantine|reject)", record, re.IGNORECASE)
+            rua = re.findall(r"rua=mailto:([^\s;]+)", record)
+            ruf = re.findall(r"ruf=mailto:([^\s;]+)", record)
+            pct = re.search(r"pct=(\d+)", record, re.IGNORECASE)
+            return {
+                "domain": domain,
+                "dmarc_found": True,
+                "record": record,
+                "policy": policy.group(1).lower() if policy else "none",
+                "rua": rua,
+                "ruf": ruf,
+                "percentage": int(pct.group(1)) if pct else 100,
+                "status": "REJECT" if policy and policy.group(1).lower() == "reject" else "QUARANTINE" if policy and policy.group(1).lower() == "quarantine" else "NONE"
+            }
+        except Exception as e:
+            return {"domain": domain, "dmarc_found": False, "error": str(e)}
+    
+    @staticmethod
+    def check_dkim(domain: str, selector: str = "default") -> Dict[str, Any]:
+        """Check DKIM record for a selector."""
+        try:
+            dkim_domain = f"{selector}._domainkey.{domain}"
+            answers = dns.resolver.resolve(dkim_domain, 'TXT', lifetime=5)
+            dkim_records = [str(r).strip('"') for r in answers if "v=dkim1" in str(r).lower()]
+            if not dkim_records:
+                return {"domain": domain, "selector": selector, "dkim_found": False, "record": None}
+            return {
+                "domain": domain,
+                "selector": selector,
+                "dkim_found": True,
+                "record": dkim_records[0],
+                "status": "VALID"
+            }
+        except Exception as e:
+            return {"domain": domain, "selector": selector, "dkim_found": False, "error": str(e)}
+    
+    @staticmethod
+    def email_security_posture(domain: str) -> Dict[str, Any]:
+        """Complete email security posture check."""
+        spf = EmailSecurityAnalyzer.check_spf(domain)
+        dmarc = EmailSecurityAnalyzer.check_dmarc(domain)
+        dkim_selectors = ["default", "google", "selector1", "selector2", "k1", "s1"]
+        dkim_results = []
+        for sel in dkim_selectors:
+            dkim = EmailSecurityAnalyzer.check_dkim(domain, sel)
+            if dkim.get("dkim_found"):
+                dkim_results.append(dkim)
+        score = 0
+        if spf.get("spf_found"):
+            score += 1
+        if dmarc.get("dmarc_found") and dmarc.get("policy") in ["quarantine", "reject"]:
+            score += 1
+        if dkim_results:
+            score += 1
+        verdict = "GOOD" if score == 3 else "FAIR" if score == 2 else "POOR" if score == 1 else "MISSING"
+        return {
+            "domain": domain,
+            "spf": spf,
+            "dmarc": dmarc,
+            "dkim": dkim_results,
+            "score": score,
+            "max_score": 3,
+            "verdict": verdict,
+            "recommendations": [
+                "Add SPF record" if not spf.get("spf_found") else None,
+                "Set DMARC policy to quarantine or reject" if not dmarc.get("dmarc_found") or dmarc.get("policy") == "none" else None,
+                "Publish DKIM records" if not dkim_results else None
+            ]
+        }
+
+
+# --- Functional TLS/SSL Analysis ---
+
+class TLSAnalyzer:
+    """Functional TLS certificate and configuration analysis."""
+    
+    @staticmethod
+    def inspect_certificate(host: str, port: int = 443, timeout: int = 10) -> Dict[str, Any]:
+        """Inspect TLS certificate using Python ssl module."""
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((host, port), timeout=timeout) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    cipher = ssock.cipher()
+                    version = ssock.version()
+            not_before = cert.get("notBefore", "")
+            not_after = cert.get("notAfter", "")
+            subject = dict(x[0] for x in cert.get("subject", ()))
+            issuer = dict(x[0] for x in cert.get("issuer", ()))
+            san = cert.get("subjectAltName", ())
+            sans = [entry[1] for entry in san if entry[0] == "DNS"]
+            serial = cert.get("serialNumber", "")
+            sig_alg = cert.get("signatureAlgorithm", "")
+            return {
+                "host": host,
+                "port": port,
+                "version": version,
+                "cipher": cipher[0] if cipher else "unknown",
+                "cipher_bits": cipher[2] if cipher else 0,
+                "subject": subject,
+                "issuer": issuer,
+                "san": sans,
+                "not_before": not_before,
+                "not_after": not_after,
+                "serial": serial,
+                "signature_algorithm": sig_alg,
+                "expired": False
+            }
+        except ssl.SSLCertVerificationError as e:
+            return {"host": host, "port": port, "error": f"Certificate verification failed: {e}", "expired": None}
+        except Exception as e:
+            return {"host": host, "port": port, "error": str(e), "expired": None}
+    
+    @staticmethod
+    def check_tls_configuration(host: str, port: int = 443) -> Dict[str, Any]:
+        """Check TLS configuration for common weaknesses."""
+        cert_info = TLSAnalyzer.inspect_certificate(host, port)
+        if "error" in cert_info:
+            return cert_info
+        issues = []
+        if cert_info.get("cipher_bits", 0) < 128:
+            issues.append("Weak cipher key length")
+        if "TLSv1.0" in cert_info.get("version", "") or "TLSv1.1" in cert_info.get("version", ""):
+            issues.append("Outdated TLS version")
+        issuer = cert_info.get("issuer", {}).get("organizationName", "").lower()
+        if "let's encrypt" in issuer:
+            issues.append("ACME certificate (short-lived, acceptable)")
+        return {
+            "host": host,
+            "port": port,
+            "tls_version": cert_info.get("version"),
+            "cipher": cert_info.get("cipher"),
+            "issues": issues,
+            "secure": len([i for i in issues if "short-lived" not in i.lower()]) == 0
+        }
+    
+    @staticmethod
+    def check_certificate_transparency(host: str) -> Dict[str, Any]:
+        """Check certificate transparency logs via crt.sh."""
+        try:
+            url = f"https://crt.sh/?q=%25.{host}&output=json"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    domains = set()
+                    for entry in data:
+                        name = entry.get("common_name", "")
+                        domains.add(name)
+                        for san in entry.get("name_value", "").split("\n"):
+                            if san.strip():
+                                domains.add(san.strip())
+                    return {"host": host, "ct_logs_found": True, "unique_domains": len(domains), "sample_domains": list(domains)[:10]}
+            return {"host": host, "ct_logs_found": False, "status": resp.status_code}
+        except Exception as e:
+            return {"host": host, "ct_logs_found": None, "error": str(e)}
+
+
+# --- Functional Cloud Security ---
+
+class CloudSecurityChecker:
+    """Functional cloud security checks for exposed resources."""
+    
+    @staticmethod
+    def check_s3_bucket(bucket_name: str) -> Dict[str, Any]:
+        """Check if an S3 bucket is publicly accessible."""
+        bucket_name = bucket_name.replace("https://", "").replace("http://", "").replace("s3.amazonaws.com/", "").replace(".s3.amazonaws.com", "")
+        results = {"bucket": bucket_name, "public": False, "findings": []}
+        urls_to_check = [
+            f"https://{bucket_name}.s3.amazonaws.com",
+            f"https://s3.amazonaws.com/{bucket_name}",
+            f"http://{bucket_name}.s3.amazonaws.com"
+        ]
+        for url in urls_to_check:
+            try:
+                resp = requests.get(url, timeout=8, allow_redirects=False)
+                if resp.status_code == 200:
+                    results["public"] = True
+                    results["findings"].append({"url": url, "accessible": True, "status": resp.status_code})
+                    break
+                elif resp.status_code in [301, 302, 403]:
+                    results["findings"].append({"url": url, "status": resp.status_code, "note": "Redirect/Forbidden"})
+            except requests.exceptions.SSLError:
+                results["findings"].append({"url": url, "status": "SSL_ERROR"})
+            except Exception as e:
+                results["findings"].append({"url": url, "error": str(e)})
+        return results
+    
+    @staticmethod
+    def check_azure_blob(container_name: str) -> Dict[str, Any]:
+        """Check if Azure blob container is public."""
+        container_name = container_name.replace("https://", "").replace("http://", "").replace(".blob.core.windows.net", "")
+        url = f"https://{container_name}.blob.core.windows.net"
+        try:
+            resp = requests.get(url, timeout=8, allow_redirects=False)
+            return {
+                "container": container_name,
+                "url": url,
+                "public": resp.status_code == 200,
+                "status": resp.status_code
+            }
+        except Exception as e:
+            return {"container": container_name, "url": url, "public": None, "error": str(e)}
+    
+    @staticmethod
+    def check_google_bucket(bucket_name: str) -> Dict[str, Any]:
+        """Check if Google Cloud Storage bucket is public."""
+        bucket_name = bucket_name.replace("https://", "").replace("http://", "").replace("storage.googleapis.com/", "").replace(".storage.googleapis.com", "")
+        url = f"https://storage.googleapis.com/{bucket_name}"
+        try:
+            resp = requests.get(url, timeout=8, allow_redirects=False)
+            return {
+                "bucket": bucket_name,
+                "url": url,
+                "public": resp.status_code == 200,
+                "status": resp.status_code
+            }
+        except Exception as e:
+            return {"bucket": bucket_name, "url": url, "public": None, "error": str(e)}
+    
+    @staticmethod
+    def check_exposed_admin_panels(url: str) -> Dict[str, Any]:
+        """Check for exposed admin panels and sensitive endpoints."""
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        paths = [
+            "/admin", "/admin/login", "/adminpanel", "/administrator", "/wp-admin", "/wp-login.php",
+            "/phpmyadmin", "/pma", "/myadmin", "/.env", "/.git/config", "/.svn/entries",
+            "/backup", "/backup.sql", "/db.sql", "/dump.sql", "/config.php", "/config.json",
+            "/api/v1", "/api/v2", "/graphql", "/swagger", "/swagger-ui", "/actuator", "/actuator/env",
+            "/.well-known/security.txt", "/robots.txt", "/sitemap.xml"
+        ]
+        found = []
+        for path in paths:
+            try:
+                resp = requests.get(f"{url}{path}", timeout=5, allow_redirects=False, verify=False)
+                if resp.status_code in [200, 301, 302, 403]:
+                    found.append({"path": path, "status": resp.status_code, "accessible": resp.status_code == 200})
+            except Exception:
+                pass
+        return {"url": url, "endpoints": found, "sensitive_count": len(found)}
+
+
+# --- Functional Secret Scanning Improvements ---
+
+class ImprovedSecretScanner:
+    """Enhanced secret scanning with more patterns."""
+    
+    PATTERNS = [
+        (r'ghp_[a-zA-Z0-9]{36}', "GitHub Personal Access Token", "CRITICAL"),
+        (r'gho_[a-zA-Z0-9]{36}', "GitHub OAuth Token", "CRITICAL"),
+        (r'github_pat_[a-zA-Z0-9_]{22,}', "GitHub Fine-grained PAT", "CRITICAL"),
+        (r'xox[baprs]-[0-9a-zA-Z-]+', "Slack Token", "CRITICAL"),
+        (r'xoxp-[0-9a-zA-Z-]+', "Slack User Token", "CRITICAL"),
+        (r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----', "Private Key", "CRITICAL"),
+        (r'AKIA[0-9A-Z]{16}', "AWS Access Key ID", "CRITICAL"),
+        (r'(?i)aws_secret_access_key\s*=\s*["\']?([a-zA-Z0-9/+=]{40})', "AWS Secret Key", "CRITICAL"),
+        (r'(?i)api[_-]?key\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})', "Generic API Key", "HIGH"),
+        (r'(?i)secret[_-]?key\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{20,})', "Generic Secret Key", "HIGH"),
+        (r'(?i)password\s*[:=]\s*["\']?([a-zA-Z0-9!@#$%^&*]{6,})', "Hardcoded Password", "HIGH"),
+        (r'-----BEGIN OPENSSH PRIVATE KEY-----', "SSH Private Key", "CRITICAL"),
+        (r'sk-[a-zA-Z0-9]{48}', "OpenAI API Key", "CRITICAL"),
+        (r'w/r/[a-zA-Z0-9_-]+', "WolframAlpha API Key", "HIGH"),
+        (r'[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-z0-9.-]+\.[a-z]{2,}', "Basic Auth Credentials", "HIGH"),
+        (r'(?i)(mongodb|mysql|postgresql|postgres):\/\/[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@', "Database Connection String", "CRITICAL"),
+        (r'-----BEGIN CERTIFICATE-----', "PEM Certificate", "MEDIUM"),
+        (r'(?i)client_secret\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{10,})', "OAuth Client Secret", "HIGH"),
+    ]
+    
+    @staticmethod
+    def scan_content(content: str) -> List[Dict[str, Any]]:
+        """Scan content for secrets."""
+        leaks = []
+        lines = content.splitlines()
+        for line_num, line in enumerate(lines, start=1):
+            for pattern, secret_type, severity in ImprovedSecretScanner.PATTERNS:
+                matches = re.finditer(pattern, line)
+                for match in matches:
+                    leaks.append({
+                        "line": line_num,
+                        "type": secret_type,
+                        "severity": severity,
+                        "match": match.group(0),
+                        "context": line.strip()
+                    })
+        return leaks
+
+
+# =============================================================================
+# Register Functional Tools
+# Paste this at the end of cyber_tools.py or integrate into register_all_default_tools
+# =============================================================================
+
+def register_functional_tools(registry):
+    """Register the functional, non-simulated tools."""
+    
+    # OSINT & Recon
+    registry.register_tool(ToolDefinition("osint_subdomain_enum", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=OSINTRecon.enumerate_subdomains))
+    registry.register_tool(ToolDefinition("osint_reverse_dns", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=OSINTRecon.reverse_dns_lookup))
+    registry.register_tool(ToolDefinition("osint_dns_enum", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=OSINTRecon.dns_record_enumeration))
+    registry.register_tool(ToolDefinition("osint_cloudflare_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=OSINTRecon.check_cloudflare))
+    
+    # Web Recon
+    registry.register_tool(ToolDefinition("web_security_headers", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=WebRecon.http_headers))
+    registry.register_tool(ToolDefinition("web_robots_txt", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=WebRecon.robots_txt))
+    registry.register_tool(ToolDefinition("web_tech_fingerprint", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=WebRecon.tech_fingerprint))
+    registry.register_tool(ToolDefinition("web_sensitive_paths", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=WebRecon.directory_listing_check))
+    
+    # Email Security
+    registry.register_tool(ToolDefinition("email_security_posture", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=EmailSecurityAnalyzer.email_security_posture))
+    registry.register_tool(ToolDefinition("email_spf_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=EmailSecurityAnalyzer.check_spf))
+    registry.register_tool(ToolDefinition("email_dmarc_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=EmailSecurityAnalyzer.check_dmarc))
+    registry.register_tool(ToolDefinition("email_dkim_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=EmailSecurityAnalyzer.check_dkim))
+    
+    # TLS Analysis
+    registry.register_tool(ToolDefinition("tls_cert_inspect", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=TLSAnalyzer.inspect_certificate))
+    registry.register_tool(ToolDefinition("tls_config_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=TLSAnalyzer.check_tls_configuration))
+    registry.register_tool(ToolDefinition("tls_ct_logs", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=TLSAnalyzer.check_certificate_transparency))
+    
+    # Cloud Security
+    registry.register_tool(ToolDefinition("cloud_s3_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=CloudSecurityChecker.check_s3_bucket))
+    registry.register_tool(ToolDefinition("cloud_azure_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=CloudSecurityChecker.check_azure_blob))
+    registry.register_tool(ToolDefinition("cloud_gcp_check", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=CloudSecurityChecker.check_google_bucket))
+    registry.register_tool(ToolDefinition("cloud_exposed_admin", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=CloudSecurityChecker.check_exposed_admin_panels))
+    
+    # Improved Secret Scanning
+    registry.register_tool(ToolDefinition("improved_secret_scan", ["cross_platform"], "", risk_level=RiskLevel.READ_ONLY, python_func=ImprovedSecretScanner.scan_content))

@@ -1,0 +1,1 @@
+﻿# Base64 Encoder/Decoder`nparam($action, $string)`nif ($action -eq "encode") { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($string)) } else { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($string)) }

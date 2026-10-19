@@ -1,0 +1,41 @@
+{
+  "investigation_id": "inv-20260824200703-738bbcdb",
+  "session_id": "session-20260825000703",
+  "objective": "Something feels wrong with my PC.",
+  "status": "running",
+  "created_at": "2026-08-24T20:07:03.044008+00:00",
+  "updated_at": "2026-08-24T20:07:03.234169+00:00",
+  "events": [
+    {
+      "type": "tool_executed",
+      "tool": "workspace_scan",
+      "arguments": {
+        "workspace_path": "I:\\STAI 2",
+        "max_files": 50
+      },
+      "status": "completed",
+      "timestamp": "2026-08-25T00:07:03.105260"
+    },
+    {
+      "type": "finding",
+      "tool": "workspace_scan",
+      "severity": "high",
+      "title": "Sample finding",
+      "timestamp": "2026-08-25T00:07:03.180639"
+    },
+    {
+      "type": "tool_executed",
+      "tool": "secret_scan",
+      "arguments": {
+        "filepath": "I:\\STAI 2",
+        "content": "AKIA1234567890ABCDEF"
+      },
+      "status": "completed",
+      "timestamp": "2026-08-25T00:07:03.225100"
+    }
+  ],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

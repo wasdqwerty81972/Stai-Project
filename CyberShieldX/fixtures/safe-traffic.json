@@ -1,0 +1,20 @@
+{
+  "description": "Deterministic safe-traffic scenario. All packets score below the 40 threshold and auto-pass through the gate.",
+  "seed": 1001,
+  "maxTick": 20,
+  "packetCount": 12,
+  "packets": [
+    { "tick": 1, "protocol": "TCP", "src": { "ip": "10.0.0.2", "hostId": "h001", "port": 54321 }, "dst": { "ip": "10.0.0.10", "hostId": "h00a", "port": 443 }, "kind": "SAFE", "size": 512, "payload": "GET /health HTTP/1.1" },
+    { "tick": 2, "protocol": "TCP", "src": { "ip": "10.0.0.3", "hostId": "h002", "port": 41022 }, "dst": { "ip": "10.0.0.11", "hostId": "h00b", "port": 80 }, "kind": "SAFE", "size": 2048, "payload": "POST /login HTTP/1.1" },
+    { "tick": 3, "protocol": "DNS", "src": { "ip": "10.0.0.4", "hostId": "h003", "port": 53 }, "dst": { "ip": "10.0.0.12", "hostId": "h00c", "port": 53 }, "kind": "SAFE", "size": 128, "payload": "example.com" },
+    { "tick": 4, "protocol": "ICMP", "src": { "ip": "10.0.0.5", "hostId": "h004", "port": 0 }, "dst": { "ip": "10.0.0.13", "hostId": "h00d", "port": 0 }, "kind": "SAFE", "size": 64, "payload": "echo" },
+    { "tick": 5, "protocol": "TCP", "src": { "ip": "10.0.0.6", "hostId": "h005", "port": 38001 }, "dst": { "ip": "10.0.0.14", "hostId": "h00e", "port": 443 }, "kind": "SAFE", "size": 890, "payload": "GET /api/v1/status HTTP/1.1" },
+    { "tick": 6, "protocol": "SSH", "src": { "ip": "10.0.0.7", "hostId": "h006", "port": 51122 }, "dst": { "ip": "10.0.0.15", "hostId": "h00f", "port": 22 }, "kind": "SAFE", "size": 300, "payload": "ssh-user-auth" },
+    { "tick": 7, "protocol": "HTTP", "src": { "ip": "10.0.0.8", "hostId": "h007", "port": 49887 }, "dst": { "ip": "10.0.0.16", "hostId": "h010", "port": 8080 }, "kind": "SAFE", "size": 1500, "payload": "GET /index.html HTTP/1.1" },
+    { "tick": 8, "protocol": "TCP", "src": { "ip": "10.0.0.9", "hostId": "h008", "port": 52100 }, "dst": { "ip": "10.0.0.17", "hostId": "h011", "port": 443 }, "kind": "SAFE", "size": 768, "payload": "GET /metrics HTTP/1.1" },
+    { "tick": 9, "protocol": "DNS", "src": { "ip": "10.0.0.10", "hostId": "h00a", "port": 53 }, "dst": { "ip": "10.0.0.18", "hostId": "h012", "port": 53 }, "kind": "SAFE", "size": 140, "payload": "update.microsoft.com" },
+    { "tick": 10, "protocol": "TCP", "src": { "ip": "10.0.0.11", "hostId": "h00b", "port": 44001 }, "dst": { "ip": "10.0.0.19", "hostId": "h013", "port": 443 }, "kind": "SAFE", "size": 412, "payload": "GET /favicon.ico HTTP/1.1" },
+    { "tick": 11, "protocol": "HTTPS", "src": { "ip": "10.0.0.12", "hostId": "h00c", "port": 33998 }, "dst": { "ip": "10.0.0.20", "hostId": "h014", "port": 443 }, "kind": "SAFE", "size": 256, "payload": "TLSv1.3 handshake" },
+    { "tick": 12, "protocol": "TCP", "src": { "ip": "10.0.0.13", "hostId": "h00d", "port": 41001 }, "dst": { "ip": "10.0.0.21", "hostId": "h015", "port": 22 }, "kind": "SAFE", "size": 180, "payload": "SSH-2.0-connection" }
+  ]
+}

@@ -1,0 +1,4 @@
+@import "./variables.css";
+
+canvas { display: block; }
+.reduced-motion { /* toggled at runtime; prefers-reduced-motion honored in JS */ }

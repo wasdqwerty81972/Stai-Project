@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SVS Cyber",
+  "version": "0.1.0",
+  "identifier": "com.svscyber.desktop",
+  "build": {
+    "beforeDevCommand": "node ../protection-dashboard/node_modules/vite/bin/vite.js ../protection-dashboard --host 127.0.0.1 --port 1420 --strictPort",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "node scripts/build-protection-dashboard.js",
+    "frontendDist": "../../protection-dashboard/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "SVS Cyber",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "userAgent": "STAI-Protection/1.0",
+        "theme": "Dark",
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; frame-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:3000 http://127.0.0.1:6764 ws://127.0.0.1:3000 https://*.convex.cloud wss://*.convex.cloud https://*.convex.dev wss://*.convex.dev https://*.hackerai.co wss://*.hackerai.co https://auth.hackerai.co https://api.workos.com https://*.posthog.com https://api.trigger.dev https://*.trigger.dev wss://*.trigger.dev;",
+      "capabilities": ["protection-local"]
+    }
+  }
+}

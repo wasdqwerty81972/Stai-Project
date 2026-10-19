@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20261013173954-f98f6e6d",
+  "session_id": "default",
+  "objective": "Inspect the workspace for problems",
+  "status": "completed",
+  "created_at": "2026-10-13T17:39:54.116535+00:00",
+  "updated_at": "2026-10-13T17:39:54.159781+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

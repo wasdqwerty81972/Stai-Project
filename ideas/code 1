@@ -1,0 +1,140 @@
+import socket
+import threading
+import paramiko
+import requests
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3:8b"
+
+SYSTEM_PROMPT = """You are a vulnerable Ubuntu 22.04 LTS terminal shell.
+Rule 1: Return ONLY the exact raw terminal output that executing the command would produce.
+Rule 2: Do NOT include explanations, markdown code blocks, conversational text, or polite filler.
+Rule 3: Pretend you are an active web server with fake user accounts, web logs, and realistic Linux directories.
+Current working directory: /home/ubuntu
+"""
+
+def generate_llm_response(command: str, session_history: str) -> str:
+    """Sends the attacker's command to the local LLM to generate realistic terminal output."""
+    full_prompt = f"{SYSTEM_PROMPT}\nSession context so far:\n{session_history}\nUser executed command: {command}"
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": full_prompt,
+        "stream": False,
+        "options": {"temperature": 0.2, "num_predict": 200}
+    }
+    
+    try:
+        response = requests.post(OLLAMA_URL, json=payload, timeout=5)
+        if response.status_code == 200:
+            return response.json().get("response", "").strip()
+    except Exception as e:
+        print(f"[!] Error calling Ollama: {e}")
+    
+    return "command not found"
+
+class HoneypotSSHServer(paramiko.ServerInterface):
+    """Handles fake SSH authentication and shell session initialization."""
+    def check_channel_request(self, kind, chanid):
+        if kind == 'session':
+            return paramiko.OPEN_SUCCEEDED
+        return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    def check_auth_password(self, username, password):
+        # Accept any login to catch all credentials
+        print(f"[LOG] Login Attempt -> User: {username} | Password: {password}")
+        return paramiko.AUTH_SUCCESSFUL
+
+    def check_channel_shell_request(self, channel):
+        return True
+
+    def check_channel_pty_request(self, channel, term, modes, height, width, pixelwidth, pixelheight):
+        return True
+
+def handle_client(client_socket, host_key):
+    """Processes attacker connections and manages the interactive shell session."""
+    transport = paramiko.Transport(client_socket)
+    transport.add_server_key(host_key)
+    server = HoneypotSSHServer()
+
+    try:
+        transport.start_server(server=server)
+    except paramiko.SSHException:
+        return
+
+    channel = transport.accept(20)
+    if channel is None:
+        return
+
+    channel.send("Welcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-88-generic x86_64)\r\n\r\n")
+    prompt = "ubuntu@server:~$ "
+    channel.send(prompt)
+
+    session_history = ""
+    command_buffer = ""
+
+    while True:
+        try:
+            char = channel.recv(1024).decode("utf-8", errors="ignore")
+            if not char:
+                break
+            
+            # Handle Enter key (Return or Newline)
+            if char in ('\r', '\n'):
+                channel.send("\r\n")
+                command = command_buffer.strip()
+                command_buffer = ""
+
+                if command.lower() in ["exit", "logout"]:
+                    channel.send("logout\r\n")
+                    break
+
+                if command:
+                    print(f"[LOG] Executed Command: {command}")
+                    output = generate_llm_response(command, session_history)
+                    
+                    # Update session state history
+                    session_history += f"\n$ {command}\n{output}"
+                    
+                    # Format output for terminal rendering
+                    formatted_output = output.replace("\n", "\r\n")
+                    channel.send(formatted_output + "\r\n")
+
+                channel.send(prompt)
+
+            # Handle Backspace
+            elif char in ('\x08', '\x7f'):
+                if len(command_buffer) > 0:
+                    command_buffer = command_buffer[:-1]
+                    channel.send("\b \b")
+            
+            # Echo typed characters back to client
+            else:
+                command_buffer += char
+                channel.send(char)
+
+        except Exception:
+            break
+
+    channel.close()
+    transport.close()
+
+def start_honeypot(host="0.0.0.0", port=2222):
+    """Binds to the port and starts listening for incoming connections."""
+    host_key = paramiko.RSAKey(filename="host.key")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(100)
+
+    print(f"[*] AI Honeypot listening on {host}:{port}...")
+
+    while True:
+        client_socket, addr = sock.accept()
+        print(f"[+] Connection from {addr[0]}:{addr[1]}")
+        client_thread = threading.Thread(target=handle_client, args=(client_socket, host_key))
+        client_thread.start()
+
+if __name__ == "__main__":
+    start_honeypot()
+    

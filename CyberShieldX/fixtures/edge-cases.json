@@ -1,0 +1,74 @@
+{
+  "description": "Edge cases exercising invalid transitions, duplicate actions, buffer rollover, empty input, duplicate packets, reset, and deterministic replay. Each case specifies the inputs and the exact expected state/behavior so both Swift and TypeScript must agree.",
+  "cases": [
+    {
+      "name": "empty_input",
+      "description": "No packets — engine must produce zero counters and pass_percentage 0.0.",
+      "packets": [],
+      "actions": [],
+      "expected": { "generated": 0, "allowed": 0, "dropped": 0, "held": 0, "escalated": 0, "passPercentage": 0 }
+    },
+    {
+      "name": "invalid_transition_from_terminal",
+      "description": "An ALLOWED packet cannot be transitioned again; the second APPROVE is rejected and counters stay unchanged.",
+      "packets": [
+        { "tick": 1, "protocol": "TCP", "src": { "ip": "10.0.0.2", "hostId": "h001", "port": 1000 }, "dst": { "ip": "10.0.0.10", "hostId": "h00a", "port": 443 }, "kind": "SAFE", "size": 512, "payload": "ok" }
+      ],
+      "actions": [
+        { "action": "APPROVE", "targetPacket": "pkt_0001", "expectedResult": "success", "expectedState": "ALLOWED" },
+        { "action": "APPROVE", "targetPacket": "pkt_0001", "expectedResult": "rejected_duplicate_or_terminal", "expectedState": "ALLOWED" }
+      ],
+      "expected": { "generated": 1, "allowed": 1, "dropped": 0, "held": 0, "escalated": 0 }
+    },
+    {
+      "name": "duplicate_operator_action_held",
+      "description": "Two ESCALATE actions on the same held packet: first succeeds, second is rejected as duplicate.",
+      "packets": [
+        { "tick": 1, "protocol": "RDP", "src": { "ip": "10.0.1.40", "hostId": "h400", "port": 22 }, "dst": { "ip": "10.0.1.50", "hostId": "h40a", "port": 3389 }, "kind": "SUSPICIOUS", "size": 1400, "payload": "RDP" }
+      ],
+      "actions": [
+        { "action": "ESCALATE", "targetPacket": "pkt_0001", "expectedResult": "success", "expectedState": "ESCALATED" },
+        { "action": "ESCALATE", "targetPacket": "pkt_0001", "expectedResult": "rejected_duplicate_or_terminal", "expectedState": "ESCALATED" }
+      ],
+      "expected": { "generated": 1, "escalated": 1 }
+    },
+    {
+      "name": "buffer_rollover",
+      "description": "The event buffer has a hard cap (default 300). After exceeding it, older events are evicted FIFO and the total never exceeds capacity.",
+      "packets": "generated_safe_traffic(400)",
+      "actions": [],
+      "expected": { "eventBufferSize": "<= 300", "oldestIdAfter": "pkt_0101" }
+    },
+    {
+      "name": "reset_behavior",
+      "description": "Reset clears all live packets and counters to their initial values while preserving fixture-derived configuration.",
+      "packets": [
+        { "tick": 1, "protocol": "TCP", "src": { "ip": "10.0.0.2", "hostId": "h001", "port": 1000 }, "dst": { "ip": "10.0.0.10", "hostId": "h00a", "port": 443 }, "kind": "SAFE", "size": 512, "payload": "ok" },
+        { "tick": 1, "protocol": "RDP", "src": { "ip": "10.0.1.40", "hostId": "h400", "port": 22 }, "dst": { "ip": "10.0.1.50", "hostId": "h40a", "port": 3389 }, "kind": "SUSPICIOUS", "size": 1400, "payload": "RDP" }
+      ],
+      "actions": [
+        { "action": "APPROVE", "targetPacket": "pkt_0001", "expectedResult": "success" },
+        { "action": "ESCALATE", "targetPacket": "pkt_0002", "expectedResult": "success" },
+        { "action": "RESET", "expectedResult": "success" }
+      ],
+      "expected": { "afterReset": { "generated": 0, "allowed": 0, "dropped": 0, "held": 0, "escalated": 0 } }
+    },
+    {
+      "name": "deterministic_replay",
+      "description": "Running the same seed twice, step-by-step, produces identical state and metric sequences.",
+      "packets": "replayed_safe_traffic",
+      "actions": [],
+      "expected": { "replayStable": true }
+    },
+    {
+      "name": "score_boundary_safe",
+      "description": "A packet scoring below 40 (35) auto-passes; a packet scoring exactly 40 is held. Integer weights from the shared contract: port 445=25, payload beacon=10, payload 'SMB negotiate'=5.",
+      "packets": [
+        { "tick": 1, "protocol": "TCP", "src": { "ip": "10.0.0.2", "hostId": "h001", "port": 1000 }, "dst": { "ip": "10.0.0.10", "hostId": "h00a", "port": 445 }, "kind": "SAFE", "size": 512, "payload": "beacon" },
+        { "tick": 1, "protocol": "TCP", "src": { "ip": "10.0.0.3", "hostId": "h002", "port": 1001 }, "dst": { "ip": "10.0.0.10", "hostId": "h00a", "port": 445 }, "kind": "SUSPICIOUS", "size": 512, "payload": "beacon SMB negotiate" }
+      ],
+      "actions": [],
+      "expected": { "pkt_0001": "ALLOWED", "pkt_0002": "HOLDING_INTERCEPT", "pkt_0001_score": 35, "pkt_0002_score": 40 }
+    }
+  ]
+}

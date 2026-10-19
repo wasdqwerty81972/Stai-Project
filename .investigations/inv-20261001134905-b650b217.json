@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20261001134905-b650b217",
+  "session_id": "default",
+  "objective": "Inspect active network connections",
+  "status": "completed",
+  "created_at": "2026-10-01T13:49:05.097137+00:00",
+  "updated_at": "2026-10-01T13:49:05.130759+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

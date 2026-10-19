@@ -1,0 +1,619 @@
+"""
+cyber_os/subagents/manager.py — SVS-Cyber Subagent Orchestrator & Lifecycle Manager
+
+Orchestrates defensive specialist subagents:
+- Scopes context references and success criteria
+- Enforces profile-specific tool whitelists
+- Manages execution deadlines and step budgets
+- Publishes real-time subagent milestone events for the UI
+- Synthesizes structured verdicts and delivers findings to the parent investigation ledger
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import re
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+from cyber_os.llm_json import extract_json_object
+from cyber_os.subagents.contracts import (
+    MAX_ACTIVE_SUBAGENTS_PER_PARENT,
+    SubagentCapabilityBundle,
+    SubagentContextRef,
+    SubagentProfile,
+    SubagentStatus,
+    SubagentStructuredResult,
+    SubagentTaskRequest,
+    SubagentVerdict,
+    ValidationConfidence,
+)
+from cyber_os.subagents.profiles import (
+    DEFENSIVE_SPECIALIST_PROFILES,
+    SpecialistProfileDefinition,
+    get_profile_definition,
+    resolve_profile_definition,
+)
+from cyber_os.subagents.swarm import DefensiveSwarmExecution, DefensiveSwarmPlan
+from ui.event_bus import AgentEvent, event_bus
+
+
+# Split by kind because the two consumers want different things: reading a
+# .exe as text yields garbage, and running an entropy check on a .md is noise.
+# The optional single-letter drive prefix keeps Windows paths whole. Allowing
+# ":" inside the body instead would swallow "https://host/payload.py" — a URL
+# is not a local file, and handing one to a file tool just fails.
+_DRIVE_PREFIX = r"(?:[A-Za-z]:[\\/])?"
+_SOURCE_FILE_PATTERN = re.compile(
+    _DRIVE_PREFIX
+    + r"[\w./\\-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|cpp|c|md|json|ya?ml|txt|log|ini|cfg)\b",
+    re.I,
+)
+_BINARY_FILE_PATTERN = re.compile(
+    _DRIVE_PREFIX
+    + r"[\w./\\-]+\.(?:exe|dll|sys|bin|scr|com|msi|ps1|bat|cmd|vbs|jar|zip|7z|rar|docx?|xlsx?|pdf|dat)\b",
+    re.I,
+)
+
+
+def _first_path(task: SubagentTaskRequest, *patterns: re.Pattern) -> str:
+    """Return the first file the task actually names, or "" if it names none.
+
+    The objective is searched before the parent context so an explicit
+    instruction wins over an incidental filename quoted in the transcript.
+    Returning "" is the point: substituting a fixed sample path makes the
+    specialist analyse a file the investigation never mentioned and then
+    report that result as evidence.
+    """
+    haystacks = [task.objective or ""]
+    haystacks.extend((ref.content or "") for ref in (task.context_refs or []))
+    for text in haystacks:
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match:
+                return match.group(0)
+    return ""
+
+
+def _coerce_verdict(value: Any) -> SubagentVerdict:
+    """Map a model-supplied verdict string onto the enum without raising."""
+    try:
+        return SubagentVerdict(str(value).strip().lower())
+    except (ValueError, TypeError):
+        return SubagentVerdict.INCONCLUSIVE
+
+
+def _coerce_confidence(value: Any) -> ValidationConfidence:
+    """Map a model-supplied confidence string onto the enum without raising."""
+    try:
+        return ValidationConfidence(str(value).strip().lower())
+    except (ValueError, TypeError):
+        return ValidationConfidence.LOW
+
+
+class SubagentManager:
+    """Manages the creation, execution, authorization, and settlement of subagents."""
+
+    def __init__(self, agent: Any) -> None:
+        self.agent = agent
+        self._lock = threading.Lock()
+        self.active_subagents: Dict[str, SubagentTaskRequest] = {}
+        self.subagent_results: Dict[str, SubagentStructuredResult] = {}
+
+    def delegate_task(
+        self,
+        profile_name: str,
+        objective: str,
+        parent_investigation_id: str = "",
+        context_refs: Optional[List[Dict[str, str]]] = None,
+        success_criteria: Optional[List[str]] = None,
+        session_id: str = "",
+    ) -> SubagentStructuredResult:
+        """
+        Spawns a specialist subagent, executes its bounded workflow, and returns
+        a structured settlement result.
+
+        ``session_id`` is explicit because this runs on ThreadPoolExecutor
+        workers during a swarm, where the event bus's thread-local session scope
+        is not inherited. Without it every subagent event was stamped
+        "default" and the client discarded it.
+        """
+        with event_bus.session_scope(session_id) if session_id else contextlib.nullcontext():
+            return self._delegate_task(
+                profile_name, objective, parent_investigation_id, context_refs, success_criteria
+            )
+
+    def _delegate_task(
+        self,
+        profile_name: str,
+        objective: str,
+        parent_investigation_id: str,
+        context_refs: Optional[List[Dict[str, str]]],
+        success_criteria: Optional[List[str]],
+    ) -> SubagentStructuredResult:
+        # Resolve the delegation target. Covers the ten hand-written defensive
+        # specialists and the markdown definitions in subagents/definitions/.
+        # An unknown name is rejected outright: previously it ran Threat
+        # Analysis instead, so a typo appeared to work while running a
+        # different specialist than the caller asked for.
+        profile_enum, profile_def, profile_origin = resolve_profile_definition(profile_name)
+        subagent_id = f"sub_{uuid.uuid4().hex[:8]}"
+
+        if profile_origin == "fallback":
+            error = (
+                f"Unknown specialist {profile_name!r}. It is neither a built-in "
+                "defensive profile nor a definition in subagents/definitions/. "
+                "No subagent was run."
+            )
+            result = SubagentStructuredResult(
+                subagent_id=subagent_id,
+                profile=(profile_name or "").strip() or "<empty>",
+                status=SubagentStatus.FAILED,
+                verdict=SubagentVerdict.INCONCLUSIVE,
+                confidence=ValidationConfidence.LOW,
+                summary=error,
+                limitations=[error],
+                error=error,
+            )
+            with self._lock:
+                self.subagent_results[subagent_id] = result
+            event_bus.publish(
+                AgentEvent(
+                    type="subagent_failed",
+                    status="error",
+                    message=error,
+                    investigation_id=parent_investigation_id,
+                    source="subagent_manager",
+                    data={
+                        **result.to_dict(),
+                        "requested_profile": profile_name,
+                        "profile_origin": profile_origin,
+                    },
+                )
+            )
+            return result
+
+        parsed_refs = [
+            SubagentContextRef(label=r.get("label", "Context"), content=r.get("content", ""))
+            for r in (context_refs or [])
+        ]
+
+        task = SubagentTaskRequest(
+            subagent_id=subagent_id,
+            parent_investigation_id=parent_investigation_id,
+            profile=profile_enum,
+            objective=objective,
+            success_criteria=success_criteria or ["Analyze evidence and provide structured defensive findings."],
+            capability_bundles=profile_def.capability_bundles,
+            context_refs=parsed_refs,
+            max_steps=profile_def.max_steps,
+        )
+
+        with self._lock:
+            self.active_subagents[subagent_id] = task
+
+        # Publish UI start event
+        event_bus.publish(
+            AgentEvent(
+                type="subagent_started",
+                status="running",
+                message=f"Delegating to {profile_def.name}: {objective[:100]}",
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data={
+                    "subagent_id": subagent_id,
+                    "profile": profile_enum.value,
+                    "requested_profile": profile_name,
+                    "profile_origin": profile_origin,
+                    "name": profile_def.name,
+                    "icon": profile_def.icon,
+                    "objective": objective,
+                    "allowed_tools": profile_def.allowed_tools,
+                },
+            )
+        )
+
+        start_time = time.time()
+        tool_calls_count = 0
+        findings_collected: List[Dict[str, Any]] = []
+        evidence_collected: List[str] = []
+
+        try:
+            # 1. Execute allowed tools relevant to the subagent objective
+            subagent_findings = self._execute_subagent_tools(task, profile_def)
+            tool_calls_count = subagent_findings.get("tool_calls_count", 0)
+            findings_collected = subagent_findings.get("findings", [])
+            evidence_collected = subagent_findings.get("evidence_refs", [])
+            tool_summary = subagent_findings.get("summary", "Analysis completed.")
+
+            # 2. Query AI model for specialist verdict
+            verdict_data = self._generate_specialist_verdict(task, profile_def, tool_summary)
+
+            result = SubagentStructuredResult(
+                subagent_id=subagent_id,
+                profile=profile_def.name,
+                status=SubagentStatus.COMPLETED,
+                verdict=verdict_data.get("verdict", SubagentVerdict.CONFIRMED),
+                confidence=verdict_data.get("confidence", ValidationConfidence.HIGH),
+                summary=verdict_data.get("summary", tool_summary),
+                findings=findings_collected,
+                evidence_refs=evidence_collected,
+                limitations=verdict_data.get("limitations", []),
+                recommended_actions=verdict_data.get("recommended_actions", []),
+                tool_calls_count=tool_calls_count,
+                duration_seconds=time.time() - start_time,
+            )
+
+        except Exception as exc:
+            result = SubagentStructuredResult(
+                subagent_id=subagent_id,
+                profile=profile_def.name,
+                status=SubagentStatus.FAILED,
+                verdict=SubagentVerdict.INCONCLUSIVE,
+                confidence=ValidationConfidence.LOW,
+                summary=f"Subagent encountered an error: {exc}",
+                error=str(exc),
+                duration_seconds=time.time() - start_time,
+            )
+
+        with self._lock:
+            self.active_subagents.pop(subagent_id, None)
+            self.subagent_results[subagent_id] = result
+
+        # Publish UI completion event
+        event_bus.publish(
+            AgentEvent(
+                type="subagent_completed",
+                status="completed" if result.status == SubagentStatus.COMPLETED else "error",
+                message=f"{profile_def.name} finished: {result.summary[:120]}",
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data=result.to_dict(),
+            )
+        )
+
+        return result
+
+    def delegate_swarm(
+        self,
+        plan: DefensiveSwarmPlan,
+        parent_investigation_id: str = "",
+        context_refs: Optional[List[Dict[str, str]]] = None,
+        session_id: str = "",
+    ) -> DefensiveSwarmExecution:
+        """Run a small defensive team and return every child result to its parent.
+
+        The planner limits membership to vetted profiles. This method intentionally
+        performs no synthesis and no remediation: only the parent agent can make
+        a final assessment or request approval for a system-changing action.
+        """
+        selected_profiles = list(dict.fromkeys(plan.profiles))[:MAX_ACTIVE_SUBAGENTS_PER_PARENT]
+        event_bus.publish(
+            AgentEvent(
+                type="swarm_planned",
+                status="running",
+                message=f"Defensive team planned: {len(selected_profiles)} specialist(s)",
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data={
+                    "profiles": [profile.value for profile in selected_profiles],
+                    "read_only": plan.read_only,
+                    "max_concurrency": min(plan.max_concurrency, MAX_ACTIVE_SUBAGENTS_PER_PARENT),
+                },
+            )
+        )
+        if not selected_profiles:
+            return DefensiveSwarmExecution(plan=plan)
+
+        results_by_profile: Dict[SubagentProfile, SubagentStructuredResult] = {}
+        max_workers = min(plan.max_concurrency, MAX_ACTIVE_SUBAGENTS_PER_PARENT, len(selected_profiles))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="svs-swarm") as executor:
+            futures = {
+                executor.submit(
+                    self.delegate_task,
+                    profile.value,
+                    plan.objective,
+                    parent_investigation_id=parent_investigation_id,
+                    context_refs=context_refs,
+                    success_criteria=["Return only evidence-backed defensive findings."],
+                    session_id=session_id,
+                ): profile
+                for profile in selected_profiles
+            }
+            for future in as_completed(futures):
+                profile = futures[future]
+                try:
+                    results_by_profile[profile] = future.result()
+                except Exception as exc:
+                    results_by_profile[profile] = SubagentStructuredResult(
+                        subagent_id=f"sub_{profile.value}_failed",
+                        profile=profile.value,
+                        status=SubagentStatus.FAILED,
+                        verdict=SubagentVerdict.INCONCLUSIVE,
+                        confidence=ValidationConfidence.LOW,
+                        summary="Specialist execution failed before producing evidence.",
+                        limitations=[str(exc)],
+                        error=str(exc),
+                    )
+
+        execution = DefensiveSwarmExecution(
+            plan=plan,
+            results=[results_by_profile[profile] for profile in selected_profiles],
+        )
+        event_bus.publish(
+            AgentEvent(
+                type="swarm_completed",
+                status="completed" if execution.failed_count == 0 else "warning",
+                message=(
+                    f"Defensive team completed: {execution.completed_count} completed, "
+                    f"{execution.failed_count} unavailable"
+                ),
+                investigation_id=parent_investigation_id,
+                source="subagent_manager",
+                data={
+                    "completed": execution.completed_count,
+                    "failed": execution.failed_count,
+                    "read_only": plan.read_only,
+                },
+            )
+        )
+        return execution
+
+    def _execute_subagent_tools(
+        self,
+        task: SubagentTaskRequest,
+        profile_def: SpecialistProfileDefinition,
+    ) -> Dict[str, Any]:
+        """Runs allowable scoped tools based on the objective and parent context."""
+        findings = []
+        evidence_refs = []
+        tool_calls_count = 0
+        tool_outputs = []
+
+        # Example: Threat Analysis specialist with IOC in objective
+        if profile_def.profile == SubagentProfile.THREAT_ANALYSIS:
+            # Check for IP or Hash in context/objective
+            ip_match = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", task.objective)
+            hash_match = re.search(r"\b[a-fA-F0-9]{32,64}\b", task.objective)
+
+            if hash_match and "virustotal_hash_lookup" in profile_def.allowed_tools:
+                tool_calls_count += 1
+                # The registered tool is vt_hash_lookup(file_hash=...); passing
+                # "hash" raised TypeError, so the threat-intel branch collected
+                # no evidence and never reported a hash lookup.
+                res = self._call_scoped_tool(
+                    "virustotal_hash_lookup", {"file_hash": hash_match.group(0)}
+                )
+                tool_outputs.append(f"Hash lookup: {res[:300]}")
+                evidence_refs.append(f"hash:{hash_match.group(0)}")
+                findings.extend(self._findings_from_tool("virustotal_hash_lookup", res))
+
+            elif ip_match and "virustotal_ip_lookup" in profile_def.allowed_tools:
+                tool_calls_count += 1
+                res = self._call_scoped_tool(
+                    "virustotal_ip_lookup", {"ip_address": ip_match.group(0)}
+                )
+                tool_outputs.append(f"IP lookup: {res[:300]}")
+                evidence_refs.append(f"ip:{ip_match.group(0)}")
+                findings.extend(self._findings_from_tool("virustotal_ip_lookup", res))
+
+        elif profile_def.profile == SubagentProfile.MALWARE_ANALYSIS:
+            candidate = _first_path(task, _BINARY_FILE_PATTERN, _SOURCE_FILE_PATTERN)
+            if candidate and "entropy_check" in profile_def.allowed_tools:
+                tool_calls_count += 1
+                res = self._call_scoped_tool("entropy_check", {"filepath": candidate})
+                tool_outputs.append(f"Entropy check on '{candidate}': {res[:300]}")
+                evidence_refs.append(f"file:{candidate}")
+                findings.extend(self._findings_from_tool("entropy_check", res))
+
+        elif profile_def.profile == SubagentProfile.NETWORK_ANALYSIS:
+            if "network_inspect" in profile_def.allowed_tools:
+                tool_calls_count += 1
+                res = self._call_scoped_tool("network_inspect", {})
+                tool_outputs.append(f"Network inspect: {res[:300]}")
+
+        elif profile_def.profile == SubagentProfile.NETWORK_CONTAINMENT_ADVISOR:
+            # This specialist is intentionally advisory-only. It can reason
+            # over parent-supplied evidence but cannot inspect or modify the
+            # endpoint itself, avoiding accidental containment authority.
+            refs = [ref.label for ref in task.context_refs]
+            summary = (
+                "Reviewing parent-supplied network evidence for reversible, approval-gated recommendations."
+                if refs
+                else "No network evidence was supplied; no containment recommendation can be verified."
+            )
+            return {
+                "tool_calls_count": 0,
+                "findings": [],
+                "evidence_refs": refs,
+                "summary": summary,
+            }
+
+        else:
+            # Markdown-defined specialists carry SubagentProfile.GENERAL. Without
+            # this branch their declared allowed_tools were never exercised, so
+            # a definition could list a tool and still never call it. Every call
+            # below is gated on the profile's own allowlist and stays read-only.
+            tool_outputs, evidence_refs, tool_calls_count = self._run_markdown_tools(
+                task, profile_def, tool_outputs, evidence_refs, tool_calls_count
+            )
+
+        summary = "\n".join(tool_outputs) if tool_outputs else "Scoped analysis executed without anomaly indicators."
+        return {
+            "tool_calls_count": tool_calls_count,
+            "findings": findings,
+            "evidence_refs": evidence_refs,
+            "summary": summary,
+        }
+
+    def _run_markdown_tools(
+        self,
+        task: SubagentTaskRequest,
+        profile_def: SpecialistProfileDefinition,
+        tool_outputs: List[str],
+        evidence_refs: List[str],
+        tool_calls_count: int,
+    ) -> tuple:
+        """Bounded read-only tool use for a markdown-defined specialist.
+
+        Only tools the definition itself declared are invoked, and only
+        workspace-confined read-only ones. Returns the updated accumulators.
+        """
+        allowed = set(profile_def.allowed_tools)
+        objective = task.objective or ""
+
+        candidate = _first_path(task, _SOURCE_FILE_PATTERN)
+        if candidate and "workspace_read_file" in allowed:
+            res = self._call_scoped_tool("workspace_read_file", {"filepath": candidate})
+            tool_calls_count += 1
+            tool_outputs.append(f"Read '{candidate}': {res[:300]}")
+            evidence_refs.append(f"file:{candidate}")
+            return tool_outputs, evidence_refs, tool_calls_count
+
+        if "workspace_list_files" in allowed and any(
+            word in objective.lower()
+            for word in ("list", "files", "directory", "folder", "repo", "tree")
+        ):
+            res = self._call_scoped_tool("workspace_list_files", {"root": "."})
+            tool_calls_count += 1
+            tool_outputs.append(f"Listed workspace: {res[:300]}")
+            evidence_refs.append("workspace:.")
+
+        return tool_outputs, evidence_refs, tool_calls_count
+
+    def _call_scoped_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
+        """Run a scoped tool and return its output text, never raising.
+
+        A wrong argument name or an absent binary used to propagate out of
+        ``_execute_subagent_tools``, and ``delegate_task`` reported the whole
+        delegation as failed. A specialist that could not run one lookup should
+        still return the verdict for the evidence it did collect.
+        """
+        try:
+            result = self.agent.execute_tool(tool_name, args)
+        except Exception as exc:
+            return f"Tool '{tool_name}' raised {type(exc).__name__}: {exc}"
+        if not isinstance(result, dict):
+            return str(result or "")
+        if result.get("success") is False:
+            return str(result.get("error") or result.get("output") or "")
+        return str(result.get("output") or "")
+
+    def _findings_from_tool(self, tool_name: str, output: str) -> List[Dict[str, Any]]:
+        """Structured findings a scoped tool reported, if it reported any.
+
+        Only the tool's own structured findings count. Inferring them from
+        output text would let a tool's help text or an IOC's own name read as a
+        confirmed detection.
+        """
+        try:
+            payload = json.loads(output)
+        except (TypeError, ValueError):
+            return []
+        if isinstance(payload, list):
+            reported = payload
+        elif isinstance(payload, dict):
+            reported = payload.get("findings") or payload.get("finding") or []
+        else:
+            return []
+        if isinstance(reported, dict):
+            reported = [reported]
+        findings: List[Dict[str, Any]] = []
+        for item in reported:
+            if not isinstance(item, dict):
+                continue
+            findings.append(
+                {
+                    "tool": tool_name,
+                    "title": item.get("title") or item.get("type") or f"Finding from {tool_name}",
+                    "severity": str(item.get("severity") or "medium").lower(),
+                    "evidence": str(item.get("message") or item.get("evidence") or "")[:300],
+                }
+            )
+        return findings
+
+    def _generate_specialist_verdict(
+        self,
+        task: SubagentTaskRequest,
+        profile_def: SpecialistProfileDefinition,
+        tool_summary: str,
+    ) -> Dict[str, Any]:
+        """Calls the configured AI backend with the specialist system prompt to generate a structured verdict."""
+        prompt = (
+            f"You are {profile_def.name}.\n"
+            f"Delegated task objective: {task.objective}\n"
+            f"Observed tool evidence: {tool_summary}\n\n"
+            "Provide your defensive verdict in JSON format with keys:\n"
+            "- verdict: 'confirmed' | 'rejected' | 'inconclusive'\n"
+            "- confidence: 'low' | 'medium' | 'high'\n"
+            "- summary: A concise 1-2 sentence executive explanation\n"
+            "- limitations: list of any limitations\n"
+            "- recommended_actions: list of defensive next steps\n"
+        )
+
+        try:
+            resp = self._call_specialist_llm(profile_def.system_prompt, prompt)
+            if resp:
+                parsed = extract_json_object(resp)
+                if parsed:
+                    return {
+                        "verdict": _coerce_verdict(parsed.get("verdict")),
+                        "confidence": _coerce_confidence(parsed.get("confidence")),
+                        "summary": parsed.get("summary", resp[:200]),
+                        "limitations": parsed.get("limitations", []),
+                        "recommended_actions": parsed.get("recommended_actions", []),
+                    }
+                return {
+                    "verdict": SubagentVerdict.INCONCLUSIVE,
+                    "confidence": ValidationConfidence.MEDIUM,
+                    "summary": resp[:300],
+                    "limitations": ["The specialist returned prose rather than a structured JSON verdict."],
+                    "recommended_actions": ["Review findings and monitor endpoint."],
+                }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            last_error = "no AI backend is configured for specialist verdicts"
+
+        # No usable verdict. Report inconclusive rather than a fabricated
+        # confirmation: a specialist that did not actually reason must not look
+        # like one that validated the telemetry.
+        return {
+            "verdict": SubagentVerdict.INCONCLUSIVE,
+            "confidence": ValidationConfidence.LOW,
+            "summary": f"{profile_def.name} could not produce a model verdict: {last_error}.",
+            "limitations": [last_error],
+            "recommended_actions": ["Preserve collected logs and monitor endpoint."],
+        }
+
+    def _call_specialist_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Invoke whatever AI backend the owning agent exposes.
+
+        CyberAgent carries a ``CyberSecurityOrchestrator`` (``_call_role``), not
+        a ``ToolOrchestrator`` (``.llm``). Testing only for ``.llm`` meant this
+        path never ran and every verdict silently fell through to the canned
+        stub. Both shapes are supported here so the specialist actually reasons.
+        """
+        orchestrator = getattr(self.agent, "orchestrator", None)
+        if orchestrator is None:
+            return ""
+
+        if hasattr(orchestrator, "_call_role"):
+            response = orchestrator._call_role("investigator", system_prompt, user_prompt)
+        elif hasattr(orchestrator, "llm"):
+            response = orchestrator.llm.chat(system=system_prompt, user=user_prompt, role="investigator")
+        else:
+            return ""
+
+        response = (response or "").strip()
+        if not response or response.startswith("[AI ERROR]"):
+            if response.startswith("[AI ERROR]"):
+                raise RuntimeError(response)
+            return ""
+        if "provider unavailable" in response.lower():
+            return ""
+        return response

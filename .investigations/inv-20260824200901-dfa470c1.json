@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260824200901-dfa470c1",
+  "session_id": "session-20260825000901",
+  "objective": "Scan my running processes for suspicious activity",
+  "status": "completed",
+  "created_at": "2026-08-24T20:09:01.092090+00:00",
+  "updated_at": "2026-08-24T20:09:10.217564+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}

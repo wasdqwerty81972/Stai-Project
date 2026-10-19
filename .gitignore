@@ -1,0 +1,29 @@
+.env.local
+.env
+.sessions/
+__pycache__/
+*.pyc
+node_modules/
+.next/
+tools/node-v22.22.3/
+tools/next-cache-backup-*/
+tools/next-dev-cache-backup-*/
+.vscode/
+.pnpm/
+dist/
+build/
+windows_protection/installer/bin/
+windows_protection/installer/obj/
+windows_protection/installer/CustomActions/bin/
+windows_protection/installer/CustomActions/obj/
+*.log
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+dataxyz/
+.cyber_soc_engine.git-backup/
+
+# Runtime forensic audit trail. Per-run operator data, not source. audit_log.json
+# is the pre-JSONL format, kept here so an already-tracked copy stops churning.
+audit_log.jsonl
+audit_log.json
+

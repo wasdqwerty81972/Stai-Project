@@ -1,0 +1,27 @@
+<Project Sdk="WixToolset.Sdk/4.0.6">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platform>x64</Platform>
+    <ProductVersion>1.0.0.0</ProductVersion>
+    <BuildFlavor Condition="'$(BuildFlavor)' == ''">Test</BuildFlavor>
+    <StageDir Condition="'$(StageDir)' == ''">$(MSBuildProjectDirectory)\build\$(Configuration)\stage</StageDir>
+    <DefineConstants>$(DefineConstants);StageDir=$(StageDir);BuildFlavor=$(BuildFlavor);CustomActionPackage=$(MSBuildProjectDirectory)\CustomActions\obj\$(Configuration)\net48\StaiProtectionCustomActions.CA.dll</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="CustomActions\DriverLifecycle.csproj" />
+  </ItemGroup>
+
+  <Target Name="ValidateStaiStage" BeforeTargets="CoreCompile">
+    <Error Condition="!Exists('$(StageDir)\STAIProtectionService.exe')" Text="StageDir must contain STAIProtectionService.exe." />
+    <Error Condition="!Exists('$(StageDir)\update.ps1')" Text="StageDir must contain the installed updater script." />
+    <Error Condition="!Exists('$(StageDir)\InstallRollbackRecovery.ps1')" Text="StageDir must contain the MSI rollback recovery script." />
+    <Error Condition="!Exists('$(StageDir)\driver\StaiProtection.inf')" Text="StageDir must contain driver\StaiProtection.inf." />
+    <Error Condition="!Exists('$(StageDir)\driver\StaiProtection.sys')" Text="StageDir must contain a WDK-built StaiProtection.sys." />
+    <Error Condition="!Exists('$(StageDir)\driver\StaiProtection.cat')" Text="StageDir must contain StaiProtection.cat." />
+    <Error Condition="!Exists('$(StageDir)\rules\manifest.json')" Text="StageDir must contain a signed rules\manifest.json." />
+    <Error Condition="!Exists('$(StageDir)\rules\manifest.sig')" Text="StageDir must contain a detached rules\manifest.sig." />
+    <Error Condition="!Exists('$(StageDir)\package-metadata.json')" Text="StageDir must contain package-metadata.json." />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\CustomActions\obj\$(Configuration)\net48\StaiProtectionCustomActions.CA.dll')" Text="The DTF custom action package was not produced." />
+  </Target>
+</Project>

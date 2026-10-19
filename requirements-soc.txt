@@ -1,0 +1,7 @@
+# CyberAgent tool and asset runtime dependencies.
+dnspython>=2.7,<3
+PyYAML>=6,<7
+requests>=2.31,<3
+# Optional SOC engine tool groups loaded by the local agent backend.
+pgvector>=0.3,<1
+pydantic-settings>=2,<3

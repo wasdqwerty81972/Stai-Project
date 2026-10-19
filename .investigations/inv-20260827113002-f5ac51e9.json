@@ -1,0 +1,13 @@
+{
+  "investigation_id": "inv-20260827113002-f5ac51e9",
+  "session_id": "session-20260827153002",
+  "objective": "analyze process activity on this host",
+  "status": "running",
+  "created_at": "2026-08-27T11:30:02.121925+00:00",
+  "updated_at": "2026-08-27T11:30:02.121925+00:00",
+  "events": [],
+  "tool_calls": [],
+  "findings": [],
+  "mitre": [],
+  "decisions": []
+}
