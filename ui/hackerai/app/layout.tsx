@@ -48,6 +48,10 @@ export default async function RootLayout({
           name="viewport"
           content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
+        <meta
+          name="stai-backend-origin"
+          content={process.env.STAI_API_ORIGIN || "http://127.0.0.1:6764"}
+        />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
       <body className="antialiased h-full">

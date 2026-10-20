@@ -23,10 +23,97 @@ import subprocess
 import sys
 import time
 import argparse
+import socket
+from collections.abc import Callable
 import urllib.error
 import urllib.request
 
 AGENT_SERVER_STARTUP_TIMEOUT_SECONDS = 300
+PORT_FALLBACK_COUNT = 5
+
+
+def port_candidates(preferred_port: int, fallback_count: int = PORT_FALLBACK_COUNT) -> list[int]:
+    """Return the preferred TCP port followed by a bounded sequential range."""
+    if not 1 <= preferred_port <= 65535:
+        raise ValueError("Port must be between 1 and 65535")
+    if fallback_count < 0:
+        raise ValueError("Fallback count cannot be negative")
+    return list(range(preferred_port, min(65535, preferred_port + fallback_count) + 1))
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    """Check whether a local TCP listener can bind to the requested address."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as listener:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            listener.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def resolve_service_port(
+    service_name: str,
+    preferred_port: int,
+    *,
+    host: str = "127.0.0.1",
+    is_ready: Callable[[int], bool],
+    can_bind: Callable[[int], bool] | None = None,
+    fallback_count: int = PORT_FALLBACK_COUNT,
+) -> int:
+    """Reuse a ready service or choose the first available preferred/fallback port."""
+    candidates = port_candidates(preferred_port, fallback_count)
+    availability_check = can_bind or (lambda port: _port_is_available(host, port))
+    for port in candidates:
+        if is_ready(port):
+            return port
+        if availability_check(port):
+            return port
+    tried = ", ".join(str(port) for port in candidates)
+    raise RuntimeError(
+        f"No available {service_name} port. Ports tried: {tried}. "
+        "Stop the process using one of these ports or choose another base port."
+    )
+
+
+def resolve_agent_workspace_port(
+    preferred_port: int,
+    *,
+    is_ready: Callable[[int], bool],
+    can_bind: Callable[[int], bool] | None = None,
+) -> tuple[int, str]:
+    """Select an agent port and always return its corresponding readiness URL."""
+    port = resolve_service_port(
+        "AI Agent workspace",
+        preferred_port,
+        is_ready=is_ready,
+        can_bind=can_bind,
+    )
+    return port, f"http://127.0.0.1:{port}"
+
+
+def build_child_environment(
+    base_environment: dict[str, str],
+    *,
+    host: str,
+    api_port: int,
+    frontend_port: int,
+    agent_port: int,
+) -> dict[str, str]:
+    """Pass the selected local service origins to every child process."""
+    backend_origin = f"http://{host}:{api_port}"
+    return {
+        **base_environment,
+        "NEXT_PUBLIC_BACKEND_ORIGIN": backend_origin,
+        "STAI_API_ORIGIN": backend_origin,
+        "STAI_API_PORT": str(api_port),
+        "STAI_FRONTEND_PORT": str(frontend_port),
+        "VITE_STAI_TAURI_DEV_PORT": str(frontend_port),
+        "STAI_AGENT_PORT": str(agent_port),
+        "STAI_CORS_ALLOWED_PORTS": f"{frontend_port},{agent_port}",
+    }
 
 
 def _project_venv_python(
@@ -106,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--port",
         type=int,
         default=6764,
-        help="Port for the API / web server (default: 6764)",
+        help="Port for the API / web server (default: 6764; tries the next five ports if occupied)",
     )
     parser.add_argument(
         "--host",
@@ -118,13 +205,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--frontend-port",
         type=int,
         default=1420,
-        help="Loopback port for the browser dashboard (default: 1420)",
+        help="Loopback port for the browser dashboard (default: 1420; tries the next five ports if occupied)",
     )
     parser.add_argument(
         "--agent-port",
         type=int,
         default=3000,
-        help="Loopback port for the HackerAI-style agent workspace (default: 3000)",
+        help="Loopback port for the HackerAI-style agent workspace (default: 3000; tries the next five ports if occupied)",
     )
     parser.add_argument(
         "--no-open",
@@ -406,15 +493,52 @@ def main() -> int:
     print("  SVS-CYBER: Autonomous Cybersecurity Agent Platform")
     print("=" * 60)
 
+    requested_api_port = args.port
+    requested_frontend_port = args.frontend_port
+    requested_agent_port = args.agent_port
+    launch_desktop = False
+    if not args.web:
+        launch_desktop = should_launch_desktop(args)
+        if args.desktop and args.browser:
+            parser.error("--desktop and --browser cannot be used together")
+
+    args.port = resolve_service_port(
+        "API",
+        args.port,
+        host=args.host,
+        is_ready=lambda port: _http_ready(f"http://{args.host}:{port}/health"),
+    )
+    if args.port != requested_api_port:
+        print(f"[*] API port {requested_api_port} is occupied; using fallback port {args.port}.")
+
+    packaged_app = None
+    if not args.web:
+        desktop_dir = os.path.join(project_root, "ui", "hackerai", "packages", "desktop")
+        if launch_desktop:
+            packaged_app = find_built_desktop_app(desktop_dir)
+        if not packaged_app:
+            args.frontend_port = resolve_service_port(
+                "protection dashboard",
+                args.frontend_port,
+                is_ready=lambda port: _http_ready(f"http://127.0.0.1:{port}/"),
+            )
+            if args.frontend_port != requested_frontend_port:
+                print(
+                    f"[*] Protection dashboard port {requested_frontend_port} is occupied; "
+                    f"using fallback port {args.frontend_port}."
+                )
+
     backend_url = f"http://{args.host}:{args.port}"
     frontend_url = f"http://127.0.0.1:{args.frontend_port}"
-    agent_url = f"http://127.0.0.1:{args.agent_port}"
 
     if args.web:
         import uvicorn
+        if _http_ready(backend_url + "/health"):
+            print(f"[*] SVS-Cyber API is already responding at {backend_url}; reusing it.")
+            return 0
         protection_process = ensure_windows_protection_service(project_root)
         print(f"[*] Mode: Headless Web Server")
-        print(f"[*] Serving SVS-Cyber API at http://{args.host}:{args.port}")
+        print(f"[*] Serving SVS-Cyber API at {backend_url}")
         print(f"[*] HackerAI UI should be run separately from ui/hackerai")
         print(f"[*] Press Ctrl+C to terminate.")
         try:
@@ -431,15 +555,11 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     protection_process.kill()
     else:
-        launch_desktop = should_launch_desktop(args)
-        if args.desktop and args.browser:
-            parser.error("--desktop and --browser cannot be used together")
         # Windows opens the protection dashboard first; the AI Agent action opens
         # the existing chat workspace in a separate native Tauri window.
         print(f"[*] Mode: {'SVS Cyber desktop dashboard' if launch_desktop else 'SVS Cyber browser dashboard'}")
         print(f"[*] Backend API: {backend_url}")
         print(f"[*] Protection dashboard: {frontend_url}")
-        print(f"[*] AI Agent workspace: {agent_url}")
 
         protection_process = ensure_windows_protection_service(project_root)
         children: list[subprocess.Popen[bytes]] = []
@@ -447,11 +567,52 @@ def main() -> int:
             children.append(protection_process)
         agent_process: subprocess.Popen[bytes] | None = None
         desktop_process: subprocess.Popen[bytes] | None = None
-        child_env = {**os.environ, "NEXT_PUBLIC_BACKEND_ORIGIN": backend_url}
+        child_env = build_child_environment(
+            os.environ,
+            host=args.host,
+            api_port=args.port,
+            frontend_port=args.frontend_port,
+            agent_port=args.agent_port,
+        )
         path_entries = child_env.get("PATH", "").split(os.pathsep)
         child_env["PATH"] = os.pathsep.join(
             entry for entry in path_entries if "openclaw\\bin" not in entry.lower()
         )
+
+        dashboard_dir = os.path.join(project_root, "ui", "hackerai", "packages", "protection-dashboard")
+        hackerai_dir = os.path.join(project_root, "ui", "hackerai")
+        desktop_dir = os.path.join(hackerai_dir, "packages", "desktop")
+        vite_cli = os.path.join(dashboard_dir, "node_modules", "vite", "bin", "vite.js")
+        node = shutil.which("node", path=child_env["PATH"]) or shutil.which("node.exe", path=child_env["PATH"])
+        agent_server_command = build_agent_server_command(project_root, node, args.agent_port)
+        agent_url = None
+        try:
+            args.agent_port, agent_url = resolve_agent_workspace_port(
+                args.agent_port,
+                is_ready=lambda port: _http_ready(f"http://127.0.0.1:{port}/", follow_redirects=False),
+            )
+        except RuntimeError as exc:
+            print(f"[!] AI Agent workspace is unavailable; the dashboard is still running: {exc}", file=sys.stderr)
+            agent_server_command = None
+        else:
+            if agent_server_command:
+                agent_server_command = build_agent_server_command(project_root, node, args.agent_port)
+            if args.agent_port != requested_agent_port:
+                print(
+                    f"[*] AI Agent workspace port {requested_agent_port} is occupied; "
+                    f"using fallback port {args.agent_port}."
+                )
+        child_env.update(
+            build_child_environment(
+                {},
+                host=args.host,
+                api_port=args.port,
+                frontend_port=args.frontend_port,
+                agent_port=args.agent_port,
+            )
+        )
+        if agent_url:
+            print(f"[*] AI Agent workspace: {agent_url}")
 
         def start_process(
             command: list[str], cwd: str, env: dict[str, str] | None = None
@@ -520,13 +681,6 @@ def main() -> int:
                 )
                 wait_ready(backend_health_url, backend)
 
-            dashboard_dir = os.path.join(project_root, "ui", "hackerai", "packages", "protection-dashboard")
-            hackerai_dir = os.path.join(project_root, "ui", "hackerai")
-            next_cli = os.path.join(hackerai_dir, "node_modules", "next", "dist", "bin", "next")
-            desktop_dir = os.path.join(project_root, "ui", "hackerai", "packages", "desktop")
-            vite_cli = os.path.join(dashboard_dir, "node_modules", "vite", "bin", "vite.js")
-            node = shutil.which("node", path=child_env["PATH"]) or shutil.which("node.exe", path=child_env["PATH"])
-            agent_server_command = build_agent_server_command(project_root, node, args.agent_port)
             if launch_desktop:
                 cargo = shutil.which("cargo", path=child_env["PATH"])
                 if not cargo and os.environ.get("USERPROFILE"):
@@ -539,7 +693,6 @@ def main() -> int:
                 tauri_cli = os.path.join(
                     desktop_dir, "node_modules", ".bin", "tauri.cmd",
                 )
-                packaged_app = find_built_desktop_app(desktop_dir)
                 if os.name != "nt":
                     raise RuntimeError(
                         "The native SVS Cyber desktop app is currently supported on Windows."
@@ -591,7 +744,7 @@ def main() -> int:
             # The native dashboard is the primary app. Its chat workspace is a
             # separately hosted Next.js app, so start it after the dashboard and
             # keep a missing/broken optional workspace from suppressing the UI.
-            if is_ready(f"{agent_url}/", follow_redirects=False):
+            if agent_url and is_ready(f"{agent_url}/", follow_redirects=False):
                 print("[*] AI Agent workspace is already running; reusing it.")
             elif agent_server_command:
                 try:

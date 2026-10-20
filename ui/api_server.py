@@ -504,7 +504,7 @@ app = FastAPI(title="CyberAgent API")
 app.on_event("startup")(_start_sensor_ai_consumer)
 app.on_event("shutdown")(_stop_sensor_ai_consumer)
 
-COMMUNICATIONS_ALLOWED_ORIGINS = {
+_BASE_COMMUNICATIONS_ALLOWED_ORIGINS = {
     "http://localhost:3000",
     "http://localhost:6763",
     "http://localhost:8080",
@@ -516,6 +516,29 @@ COMMUNICATIONS_ALLOWED_ORIGINS = {
     "tauri://localhost",
     "http://tauri.localhost",
 }
+
+
+def communications_allowed_origins(extra_ports: str | None = None) -> set[str]:
+    """Include only loopback origins selected by the local launcher."""
+    raw_ports = os.environ.get("STAI_CORS_ALLOWED_PORTS", "") if extra_ports is None else extra_ports
+    origins = set(_BASE_COMMUNICATIONS_ALLOWED_ORIGINS)
+    if extra_ports is None and not raw_ports:
+        raw_ports = ",".join(
+            str(port)
+            for start in (1420, 3000)
+            for port in range(start, start + 6)
+        )
+    for raw_port in raw_ports.split(","):
+        try:
+            port = int(raw_port.strip())
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            origins.update({f"http://localhost:{port}", f"http://127.0.0.1:{port}"})
+    return origins
+
+
+COMMUNICATIONS_ALLOWED_ORIGINS = communications_allowed_origins()
 
 SUPPORTED_CHAT_MODELS = {
     "auto",

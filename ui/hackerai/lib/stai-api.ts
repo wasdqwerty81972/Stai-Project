@@ -132,15 +132,18 @@ export interface SensorRuntimeStatus {
 }
 
 export function getBackendOrigin(): string {
-  const envOrigin = process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim();
-  if (envOrigin) {
-    return envOrigin;
-  }
   if (typeof window !== "undefined") {
+    const runtimeOrigin = document
+      .querySelector<HTMLMetaElement>('meta[name="stai-backend-origin"]')
+      ?.content.trim();
+    if (runtimeOrigin) return runtimeOrigin;
+
+    const envOrigin = process.env.NEXT_PUBLIC_BACKEND_ORIGIN?.trim();
+    if (envOrigin) return envOrigin;
     const protocol = window.location.protocol === "https:" ? "https:" : "http:";
     return `${protocol}//${window.location.hostname}:6764`;
   }
-  return "http://127.0.0.1:6764";
+  return process.env.STAI_API_ORIGIN?.trim() || "http://127.0.0.1:6764";
 }
 
 const jsonHeaders = { "Content-Type": "application/json" };

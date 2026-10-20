@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "dev": "node scripts/run-vite.js",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },

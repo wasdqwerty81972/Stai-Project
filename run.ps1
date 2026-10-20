@@ -6,10 +6,29 @@ $ErrorActionPreference = "Stop"
 
 $VenvPython = "D:\STAI-venv\Scripts\python.exe"
 $WorkDir    = $PSScriptRoot
-$Port       = 8000
+$PreferredPort = 8000
+$FallbackCount = 5
 
 if (-not (Test-Path $VenvPython)) {
     Write-Error "Venv not found at $VenvPython"
+    exit 1
+}
+
+$Port = $null
+for ($Candidate = $PreferredPort; $Candidate -le [Math]::Min(65535, $PreferredPort + $FallbackCount); $Candidate++) {
+    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Candidate)
+    try {
+        $Listener.Start()
+        $Listener.Stop()
+        $Port = $Candidate
+        break
+    } catch {
+        try { $Listener.Stop() } catch {}
+    }
+}
+
+if ($null -eq $Port) {
+    Write-Error "No available SVS-Cyber API port from $PreferredPort through $([Math]::Min(65535, $PreferredPort + $FallbackCount))."
     exit 1
 }
 

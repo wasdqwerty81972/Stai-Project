@@ -64,8 +64,21 @@ export interface SensorRuntimeStatus {
   platform: string;
   registry_version: string;
   registry: SensorRegistryEntry[];
-  capabilities: Array<{ id: number; registry_id: number; key: string; name: string; state: string; error: string }>;
-  queue: { depth: number; capacity: number; dropped: number; deduplicated: number; backpressure: number };
+  capabilities: Array<{
+    id: number;
+    registry_id: number;
+    key: string;
+    name: string;
+    state: string;
+    error: string;
+  }>;
+  queue: {
+    depth: number;
+    capacity: number;
+    dropped: number;
+    deduplicated: number;
+    backpressure: number;
+  };
   last_event_time: string | null;
   last_error: string | null;
   privacy: Record<string, boolean>;
@@ -98,7 +111,8 @@ export interface SensorWarning {
 export interface ScanJob {
   job_id: string;
   scope: ScanScope;
-  state: "queued" | "running" | "completed" | "partial" | "cancelled" | "failed";
+  state:
+    "queued" | "running" | "completed" | "partial" | "cancelled" | "failed";
   files_scanned: number;
   files_total: number | null;
   detections: number;
@@ -222,8 +236,17 @@ export interface ProtectionContext {
   port: string;
 }
 
+declare const __STAI_TAURI_DEV_PORT__: string;
+const DEFAULT_TAURI_DEV_PORT =
+  typeof __STAI_TAURI_DEV_PORT__ === "string"
+    ? __STAI_TAURI_DEV_PORT__
+    : "1420";
+
 /** Allow the bridge only in a Tauri webview on the bundled app origin. */
-export function isTrustedProtectionContext(context: ProtectionContext): boolean {
+export function isTrustedProtectionContext(
+  context: ProtectionContext,
+  devPort: string = DEFAULT_TAURI_DEV_PORT,
+): boolean {
   if (!context.isTauri) return false;
 
   if (context.protocol === "tauri:" && context.hostname === "localhost") {
@@ -238,13 +261,18 @@ export function isTrustedProtectionContext(context: ProtectionContext): boolean 
   return (
     context.protocol === "http:" &&
     (context.hostname === "localhost" || context.hostname === "127.0.0.1") &&
-    context.port === "1420"
+    context.port === devPort
   );
 }
 
-function invokeProtection<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+function invokeProtection<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   if (typeof window === "undefined") {
-    return Promise.reject(new Error("protection bridge is available only in the local STAI app"));
+    return Promise.reject(
+      new Error("protection bridge is available only in the local STAI app"),
+    );
   }
 
   const context: ProtectionContext = {
@@ -255,7 +283,9 @@ function invokeProtection<T>(command: string, args?: Record<string, unknown>): P
   };
 
   if (!isTrustedProtectionContext(context)) {
-    return Promise.reject(new Error("protection bridge is restricted to the local STAI app"));
+    return Promise.reject(
+      new Error("protection bridge is restricted to the local STAI app"),
+    );
   }
 
   return invoke<T>(command, args);
@@ -265,7 +295,12 @@ export const getProtectionStatus = () =>
   invokeProtection<ProtectionStatus>("get_protection_status");
 
 export interface ProcessAssessment {
-  classification: "known_threat" | "needs_review" | "no_known_match" | "unavailable" | "pending";
+  classification:
+    | "known_threat"
+    | "needs_review"
+    | "no_known_match"
+    | "unavailable"
+    | "pending";
   entropy: number | null;
   reason: string;
   rule_id: string | null;
@@ -291,24 +326,39 @@ export interface DeviceActivity {
   observed_at: string;
   collecting?: boolean;
   processes: LiveProcess[];
-  connections: Array<{ pid: number | null; process_name: string; process_identity?: string | null; ownership_status?: string; protocol: string; local_address: string; remote_address: string; state: string }>;
-  network: { download_bytes_sec: number | null; upload_bytes_sec: number | null; bytes_received: number | null; bytes_sent: number | null };
-    database: {
-      available: boolean;
-      version: string | null;
-      rule_count: number | null;
-      sha256_rule_count?: number | null;
-      yara_rule_count?: number | null;
-      demo: boolean;
-      analysis_available?: boolean;
-      active_in_protection_service?: boolean;
-      coverage: string;
-    };
+  connections: Array<{
+    pid: number | null;
+    process_name: string;
+    process_identity?: string | null;
+    ownership_status?: string;
+    protocol: string;
+    local_address: string;
+    remote_address: string;
+    state: string;
+  }>;
+  network: {
+    download_bytes_sec: number | null;
+    upload_bytes_sec: number | null;
+    bytes_received: number | null;
+    bytes_sent: number | null;
+  };
+  database: {
+    available: boolean;
+    version: string | null;
+    rule_count: number | null;
+    sha256_rule_count?: number | null;
+    yara_rule_count?: number | null;
+    demo: boolean;
+    analysis_available?: boolean;
+    active_in_protection_service?: boolean;
+    coverage: string;
+  };
   errors: string[];
   cpu_count: number;
 }
 
-export const getDeviceActivity = () => invokeProtection<DeviceActivity>("get_device_activity");
+export const getDeviceActivity = () =>
+  invokeProtection<DeviceActivity>("get_device_activity");
 
 export const startScan = (scope: ScanScope) =>
   invokeProtection<ScanJob>("start_protection_scan", { scope });
@@ -325,7 +375,12 @@ export const cancelScan = (jobId: string) =>
 export const getScanSchedule = () =>
   invokeProtection<ScanSchedule>("get_protection_scan_schedule");
 
-export const setScanSchedule = (schedule: Pick<ScanSchedule, "enabled" | "frequency" | "scope" | "local_time" | "weekday">) =>
+export const setScanSchedule = (
+  schedule: Pick<
+    ScanSchedule,
+    "enabled" | "frequency" | "scope" | "local_time" | "weekday"
+  >,
+) =>
   invokeProtection<ScanSchedule>("set_protection_scan_schedule", {
     enabled: schedule.enabled,
     frequency: schedule.frequency,
@@ -361,4 +416,6 @@ export const listQuarantine = () =>
   invokeProtection<QuarantineItem[]>("list_quarantine_items");
 
 export const restoreQuarantine = (itemId: string) =>
-  invokeProtection<QuarantineRestoreResult>("restore_quarantine_item", { itemId });
+  invokeProtection<QuarantineRestoreResult>("restore_quarantine_item", {
+    itemId,
+  });
