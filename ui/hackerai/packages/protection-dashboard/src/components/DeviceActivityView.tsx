@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Cpu, Network, Search } from "lucide-react";
-import { getDeviceActivity, type DeviceActivity, type LiveProcess, type ProcessAssessment } from "../protection-api";
+import { type DeviceActivity, type LiveProcess, type ProcessAssessment } from "../protection-api";
+import { useDeviceActivity, type DeviceActivityState } from "../use-device-activity";
 import { describeRuleMatching } from "../protection-status";
 import { PageHeading } from "./PageHeading";
 
@@ -26,32 +27,15 @@ function Assessment({ assessment }: { assessment: ProcessAssessment }) {
 
 const processKey = (process: LiveProcess) => process.process_identity || `pid:${process.pid}`;
 
-export function DeviceActivityView({ mode }: { mode: "processes" | "network" }) {
-  const [snapshot, setSnapshot] = useState<DeviceActivity | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function DeviceActivityView({ mode, activity }: { mode: "processes" | "network"; activity?: DeviceActivityState }) {
+  const standalone = useDeviceActivity(activity === undefined);
+  const { snapshot, error } = activity ?? standalone;
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState<"name" | "cpu" | "memory" | "entropy">("cpu");
   const [descending, setDescending] = useState(true);
   const [selectedIdentity, setSelectedIdentity] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-
-  useEffect(() => {
-    let stopped = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const current = await getDeviceActivity();
-        if (!stopped) { setSnapshot(current); setError(null); }
-      } catch (cause) {
-        if (!stopped) setError(cause instanceof Error ? cause.message : "Live device activity is unavailable.");
-      } finally {
-        if (!stopped) timer = window.setTimeout(() => void poll(), 10000);
-      }
-    };
-    void poll();
-    return () => { stopped = true; if (timer !== undefined) window.clearTimeout(timer); };
-  }, []);
 
   useEffect(() => { setQuery(""); setFilter("all"); setShowAll(false); }, [mode]);
 
@@ -106,7 +90,7 @@ export function DeviceActivityView({ mode }: { mode: "processes" | "network" }) 
   return <>
     <PageHeading eyebrow="LIVE DEVICE ACTIVITY" title={mode === "processes" ? "Running processes" : "Network activity"}
       description={mode === "processes" ? "Running tasks with executable analysis and verified rule matches." : "Current TCP and UDP connections, associated tasks, and device traffic."}
-      action={<span className={`activity-live ${error ? "is-stale" : ""}`}>{error ? "Connection interrupted" : snapshot?.collecting ? "Refreshing inventory…" : snapshot ? "Live · updates every 10s" : "Connecting…"}</span>} />
+      action={<span className={`activity-live ${error || snapshot?.stale ? "is-stale" : ""}`}>{error ? "Connection interrupted" : snapshot?.stale ? "Showing last snapshot" : snapshot?.collecting ? "Refreshing inventory…" : snapshot ? "Live · updates every 10s" : "Connecting…"}</span>} />
     {error && <div className="inline-alert error-alert" role="alert">{error} {snapshot ? "Showing the last successful snapshot while reconnecting." : "Retrying automatically."}</div>}
     {snapshot?.errors.map((message) => <div className="inline-alert" key={message}>{message}</div>)}
     <div className="activity-summary">

@@ -85,3 +85,88 @@ def test_service_analysis_evidence_stays_with_exact_process_instance_after_exit(
     assert result["scan_status"] == "detected"
     assert state.get_process_details("44:0x1p+0")["scan_sha256"] == "a" * 64
     assert state.get_process_details("44:0x2p+0") is None
+
+
+def test_shared_executable_is_sampled_and_scanned_once(tmp_path, monkeypatch):
+    import ui.process_analysis as analysis
+
+    executable = tmp_path / "shared.exe"
+    executable.write_bytes(bytes(range(256)) * 1024)
+    registry = Registry(executable)
+    samples = []
+    scans = []
+    real_entropy = analysis.executable_entropy
+
+    def measure(path, **kwargs):
+        samples.append(str(path))
+        return real_entropy(path, **kwargs)
+
+    monkeypatch.setattr(analysis, "executable_entropy", measure)
+    worker = ProcessAnalysisWorker(lambda: registry, lambda identity: scans.append(identity) or {
+        "status": "clean", "action": "allow", "sha256": "a" * 64,
+    })
+    worker.analyze("44:0x1")
+    registry.process.update(pid=45, instance_id="45:0x1")
+    result = worker.analyze("45:0x1")
+
+    assert len(samples) == 1
+    assert scans == ["44:0x1"]
+    assert result["entropy_score"] == 8.0
+    assert result["scan_status"] == "clean"
+
+
+def test_executable_cache_invalidates_after_file_change(tmp_path):
+    executable = tmp_path / "changed.exe"
+    executable.write_bytes(b"A" * 262144)
+    registry = Registry(executable)
+    scans = []
+    worker = ProcessAnalysisWorker(lambda: registry, lambda identity: scans.append(identity) or {
+        "status": "clean", "action": "allow",
+    })
+    assert worker.analyze("44:0x1")["entropy_score"] == 0.0
+    executable.write_bytes(bytes(range(256)) * 2048)
+    registry.process.update(pid=45, instance_id="45:0x1")
+
+    result = worker.analyze("45:0x1")
+
+    assert result["entropy_score"] == 8.0
+    assert scans == ["45:0x1"]
+
+
+def test_scan_all_images_checks_low_entropy_known_hash_candidates(tmp_path):
+    executable = tmp_path / "low-entropy.exe"
+    executable.write_bytes(b"A" * 1024)
+    registry = Registry(executable)
+    worker = ProcessAnalysisWorker(lambda: registry, lambda identity: {
+        "status": "detected", "action": "block", "rule_id": "verified-test",
+    }, scan_all_images=True)
+
+    result = worker.analyze("44:0x1")
+
+    assert result["entropy_score"] == 0.0
+    assert result["scan_rule_id"] == "verified-test"
+    assert result["scan_status"] == "detected"
+
+
+def test_new_rule_generation_rescans_existing_process_image(tmp_path):
+    executable = tmp_path / "stable.exe"
+    executable.write_bytes(b"stable image" * 100)
+    registry = Registry(executable)
+    generation = ["rules-1"]
+    scans = []
+    worker = ProcessAnalysisWorker(
+        lambda: registry,
+        lambda identity: scans.append(identity) or {
+            "status": "clean", "action": "allow", "rule_version": generation[0],
+        },
+        scan_all_images=True,
+        rule_generation=lambda: generation[0],
+    )
+
+    worker.enqueue({"instance_id": "44:0x1"})
+    worker.analyze("44:0x1")
+    generation[0] = "rules-2"
+    worker.enqueue({"instance_id": "44:0x1"})
+    worker.analyze("44:0x1")
+
+    assert scans == ["44:0x1", "44:0x1"]

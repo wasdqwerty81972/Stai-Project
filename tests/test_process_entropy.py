@@ -15,6 +15,13 @@ def test_low_entropy_executable_sample_is_not_overstated(tmp_path):
     assert executable_entropy(sample) == 0.0
 
 
+def test_file_within_sample_budget_includes_its_tail(tmp_path):
+    sample = tmp_path / "mixed.bin"
+    sample.write_bytes(b"A" * 131072 + b"B" * 131072)
+
+    assert executable_entropy(sample, sample_bytes=262144) == 1.0
+
+
 def test_entropy_sampling_is_bounded_to_configured_sample_size(tmp_path, monkeypatch):
     from pathlib import Path
 

@@ -29,7 +29,7 @@ class DeviceActivityAccessTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertEqual(await device_activity(request("127.0.0.1")), snapshot)
 
-    async def test_native_loopback_client_receives_authenticated_rule_metadata(self):
+    async def test_native_loopback_reads_cached_metadata_without_contacting_service(self):
         snapshot = {"processes": [], "database": {"available": False, "version": None,
             "rule_count": 0, "demo": False, "coverage": "No authenticated threat database available"}}
         status = {"rules_trusted": True, "rules_version": "svs-eicar-demo-1",
@@ -40,5 +40,5 @@ class DeviceActivityAccessTests(unittest.IsolatedAsyncioTestCase):
             result = await device_activity(request("127.0.0.1"))
 
         self.assertEqual(result, snapshot)
-        pipe_request.assert_called_once_with("get_rule_metadata", {}, timeout=0.75)
-        activity.assert_called_once_with(status)
+        pipe_request.assert_not_called()
+        activity.assert_called_once_with()

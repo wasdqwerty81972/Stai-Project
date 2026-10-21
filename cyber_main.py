@@ -62,11 +62,14 @@ def resolve_service_port(
     is_ready: Callable[[int], bool],
     can_bind: Callable[[int], bool] | None = None,
     fallback_count: int = PORT_FALLBACK_COUNT,
+    reserved_ports: tuple[int, ...] = (),
 ) -> int:
     """Reuse a ready service or choose the first available preferred/fallback port."""
     candidates = port_candidates(preferred_port, fallback_count)
     availability_check = can_bind or (lambda port: _port_is_available(host, port))
     for port in candidates:
+        if port in reserved_ports:
+            continue
         if is_ready(port):
             return port
         if availability_check(port):
@@ -83,6 +86,7 @@ def resolve_agent_workspace_port(
     *,
     is_ready: Callable[[int], bool],
     can_bind: Callable[[int], bool] | None = None,
+    reserved_ports: tuple[int, ...] = (),
 ) -> tuple[int, str]:
     """Select an agent port and always return its corresponding readiness URL."""
     port = resolve_service_port(
@@ -90,6 +94,7 @@ def resolve_agent_workspace_port(
         preferred_port,
         is_ready=is_ready,
         can_bind=can_bind,
+        reserved_ports=reserved_ports,
     )
     return port, f"http://127.0.0.1:{port}"
 
@@ -449,7 +454,7 @@ def ensure_windows_protection_service(project_root: str) -> subprocess.Popen[byt
     try:
         with open(service_log_path, "ab", buffering=0) as service_log:
             process = subprocess.Popen(
-                [test_service, "debug"],
+                [test_service, "--stai-local-dev"],
                 cwd=os.path.dirname(test_service),
                 env=service_env,
                 stdin=subprocess.DEVNULL,
@@ -520,7 +525,10 @@ def main() -> int:
             args.frontend_port = resolve_service_port(
                 "protection dashboard",
                 args.frontend_port,
-                is_ready=lambda port: _http_ready(f"http://127.0.0.1:{port}/"),
+                # Tauri starts its own Vite child with --strictPort; reusing an
+                # existing listener here would make that child fail to bind.
+                is_ready=lambda port: not launch_desktop and _http_ready(f"http://127.0.0.1:{port}/"),
+                reserved_ports=(args.port,),
             )
             if args.frontend_port != requested_frontend_port:
                 print(
@@ -590,6 +598,7 @@ def main() -> int:
             args.agent_port, agent_url = resolve_agent_workspace_port(
                 args.agent_port,
                 is_ready=lambda port: _http_ready(f"http://127.0.0.1:{port}/", follow_redirects=False),
+                reserved_ports=(args.port, args.frontend_port),
             )
         except RuntimeError as exc:
             print(f"[!] AI Agent workspace is unavailable; the dashboard is still running: {exc}", file=sys.stderr)
@@ -760,7 +769,7 @@ def main() -> int:
                         timeout_seconds=AGENT_SERVER_STARTUP_TIMEOUT_SECONDS,
                         follow_redirects=False,
                     )
-                except RuntimeError as exc:
+                except (OSError, RuntimeError) as exc:
                     if agent_process is not None and agent_process in children:
                         children.remove(agent_process)
                     agent_process = None

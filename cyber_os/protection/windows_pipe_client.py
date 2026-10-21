@@ -181,6 +181,15 @@ def get_process_connections(*, timeout: float = 5.0) -> dict[str, Any]:
     return result
 
 
+def scan_process_executable(instance_id: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    return _require_object(
+        request_protection_service(
+            "scan_process_executable", {"instance_id": instance_id}, timeout=timeout
+        ),
+        "process executable scan",
+    )
+
+
 def set_process_monitor_profile(profile: str, *, timeout: float = 5.0) -> dict[str, Any]:
     if profile not in {"low", "normal", "high"}:
         raise ValueError("process sampling profile must be low, normal, or high")

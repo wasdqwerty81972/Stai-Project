@@ -13,6 +13,7 @@ class ServiceProcessMonitor:
             from cyber_os.protection import windows_pipe_client as pipe_client
         self._pipe = pipe_client
         self._last_event_resync = False
+        self._network_snapshot: dict[str, Any] = {}
 
     def snapshot(self) -> dict[str, Any]:
         for attempt in range(2):
@@ -67,7 +68,14 @@ class ServiceProcessMonitor:
         return self.get_process_details(instance_id)
 
     def connections(self) -> list[dict[str, Any]]:
-        return self._pipe.get_process_connections(timeout=2.0)["connections"]
+        result = self._pipe.get_process_connections(timeout=2.0)
+        self._network_snapshot = {key: result[key] for key in ("network", "errors", "observed_at") if key in result}
+        if result.get("truncated"):
+            self._network_snapshot.setdefault("errors", []).append("Connection snapshot was truncated by the service frame limit")
+        return result["connections"]
+
+    def network_snapshot(self) -> dict[str, Any]:
+        return self._network_snapshot
 
     def set_sampling_profile(self, profile: str) -> None:
         self._pipe.set_process_monitor_profile(profile, timeout=2.0)

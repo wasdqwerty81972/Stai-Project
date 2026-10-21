@@ -3,6 +3,31 @@ from pathlib import Path
 import cyber_main
 
 
+def test_missing_agent_executable_does_not_close_dashboard(monkeypatch, capsys):
+    monkeypatch.setattr(cyber_main.os, "environ", {"PATH": ""})
+    monkeypatch.setattr(cyber_main.sys, "argv", ["cyber_main.py", "--browser", "--no-open"])
+    monkeypatch.setattr(cyber_main, "ensure_windows_protection_service", lambda _root: None)
+    monkeypatch.setattr(cyber_main, "_http_ready", lambda url, **_kwargs: ":3000" not in url)
+    monkeypatch.setattr(cyber_main, "_port_is_available", lambda _host, _port: True)
+    monkeypatch.setattr(cyber_main.shutil, "which", lambda *_args, **_kwargs: "node")
+    monkeypatch.setattr(cyber_main, "build_agent_server_command", lambda *_args: ["missing-node"])
+    monkeypatch.setattr(cyber_main.os.path, "isfile", lambda _path: True)
+
+    def fail_spawn(*_args, **_kwargs):
+        raise FileNotFoundError("Agent runtime was removed")
+
+    def stop_after_startup(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cyber_main.subprocess, "Popen", fail_spawn)
+    monkeypatch.setattr(cyber_main.time, "sleep", stop_after_startup)
+
+    assert cyber_main.main() == 0
+    captured = capsys.readouterr()
+    assert "Dashboard and backend are ready" in captured.out
+    assert "Agent runtime was removed" in captured.err
+
+
 def test_agent_runtime_uses_pinned_node_and_production_build(tmp_path: Path):
     node = tmp_path / "tools" / "node-v22.22.3" / "node.exe"
     node.parent.mkdir(parents=True)

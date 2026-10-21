@@ -99,13 +99,11 @@ def test_cancel_keeps_run_active_until_worker_exits(monkeypatch, isolated_histor
 
 
 def test_cancel_error_does_not_expose_exception_text(monkeypatch, isolated_history):
-    class BrokenAgent:
-        @property
-        def agent_runtime(self):
+    class BrokenCancellation:
+        def set(self):
             raise RuntimeError("private provider token")
 
-    monkeypatch.setattr(server, "_get_agent", lambda: BrokenAgent())
-    server._active_runs["alpha"] = threading.Event()
+    server._active_runs["alpha"] = BrokenCancellation()
 
     with TestClient(server.app) as client:
         reply = client.post("/api/agent/cancel", json={"session_id": "alpha"})
@@ -113,6 +111,55 @@ def test_cancel_error_does_not_expose_exception_text(monkeypatch, isolated_histo
     assert reply.status_code == 500
     assert reply.json() == {"ok": False, "error": "Unable to cancel run"}
     assert "private provider token" not in reply.text
+
+
+def test_cancel_does_not_cancel_unrelated_runtime_investigations(monkeypatch, isolated_history):
+    current = threading.Event()
+    agent = SimpleNamespace(
+        cancel_event=threading.Event(),
+        agent_runtime=SimpleNamespace(
+            active_run_ids=lambda: ["external-investigation"],
+            cancel_run=lambda _: pytest.fail("unrelated investigation was cancelled"),
+        ),
+    )
+    monkeypatch.setattr(server, "_get_agent", lambda: agent)
+    server._active_runs["alpha"] = current
+    assert server.agent_cancel({"session_id": "alpha"})["cancelled"] is True
+    assert current.is_set()
+    assert not agent.cancel_event.is_set()
+
+
+def test_websocket_cancellation_respects_session(monkeypatch, isolated_history):
+    import asyncio
+    import json
+    from starlette.websockets import WebSocketDisconnect
+
+    current = threading.Event()
+    server._active_runs["alpha"] = current
+    monkeypatch.setattr(server, "_get_state", lambda: {})
+
+    class Socket:
+        calls = 0
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, _payload):
+            pass
+
+        async def receive_text(self):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({"type": "cancel", "session_id": "beta"})
+            if self.calls == 2:
+                assert not current.is_set()
+                return json.dumps({"type": "cancel", "session_id": "alpha"})
+            raise WebSocketDisconnect()
+
+    asyncio.run(server.websocket_endpoint(Socket()))
+    assert current.is_set()
+    assert server.get_messages("alpha")[-1]["type"] == "agent_cancelled"
+    assert server.get_messages("beta") == []
 
 
 def test_agent_runs_do_not_overlap_across_sessions(monkeypatch, isolated_history):

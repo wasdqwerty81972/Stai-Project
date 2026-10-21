@@ -50,54 +50,72 @@ async function main() {
   let temporaryConfigDirectory;
   if (process.platform === "win32") {
     args.push("--config", "src-tauri/tauri.windows.conf.json");
-    if (command === "dev") {
-      try {
-        const frontendPort = await selectFrontendPort();
-        const apiPort = parsePort(env.STAI_API_PORT, 6764, "STAI_API_PORT");
-        const agentPort = parsePort(
-          env.STAI_AGENT_PORT,
-          3000,
-          "STAI_AGENT_PORT",
-        );
+    try {
+      const frontendPort =
+        command === "dev" ? await selectFrontendPort() : null;
+      const apiPort = parsePort(env.STAI_API_PORT, 6764, "STAI_API_PORT");
+      const agentPort = parsePort(env.STAI_AGENT_PORT, 3000, "STAI_AGENT_PORT");
+      if (frontendPort !== null) {
         env.STAI_FRONTEND_PORT = String(frontendPort);
         env.VITE_STAI_TAURI_DEV_PORT = String(frontendPort);
-
-        const windowsConfig = JSON.parse(
-          fs.readFileSync(
-            path.join(process.cwd(), "src-tauri/tauri.windows.conf.json"),
-            "utf8",
-          ),
-        );
-        const csp = windowsConfig.app.security.csp
-          .replaceAll("http://127.0.0.1:6764", `http://127.0.0.1:${apiPort}`)
-          .replaceAll("http://127.0.0.1:3000", `http://127.0.0.1:${agentPort}`)
-          .replaceAll("ws://127.0.0.1:3000", `ws://127.0.0.1:${agentPort}`);
-        const dynamicConfig = {
-          build: {
-            beforeDevCommand: `node ../protection-dashboard/node_modules/vite/bin/vite.js ../protection-dashboard --host 127.0.0.1 --port ${frontendPort} --strictPort`,
-            devUrl: `http://127.0.0.1:${frontendPort}`,
-          },
-          app: { security: { csp } },
-        };
-        temporaryConfigDirectory = fs.mkdtempSync(
-          path.join(os.tmpdir(), "svs-tauri-config-"),
-        );
-        const dynamicConfigPath = path.join(
-          temporaryConfigDirectory,
-          "tauri.dev.json",
-        );
-        fs.writeFileSync(
-          dynamicConfigPath,
-          JSON.stringify(dynamicConfig),
-          "utf8",
-        );
-        args.push("--config", dynamicConfigPath);
-      } catch (error) {
-        console.error(
-          `Unable to configure SVS Cyber fallback ports: ${error.message}`,
-        );
-        process.exit(1);
       }
+
+      const windowsConfig = JSON.parse(
+        fs.readFileSync(
+          path.join(process.cwd(), "src-tauri/tauri.windows.conf.json"),
+          "utf8",
+        ),
+      );
+      function allowedOrigins(scheme, basePort, selectedPort) {
+        const ports = new Set([selectedPort]);
+        for (let offset = 0; offset <= 5; offset += 1)
+          ports.add(basePort + offset);
+        return [...ports]
+          .map((port) => `${scheme}://127.0.0.1:${port}`)
+          .join(" ");
+      }
+      // Packaged apps must also allow the launcher's bounded fallback range:
+      // their embedded CSP cannot be changed by runtime environment variables.
+      const csp = windowsConfig.app.security.csp
+        .replaceAll(
+          "http://127.0.0.1:6764",
+          allowedOrigins("http", 6764, apiPort),
+        )
+        .replaceAll(
+          "http://127.0.0.1:3000",
+          allowedOrigins("http", 3000, agentPort),
+        )
+        .replaceAll(
+          "ws://127.0.0.1:3000",
+          allowedOrigins("ws", 3000, agentPort),
+        );
+      const dynamicConfig = {
+        app: { security: { csp } },
+      };
+      if (frontendPort !== null) {
+        dynamicConfig.build = {
+          beforeDevCommand: `node ../protection-dashboard/node_modules/vite/bin/vite.js ../protection-dashboard --host 127.0.0.1 --port ${frontendPort} --strictPort`,
+          devUrl: `http://127.0.0.1:${frontendPort}`,
+        };
+      }
+      temporaryConfigDirectory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "svs-tauri-config-"),
+      );
+      const dynamicConfigPath = path.join(
+        temporaryConfigDirectory,
+        "tauri.dev.json",
+      );
+      fs.writeFileSync(
+        dynamicConfigPath,
+        JSON.stringify(dynamicConfig),
+        "utf8",
+      );
+      args.push("--config", dynamicConfigPath);
+    } catch (error) {
+      console.error(
+        `Unable to configure SVS Cyber fallback ports: ${error.message}`,
+      );
+      process.exit(1);
     }
   } else if (task === "dev") {
     args.push("--config", "src-tauri/tauri.dev.conf.json");

@@ -325,6 +325,7 @@ export interface LiveProcess {
 export interface DeviceActivity {
   observed_at: string;
   collecting?: boolean;
+  stale?: boolean;
   processes: LiveProcess[];
   connections: Array<{
     pid: number | null;

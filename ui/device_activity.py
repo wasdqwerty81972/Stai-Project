@@ -520,7 +520,7 @@ class DeviceActivityCollector:
         return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
-_collector: DeviceActivityCollector | None = None
+_collector: Any = None
 _collector_lock = threading.Lock()
 
 
@@ -531,5 +531,32 @@ def get_device_activity(protection_status: dict[str, Any] | None = None) -> dict
         if _collector is None:
             _collector = DeviceActivityCollector()
         collector = _collector
-    collector.set_protection_status(protection_status)
-    return merge_protection_service_rules(collector.cached_snapshot(), protection_status)
+    if protection_status is not None:
+        collector.set_protection_status(protection_status)
+    snapshot = collector.cached_snapshot()
+    if isinstance(collector, DeviceActivityCollector):
+        return merge_protection_service_rules(snapshot, protection_status)
+    return snapshot
+
+
+def start_device_activity(provider_getter: Any, apply_evidence: Any, rule_metadata_getter: Any) -> None:
+    """Project startup telemetry once for the dashboard instead of rescanning per tab."""
+    global _collector
+    from ui.registry_device_activity import RegistryDeviceActivityCollector
+
+    with _collector_lock:
+        if _collector is not None and hasattr(_collector, "stop"):
+            _collector.stop()
+        _collector = RegistryDeviceActivityCollector(provider_getter, apply_evidence, rule_metadata_getter)
+        _collector.start()
+
+
+def stop_device_activity() -> None:
+    with _collector_lock:
+        if _collector is not None and hasattr(_collector, "stop"):
+            _collector.stop()
+
+
+def device_activity_rule_generation() -> Any:
+    collector = _collector
+    return getattr(collector, "rule_generation", None)

@@ -118,3 +118,30 @@ def test_windows_socket_table_failure_is_reported_without_crashing_collector(mon
     assert rows == []
     assert registry.get_process(identity)["network_connection_count"] is None
     assert "GetExtendedTcpTable failed" in registry.health()["last_error"]
+
+
+def test_repeated_connection_reads_reuse_one_snapshot(monkeypatch):
+    registry = ProcessRegistry()
+    reads = []
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: reads.append(kind) or [])
+
+    registry.connections()
+    registry.connections()
+
+    assert reads == ["inet"]
+
+
+def test_connection_cache_does_not_attribute_exited_owner(monkeypatch):
+    registry = ProcessRegistry()
+    registry.reconcile([{"pid": 42, "name": "old.exe", "create_time": 100.5}])
+    connection = SimpleNamespace(pid=42, family=socket.AF_INET, type=socket.SOCK_STREAM,
+        laddr=("127.0.0.1", 5000), raddr=("127.0.0.1", 6000), status="ESTABLISHED")
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: [connection])
+    monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(create_time=lambda: 100.5))
+    assert registry.connections()[0]["ownership_status"] == "verified_snapshot"
+    registry.reconcile([{"pid": 42, "name": "new.exe", "create_time": 101.5}])
+
+    result = registry.connections()[0]
+
+    assert result["instance_id"] is None
+    assert result["process_name"] == "Unknown owner"

@@ -1,0 +1,25 @@
+{
+  "catalogue_version": "stai-toolshell-reference-20261020",
+  "reviewed_on": "2026-10-20",
+  "status": "unsigned-review-candidate",
+  "contains_samples": false,
+  "sources": [
+    {
+      "id": "MAR-251132.c1.v1",
+      "publisher": "CISA Code & Media Analysis",
+      "url": "https://www.cisa.gov/sites/default/files/2025-08/MAR-251132.c1.v1.CLEAR_.pdf",
+      "advisory_url": "https://www.cisa.gov/news-events/analysis-reports/ar25-218a",
+      "published_on": "2025-08-06",
+      "location": "Submitted Files and Findings; stage3.txt, osvmhdfl.dll, info3.aspx, and decoded info3.aspx webshell; page 16 identifies the decoded webshell",
+      "rule_ids": [
+        "cisa-mar251132-stage3-60a37499",
+        "cisa-mar251132-osvmhdfl-3461da3a",
+        "cisa-mar251132-info3-9340bf73",
+        "cisa-mar251132-webshell-675a10e8"
+      ]
+    }
+  ],
+  "first_seen": null,
+  "last_seen": null,
+  "notes": "Exact hash facts from CISA's indexed public PDF were reviewed; direct page/PDF requests returned 403. Publication and review dates are not current sightings. No upstream YARA, report text, exploit, or samples are redistributed. No CISA endorsement or signature is claimed."
+}

@@ -1,0 +1,9 @@
+{
+  "version": "stai-toolshell-reference-20261020",
+  "rules": [
+    {"id":"cisa-mar251132-stage3-60a37499","kind":"sha256","value":"60a37499f9b02c203af24c2dfd7fdb3834cea707c4c56b410a7e68376938c4b7","action":"observe","confidence":"medium"},
+    {"id":"cisa-mar251132-osvmhdfl-3461da3a","kind":"sha256","value":"3461da3a2ddcced4a00f87dcd7650af48f97998a3ac9ca649d7ef3b7332bd997","action":"observe","confidence":"medium"},
+    {"id":"cisa-mar251132-info3-9340bf73","kind":"sha256","value":"9340bf7378234db5bca0dc5378bf764b6a24bb87a42b05fa21a996340608fbd7","action":"observe","confidence":"medium"},
+    {"id":"cisa-mar251132-webshell-675a10e8","kind":"sha256","value":"675a10e87c248d0f629da864ba8b7fd92b62323c406a69dec35a0e6e1552ecbc","action":"observe","confidence":"medium"}
+  ]
+}

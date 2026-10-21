@@ -19,6 +19,7 @@ import json
 import os
 import stat
 import threading
+import time
 import uuid
 from collections import deque
 from datetime import datetime
@@ -400,6 +401,7 @@ def _get_process_analysis_worker() -> Any:
         with _process_analysis_lock:
             if _process_analysis_worker is None:
                 from ui.process_analysis import ProcessAnalysisWorker, configured_entropy_threshold
+                from ui.device_activity import device_activity_rule_generation
 
                 try:
                     threshold = configured_entropy_threshold()
@@ -409,6 +411,8 @@ def _get_process_analysis_worker() -> Any:
                     lambda: _get_process_analysis_state(),
                     lambda instance_id: _scan_process_executable(instance_id),
                     threshold=threshold,
+                    scan_all_images=True,
+                    rule_generation=device_activity_rule_generation,
                 )
     return _process_analysis_worker
 
@@ -436,6 +440,8 @@ def _run_service_process_analysis_feed() -> None:
                 sequence = _consume_service_process_analysis_batch(provider, sequence, worker, state)
             else:
                 sequence = None
+                if provider.health().get("state") != "running":
+                    provider.start()
         except Exception:
             # A later iteration retries service selection; the API collector's
             # local fallback and its normal process-added callback keep working.
@@ -1126,20 +1132,10 @@ def agent_cancel(payload: dict[str, Any] | None = None) -> dict[str, Any]:
             # finally block owns removal; it cannot exit and hand off to a
             # different session while this request targets its agent state.
             cancelled = False
-            agent = _get_agent()
-            if hasattr(agent, "agent_runtime") and hasattr(agent.agent_runtime, "cancel_run"):
-                for inv_id in list(agent.agent_runtime.active_run_ids()):
-                    try:
-                        if agent.agent_runtime.cancel_run(inv_id):
-                            cancelled = True
-                    except Exception:
-                        pass
-            if hasattr(agent, "cancel_event"):
-                try:
-                    agent.cancel_event.set()
-                    cancelled = True
-                except Exception:
-                    pass
+            cancel_event = _active_runs[session_id]
+            if cancel_event is not None:
+                cancel_event.set()
+                cancelled = True
 
         if cancelled:
             event_bus.publish(
@@ -1376,10 +1372,9 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             payload = json.loads(raw)
 
             if payload.get("type") == "prompt":
-                _run_agent_prompt(payload.get("message", ""))
+                _run_agent_prompt(payload.get("message", ""), str(payload.get("session_id") or payload.get("sessionId") or "default"))
             elif payload.get("type") == "cancel":
-                agent = _get_agent()
-                agent.cancel_event.set()
+                agent_cancel(payload)
     except WebSocketDisconnect:
         pass
     finally:
@@ -1406,14 +1401,14 @@ def _get_state() -> dict[str, Any]:
     }
 
 
-def _run_agent_prompt(prompt: str) -> None:
+def _run_agent_prompt(prompt: str, session_id: str = "default") -> None:
     """Run agent synchronously in a background thread, stream events via WebSocket."""
     def run() -> None:
         try:
-            response = _run_agent_prompt_sync(prompt, "default")
-            payload = json.dumps({"type": "response", "message": response}, default=str)
+            response = _run_agent_prompt_sync(prompt, session_id)
+            payload = json.dumps({"type": "response", "message": response, "session_id": session_id}, default=str)
         except Exception as exc:
-            payload = json.dumps({"type": "error", "message": str(exc)}, default=str)
+            payload = json.dumps({"type": "error", "message": str(exc), "session_id": session_id}, default=str)
 
         # Schedule broadcast on the running asyncio event loop
         loop = _get_loop()
@@ -1502,7 +1497,16 @@ def _start_process_monitor() -> None:
     global _process_analysis_feed_thread
     try:
         _get_process_analysis_worker().start()
-        _get_process_registry().start()
+        provider, source, _source_error = _get_process_monitor_provider()
+        if source == "local_fallback":
+            provider.start()
+        from ui.device_activity import start_device_activity
+
+        start_device_activity(
+            _get_process_monitor_provider,
+            lambda row: _get_process_analysis_state().apply(row),
+            lambda: _protection_pipe_request("get_rule_metadata", {}, timeout=0.75) if os.name == "nt" else {},
+        )
         _process_analysis_feed_stop.clear()
         if _process_analysis_feed_thread is None or not _process_analysis_feed_thread.is_alive():
             _process_analysis_feed_thread = threading.Thread(
@@ -1520,6 +1524,9 @@ def _start_process_monitor() -> None:
 @app.on_event("shutdown")
 def _stop_process_monitor() -> None:
     global _process_analysis_feed_thread
+    from ui.device_activity import stop_device_activity
+
+    stop_device_activity()
     _process_analysis_feed_stop.set()
     if _process_analysis_feed_thread and _process_analysis_feed_thread is not threading.current_thread():
         _process_analysis_feed_thread.join(timeout=3)
@@ -1549,18 +1556,7 @@ async def device_activity(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Device activity requires the local UI")
     from ui.device_activity import get_device_activity
 
-    protection_status = None
-    if os.name == "nt":
-        try:
-            protection_status = await asyncio.to_thread(
-                _protection_pipe_request, "get_rule_metadata", {}, timeout=0.75
-            )
-        except Exception:
-            # The device activity snapshot remains useful when the privileged
-            # protection service cannot be reached; it will report that rules
-            # are unverified rather than inventing a database state.
-            protection_status = None
-    return await asyncio.to_thread(get_device_activity, protection_status)
+    return get_device_activity()
 
 
 def _require_local_process_request(request: Request) -> None:
@@ -1621,6 +1617,15 @@ def _scan_process_executable(instance_id: str) -> dict[str, Any]:
     if not _process_scan_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A process executable scan is already running")
     try:
+        if _use_protection_service_pipe():
+            deadline = time.monotonic() + 35.0
+            while True:
+                result = _request_protection_pipe("scan_process_executable", {"instance_id": instance_id})
+                if not isinstance(result, dict) or result.get("status") not in {"queued", "scanning"}:
+                    return result
+                if time.monotonic() >= deadline:
+                    raise HTTPException(status_code=504, detail="Process scan exceeded its time limit")
+                time.sleep(0.25)
         process, _source, _source_error = _process_monitor_call("get_process_details", instance_id)
         if process is None:
             raise HTTPException(status_code=404, detail="Process instance is no longer running")

@@ -4,6 +4,7 @@ import App from "../App";
 import {
   cancelScan,
   getAgentHistory,
+  getDeviceActivity,
   getActiveScan,
   getProtectionStatus,
   getProtectionTriage,
@@ -21,6 +22,7 @@ import {
 jest.mock("../protection-api", () => ({
   cancelScan: jest.fn(),
   getAgentHistory: jest.fn(),
+  getDeviceActivity: jest.fn(),
   getActiveScan: jest.fn(),
   getProtectionStatus: jest.fn(),
   getProtectionTriage: jest.fn(),
@@ -131,6 +133,11 @@ const scanSchedule = {
 };
 
 function setupDefaults() {
+  jest.mocked(getDeviceActivity).mockResolvedValue({
+    observed_at: "2026-10-20T12:00:00Z", cpu_count: 4, errors: [], processes: [], connections: [],
+    network: { download_bytes_sec: null, upload_bytes_sec: null, bytes_received: null, bytes_sent: null },
+    database: { available: false, version: null, rule_count: 0, demo: false, coverage: "Unavailable" },
+  });
   jest.mocked(getProtectionStatus).mockResolvedValue(status as never);
   jest.mocked(listThreats).mockResolvedValue(threats as never);
   jest.mocked(listQuarantine).mockResolvedValue(quarantine as never);
@@ -172,6 +179,17 @@ function setupDefaults() {
 beforeEach(() => {
   jest.clearAllMocks();
   setupDefaults();
+});
+
+test("loads_device_activity_before_navigation_and_reuses_it_across_tabs", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await waitFor(() => expect(getDeviceActivity).toHaveBeenCalledTimes(1));
+  await user.click(screen.getByRole("button", { name: /Processes/ }));
+  await screen.findByRole("heading", { name: "Running processes" });
+  await user.click(screen.getByRole("button", { name: /Network Activity/ }));
+  await screen.findByRole("heading", { name: "Network activity" });
+  expect(getDeviceActivity).toHaveBeenCalledTimes(1);
 });
 
 test("renders_degraded_state_without_fake_counts", async () => {

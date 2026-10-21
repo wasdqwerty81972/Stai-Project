@@ -84,6 +84,15 @@ class ProcessRegistry:
         self._last_sample_duration = 0.0
         self._source_status = SourceStatus("stopped", None, 0)
         self._last_error: str | None = None
+        self._connection_lock = threading.Lock()
+        self._connections: list[dict[str, Any]] = []
+        self._connections_at: float | None = None
+        self._network_sample: tuple[float, int, int] | None = None
+        self._network: dict[str, Any] = {
+            "download_bytes_sec": None, "upload_bytes_sec": None,
+            "bytes_received": None, "bytes_sent": None,
+        }
+        self._network_error: str | None = None
 
     @staticmethod
     def _enumerate_processes() -> list[dict[str, Any]]:
@@ -131,6 +140,7 @@ class ProcessRegistry:
         except Exception as exc:
             self._source_status = SourceStatus("unavailable", str(exc), 0)
         self.reconcile()
+        self.connections()
         with self._lock:
             self._worker = threading.Thread(
                 target=self._run,
@@ -169,7 +179,7 @@ class ProcessRegistry:
             now = time.monotonic()
             if now >= next_reconcile:
                 self.reconcile()
-                self.connections()
+                self.refresh_connections()
                 next_reconcile = time.monotonic() + self._reconcile_interval
             wait_for = min(next_sample, next_reconcile) - time.monotonic()
             self._stop.wait(max(0.01, wait_for))
@@ -405,7 +415,53 @@ class ProcessRegistry:
             self._publish("process_removed", process)
 
     def connections(self) -> list[dict[str, Any]]:
-        """Return observed TCP/UDP endpoints; psutil does not provide throughput."""
+        """Read the shared endpoint snapshot; refresh at most once per interval."""
+        with self._connection_lock:
+            if (self._connections_at is None or (not self._started and
+                    time.monotonic() - self._connections_at >= self._reconcile_interval)):
+                self._connections = self._collect_connections()
+                self._connections_at = time.monotonic()
+            result = copy.deepcopy(self._connections)
+        # A cached socket must never borrow evidence from a reused PID or an
+        # exited owner. This validation uses the registry, with no OS queries.
+        with self._lock:
+            for connection in result:
+                identity = connection.get("instance_id")
+                if identity and identity not in self._processes:
+                    connection.update(instance_id=None, process_name="Unknown owner",
+                                      ownership_status="owner_exited")
+        return result
+
+    def refresh_connections(self) -> None:
+        with self._connection_lock:
+            self._connections = self._collect_connections()
+            self._connections_at = time.monotonic()
+
+    def network_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"network": dict(self._network),
+                    "errors": [self._network_error] if self._network_error else []}
+
+    def _collect_connections(self) -> list[dict[str, Any]]:
+        """Collect observed TCP/UDP endpoints once for all dashboard consumers."""
+        try:
+            counters = psutil.net_io_counters()
+            now = time.monotonic()
+            received, sent = counters.bytes_recv, counters.bytes_sent
+            network = {"bytes_received": received, "bytes_sent": sent,
+                       "download_bytes_sec": None, "upload_bytes_sec": None}
+            with self._lock:
+                previous = self._network_sample
+                if previous and now > previous[0] and received >= previous[1] and sent >= previous[2]:
+                    network.update(download_bytes_sec=(received - previous[1]) / (now - previous[0]),
+                                   upload_bytes_sec=(sent - previous[2]) / (now - previous[0]))
+                self._network = network
+                self._network_sample = (now, received, sent)
+                self._network_error = None
+        except (psutil.Error, OSError, AttributeError) as exc:
+            with self._lock:
+                self._network_error = f"Network traffic unavailable: {exc}"
+                self._network.update(download_bytes_sec=None, upload_bytes_sec=None)
         with self._lock:
             inventory = {
                 process["pid"]: copy.deepcopy(process)

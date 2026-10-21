@@ -35,6 +35,7 @@ import { SettingsView } from "./components/SettingsView";
 import { SystemStatus } from "./components/SystemStatus";
 import { ThreatActivity } from "./components/ThreatActivity";
 import { DeviceActivityView } from "./components/DeviceActivityView";
+import { useDeviceActivity } from "./use-device-activity";
 
 function messageFor(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
@@ -51,6 +52,7 @@ function pageSubtitle(page: DashboardPage) {
 }
 
 export default function App() {
+  const activity = useDeviceActivity();
   const [page, setPage] = useState<DashboardPage>(() =>
     new URLSearchParams(window.location.search).get("view") === "agent"
       ? "AI Agent"
@@ -366,7 +368,7 @@ export default function App() {
         <div className="page-scroll" key={page}>
           <div className="page-content">
             {(page === "Processes" || page === "Network Activity") && (
-              <DeviceActivityView mode={page === "Processes" ? "processes" : "network"} />
+              <DeviceActivityView mode={page === "Processes" ? "processes" : "network"} activity={activity} />
             )}
             {page === "Dashboard" && (
               statusLoading && !status && !statusError ? (

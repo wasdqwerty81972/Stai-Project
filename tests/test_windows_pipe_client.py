@@ -78,6 +78,7 @@ def test_process_monitor_client_wrappers_use_exact_operations_and_payloads(monke
         "get_process_events": {"sequence": 3, "events": [], "resync_required": False},
         "get_process_monitor_status": {"state": "running"},
         "get_process_details": {"pid": 9},
+        "scan_process_executable": {"pid": 9, "status": "clean"},
         "get_process_connections": {"connections": [], "total": 0, "truncated": False},
         "set_process_monitor_profile": {"state": "running", "sampling_profile": "high"},
     }
@@ -93,6 +94,7 @@ def test_process_monitor_client_wrappers_use_exact_operations_and_payloads(monke
     assert windows_pipe_client.get_process_events(after_sequence=2, limit=20)["sequence"] == 3
     assert windows_pipe_client.get_process_monitor_status()["state"] == "running"
     assert windows_pipe_client.get_process_details(instance_id)["pid"] == 9
+    assert windows_pipe_client.scan_process_executable(instance_id)["status"] == "clean"
     assert windows_pipe_client.get_process_connections()["total"] == 0
     assert windows_pipe_client.set_process_monitor_profile("high")["sampling_profile"] == "high"
 
@@ -101,6 +103,7 @@ def test_process_monitor_client_wrappers_use_exact_operations_and_payloads(monke
         ("get_process_events", {"after_sequence": 2, "limit": 20}, 5.0),
         ("get_process_monitor_status", {}, 5.0),
         ("get_process_details", {"instance_id": instance_id}, 5.0),
+        ("scan_process_executable", {"instance_id": instance_id}, 5.0),
         ("get_process_connections", {}, 5.0),
         ("set_process_monitor_profile", {"profile": "high"}, 5.0),
     ]

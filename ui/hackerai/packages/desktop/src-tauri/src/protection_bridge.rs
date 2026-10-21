@@ -292,13 +292,23 @@ fn ensure_local_dashboard(window: &WebviewWindow) -> Result<(), String> {
 }
 
 fn ensure_local_dashboard_url(url: &Url) -> Result<(), String> {
+    let dev_port = match std::env::var("STAI_FRONTEND_PORT") {
+        Ok(value) => value.parse::<u16>().ok().filter(|port| *port > 0),
+        Err(std::env::VarError::NotPresent) => Some(1420),
+        Err(_) => None,
+    };
+    ensure_local_dashboard_url_for_port(url, dev_port)
+}
+
+fn ensure_local_dashboard_url_for_port(url: &Url, dev_port: Option<u16>) -> Result<(), String> {
     let protocol = url.scheme();
     let host = url.host_str().unwrap_or_default();
     let is_bundle = (protocol == "tauri" && host == "localhost")
         || (protocol == "http" && host == "tauri.localhost");
     let is_dev = protocol == "http"
         && (host == "127.0.0.1" || host == "localhost")
-        && url.port() == Some(1420);
+        && dev_port.is_some()
+        && url.port() == dev_port;
     if is_bundle || is_dev {
         Ok(())
     } else {
@@ -683,6 +693,17 @@ mod tests {
         assert!(ensure_local_dashboard_url(&hosted).is_err());
         assert!(ensure_local_dashboard_url(&local).is_ok());
         assert!(ensure_local_dashboard_url(&dev).is_ok());
+    }
+
+    #[test]
+    fn bridge_accepts_only_the_selected_dashboard_port() {
+        let fallback = Url::parse("http://127.0.0.1:1423/").unwrap();
+        let old_port = Url::parse("http://localhost:1420/").unwrap();
+        let remote = Url::parse("http://example.com:1423/").unwrap();
+        assert!(ensure_local_dashboard_url_for_port(&fallback, Some(1423)).is_ok());
+        assert!(ensure_local_dashboard_url_for_port(&old_port, Some(1423)).is_err());
+        assert!(ensure_local_dashboard_url_for_port(&remote, Some(1423)).is_err());
+        assert!(ensure_local_dashboard_url_for_port(&fallback, None).is_err());
     }
 
     #[test]

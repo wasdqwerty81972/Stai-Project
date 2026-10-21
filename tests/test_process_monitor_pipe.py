@@ -184,3 +184,19 @@ def test_connection_response_is_bounded_and_marks_truncation():
     assert data["total"] == 300
     assert data["truncated"] is True
     assert len(data["connections"]) < 300
+
+
+def test_connection_response_includes_cached_network_snapshot():
+    monitor = _ProcessMonitor(connections=[{"pid": 42}])
+    monitor.network_snapshot = lambda: {
+        "network": {"bytes_sent": 123},
+        "observed_at": "2026-10-20T12:00:00Z",
+        "errors": ["limited telemetry"],
+        "connections": [{"pid": "must not override the bounded list"}],
+    }
+    result = _host(monitor).get_process_connections()
+    assert result["connections"] == [{"pid": 42}]
+    assert result["network"] == {"bytes_sent": 123}
+    assert result["observed_at"] == "2026-10-20T12:00:00Z"
+    assert result["errors"] == ["limited telemetry"]
+    assert result["total"] == 1

@@ -11,9 +11,11 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -34,6 +36,8 @@ MAX_FRAME_BYTES = 1024 * 1024
 # response must fit MAX_FRAME_BYTES, so a busy monitor must not be able to
 # produce a frame that gets rejected wholesale as oversized.
 MAX_NETWORK_TELEMETRY_EVENTS = 512
+MAX_PROCESS_SCAN_JOBS = 32
+_PROCESS_SCAN_RESULT_TTL_SECONDS = 60.0
 _REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
 _PROCESS_INSTANCE_ID = re.compile(
     r"(?:[0-9]+:0x[0-9a-f]+\.[0-9a-f]+p[+-][0-9]+|unverified:[0-9]+:[0-9a-f]{32})\Z",
@@ -110,7 +114,7 @@ _OPERATIONS = _EMPTY_OPERATIONS | set(_SINGLE_ID_OPERATIONS) | {
     "start_scan", "get_scan_schedule", "set_scan_schedule", "send_agent_message",
     "claim_sensor_ai_escalations", "complete_sensor_ai_escalation",
     "get_process_snapshot_page", "get_process_events", "get_process_details",
-    "set_process_monitor_profile",
+    "set_process_monitor_profile", "scan_process_executable",
 }
 
 
@@ -161,7 +165,7 @@ def _validate_pipe_request(request: Any) -> tuple[str, str, dict[str, Any]]:
             raise PipeProtocolError("process event sequence is invalid")
         if type(parsed["limit"]) is not int or not 1 <= parsed["limit"] <= 500:
             raise PipeProtocolError("process event limit must be between 1 and 500")
-    elif operation == "get_process_details":
+    elif operation in {"get_process_details", "scan_process_executable"}:
         parsed = _require_payload(payload, {"instance_id"})
         instance_id = parsed["instance_id"]
         if (
@@ -608,6 +612,11 @@ class ProtectionServiceHost:
         self.filter_client = filter_client
         self.triage = triage
         self.rules_trusted = rules_trusted
+        self._process_scan_lock = threading.Lock()
+        self._process_scan_condition = threading.Condition()
+        self._process_scan_jobs: dict[str, dict[str, Any]] = {}
+        self._process_scan_queue: deque[str] = deque()
+        self._process_scan_thread: threading.Thread | None = None
         self.client_sid = client_sid
         self.pipe_server = pipe_server
         self._windows_security_reader = windows_security_reader
@@ -782,6 +791,12 @@ class ProtectionServiceHost:
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._process_scan_condition:
+            self._process_scan_queue.clear()
+            self._process_scan_jobs.clear()
+            self._process_scan_condition.notify_all()
+        if self._process_scan_thread and self._process_scan_thread.is_alive():
+            self._process_scan_thread.join(timeout=2.0)
         self._health_stop_event.set()
         self.scan_scheduler.stop(timeout=3.0)
         if (
@@ -1121,6 +1136,120 @@ class ProtectionServiceHost:
             raise LookupError("process instance not found")
         return details
 
+    def scan_process_executable(self, instance_id: str) -> dict[str, Any]:
+        """Scan a live process image using only this host's trusted scanner."""
+        if self.service is None or not self.rules_trusted:
+            raise ProtectionServiceUnavailable("trusted protection scanner is unavailable")
+        if not self._process_scan_lock.acquire(blocking=False):
+            raise ProtectionServiceUnavailable("a process executable scan is already running")
+        try:
+            import psutil
+
+            process = self.get_process_details(instance_id)
+            created = process.get("create_time")
+            if not isinstance(created, (int, float)) or isinstance(created, bool) or created <= 0:
+                raise ProtectionServiceUnavailable("process identity cannot be verified")
+            raw_path = process.get("exe")
+            if not isinstance(raw_path, str) or not raw_path or raw_path.startswith("\\\\"):
+                raise ProtectionServiceUnavailable("process executable is inaccessible or remote")
+            target = Path(raw_path)
+
+            def verify_identity() -> None:
+                live = psutil.Process(process["pid"])
+                if live.create_time() != created or Path(live.exe()) != target:
+                    raise LookupError("process identity changed before the scan completed")
+
+            def file_identity() -> tuple[int, int, int, int, int]:
+                entry = target.stat(follow_symlinks=False)
+                if not stat.S_ISREG(entry.st_mode) or getattr(entry, "st_file_attributes", 0) & 0x400:
+                    raise ProtectionServiceUnavailable("process executable is not a regular file")
+                return (entry.st_dev, entry.st_ino, entry.st_size, entry.st_mtime_ns, entry.st_ctime_ns)
+
+            verify_identity()
+            before = file_identity()
+            verdict, detection_id = self.service.scan_file_for_filter(target)
+            verify_identity()
+            if before != file_identity():
+                raise ProtectionServiceUnavailable("process executable changed during scanning; retry required")
+            if self._stop_event.is_set():
+                raise ProtectionServiceUnavailable("protection service is stopping")
+            quarantine = None
+            if verdict.status == "detected" and verdict.action == "block" and detection_id:
+                result = self.service.quarantine_scanned_detection(detection_id, target, verdict)
+                quarantine = {"state": "quarantined" if result.success else "failed", "error": result.error}
+            return {
+                "instance_id": instance_id,
+                "pid": process["pid"],
+                "executable": str(target),
+                "status": verdict.status,
+                "action": verdict.action,
+                "rule_id": verdict.rule_id,
+                "rule_version": verdict.rule_version,
+                "sha256": verdict.sha256,
+                "reason": verdict.reason,
+                "reason_code": verdict.reason_code,
+                "detection_id": detection_id,
+                "quarantine": quarantine,
+            }
+        finally:
+            self._process_scan_lock.release()
+
+    def _queue_process_scan(self, instance_id: str) -> dict[str, Any]:
+        """Queue or poll one bounded job without occupying the control pipe."""
+        if self.service is None or not self.rules_trusted or self._stop_event.is_set():
+            raise ProtectionServiceUnavailable("trusted protection scanner is unavailable")
+        with self._process_scan_condition:
+            now = time.monotonic()
+            expired = [
+                key for key, job in self._process_scan_jobs.items()
+                if job.get("completed_at") is not None
+                and now - job["completed_at"] > _PROCESS_SCAN_RESULT_TTL_SECONDS
+            ]
+            for key in expired:
+                self._process_scan_jobs.pop(key, None)
+            job = self._process_scan_jobs.get(instance_id)
+            if job is not None:
+                if job.get("completed_at") is not None:
+                    self._process_scan_jobs.pop(instance_id)
+                    if job.get("error"):
+                        raise ProtectionServiceUnavailable(job["error"])
+                    return job["result"]
+                return {"instance_id": instance_id, "status": job["status"]}
+            if len(self._process_scan_jobs) >= MAX_PROCESS_SCAN_JOBS:
+                raise ProtectionServiceUnavailable("process scan queue is full; retry later")
+            self._process_scan_jobs[instance_id] = {"status": "queued"}
+            self._process_scan_queue.append(instance_id)
+            if self._process_scan_thread is None or not self._process_scan_thread.is_alive():
+                self._process_scan_thread = threading.Thread(
+                    target=self._run_process_scan_queue,
+                    name="stai-process-image-scans",
+                    daemon=True,
+                )
+                self._process_scan_thread.start()
+            self._process_scan_condition.notify_all()
+            return {"instance_id": instance_id, "status": "queued"}
+
+    def _run_process_scan_queue(self) -> None:
+        while True:
+            with self._process_scan_condition:
+                while not self._process_scan_queue and not self._stop_event.is_set():
+                    self._process_scan_condition.wait()
+                if self._stop_event.is_set():
+                    return
+                instance_id = self._process_scan_queue.popleft()
+                job = self._process_scan_jobs[instance_id]
+                job["status"] = "scanning"
+            try:
+                result = self.scan_process_executable(instance_id)
+                error = None
+            except Exception as exc:
+                result = None
+                error = str(exc) or "process executable scan failed"
+            with self._process_scan_condition:
+                if self._process_scan_jobs.get(instance_id) is job:
+                    job.update(result=result, error=error, completed_at=time.monotonic())
+                self._process_scan_condition.notify_all()
+
     def get_process_connections(self) -> dict[str, Any]:
         monitor = self._require_process_monitor()
         connections = _to_jsonable(monitor.connections())
@@ -1129,12 +1258,17 @@ class ProtectionServiceHost:
         total = len(connections)
         count = total
         observed_at = datetime.now(timezone.utc).isoformat()
+        network_snapshot = getattr(monitor, "network_snapshot", None)
+        network = _to_jsonable(network_snapshot()) if callable(network_snapshot) else {}
+        if not isinstance(network, dict):
+            network = {}
         while True:
             data = {
+                **{key: network[key] for key in ("network", "observed_at", "errors") if key in network},
                 "connections": connections[:count],
                 "total": total,
                 "truncated": count < total,
-                "observed_at": observed_at,
+                "observed_at": network.get("observed_at", observed_at),
             }
             size = len(
                 json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -1218,6 +1352,8 @@ class ProtectionServiceHost:
             return self._process_monitor_status()
         if operation == "get_process_details":
             return self.get_process_details(payload["instance_id"])
+        if operation == "scan_process_executable":
+            return self._queue_process_scan(payload["instance_id"])
         if operation == "get_process_connections":
             return self.get_process_connections()
         if operation == "set_process_monitor_profile":

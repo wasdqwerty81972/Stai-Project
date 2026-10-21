@@ -1,127 +1,69 @@
-import os
-import sys
-import sqlite3
-import requests
-import zipfile
-import io
-import csv
-from pathlib import Path
+"""Import metadata feeds into the indicator store used by protection detection.
 
-# Target DB paths
-PROGRAM_DATA = os.environ.get("ProgramData", "C:\\ProgramData")
-TARGET_DIR = Path(PROGRAM_DATA) / "STAI" / "Protection"
-TARGET_DB = TARGET_DIR / "threat-intel.db"
+Defaults to a local database. To update another database, explicitly pass its
+path with --db. Existing sources are merged; database files are never copied
+over a running service's database (which may have uncheckpointed WAL data).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from cyber_os.protection.store import ThreatIntelStore
+from cyber_threat_intel import FREE_METADATA_FEEDS, ingest_feed
+
 LOCAL_DB = Path("threat-intel.db")
 
-MALWAREBAZAAR_EXPORT_URL = "https://bazaar.abuse.ch/export/csv/full/"
 
-def setup_database(db_path):
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS hashes (
-            sha256_hash TEXT PRIMARY KEY,
-            first_seen TIMESTAMP,
-            threat_type TEXT,
-            source TEXT
-        )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sha256 ON hashes(sha256_hash);")
-    conn.commit()
-    return conn
+def import_feed(
+    database: Path,
+    *,
+    feed: str = "abusech_malwarebazaar",
+    api_key: str | None = None,
+    fetcher: Any = None,
+) -> dict[str, Any]:
+    """Merge a validated feed into the current detection schema.
 
-def download_and_import_malwarebazaar(api_key=None):
-    print("[*] Preparing MalwareBazaar hash feed download...")
-    
-    headers = {}
-    if api_key:
-        headers["Auth-Key"] = api_key
-    else:
-        print("[!] Warning: No Abuse.ch API key provided. Using public export endpoint if available...")
-
+    Feed provenance, confidence ceilings, and block eligibility are derived by
+    the shared ingestion/store implementation. Network and parse failures keep
+    the existing indicators available and are recorded in feed run history.
+    """
+    store = ThreatIntelStore(Path(database))
     try:
-        response = requests.get(MALWAREBAZAAR_EXPORT_URL, headers=headers, stream=True, timeout=60)
-        if response.status_code != 200:
-            print(f"[!] Error fetching feed: HTTP {response.status_code} - {response.text}")
-            return False
+        return ingest_feed(feed, store, auth_key=api_key, fetcher=fetcher)
+    finally:
+        store.close()
 
-        print("[*] Download complete. Processing and importing SHA-256 hashes...")
-        
-        conn = setup_database(LOCAL_DB)
-        cursor = conn.cursor()
-        
-        # MalwareBazaar CSV format includes comment lines starting with '#'
-        decoded_content = response.content.decode('utf-8', errors='ignore')
-        csv_reader = csv.reader(line for line in decoded_content.splitlines() if not line.startswith('#'))
-        
-        count = 0
-        batch = []
-        
-        for row in csv_reader:
-            # Columns usually: first_seen, sha256_hash, md5_hash, sha1_hash, reporter, file_name, file_type, etc.
-            if len(row) >= 2:
-                first_seen = row[0].strip()
-                sha256 = row[1].strip().lower()
-                threat_type = row[5].strip() if len(row) > 5 else "unknown"
-                
-                if len(sha256) == 64:  # Valid SHA-256 length
-                    batch.append((sha256, first_seen, threat_type, "MalwareBazaar"))
-                    count += 1
-                    
-                    if len(batch) >= 5000:
-                        cursor.executemany("OR IGNORE INTO hashes VALUES (?, ?, ?, ?)", batch)
-                        conn.commit()
-                        batch = []
-                        print(f"[*] Imported {count} hashes so far...")
 
-        if batch:
-            cursor.executemany("OR IGNORE INTO hashes VALUES (?, ?, ?, ?)", batch)
-            conn.commit()
+def download_and_import_malwarebazaar(api_key: str | None = None) -> bool:
+    """Compatibility entry point for callers of the old local importer."""
+    result = import_feed(LOCAL_DB, api_key=api_key)
+    print(json.dumps(result, sort_keys=True))
+    return result.get("status") == "success"
 
-        cursor.execute("SELECT COUNT(*) FROM hashes;")
-        total_hashes = cursor.fetchone()[0]
-        conn.close()
-        
-        print(f"[+] Success! Total unique malicious hashes imported: {total_hashes:,}")
-        return True
 
-    except Exception as e:
-        print(f"[!] Failed during ingestion: {e}")
-        return False
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", type=Path, default=LOCAL_DB,
+                        help="Destination indicator database (default: local threat-intel.db)")
+    parser.add_argument("--feed", choices=sorted(FREE_METADATA_FEEDS),
+                        default="abusech_malwarebazaar_recent",
+                        help="Metadata feed; recent CSV avoids loading the full hash catalogue")
+    args = parser.parse_args(argv)
+    try:
+        result = import_feed(args.db, feed=args.feed,
+                             api_key=os.getenv("ABUSECH_AUTH_KEY") or os.getenv("ABUSE_CH_KEY"))
+    except (OSError, ValueError) as exc:
+        # Never echo provider headers or credential-bearing exception bodies.
+        print(json.dumps({"status": "import_failed", "error_type": type(exc).__name__}))
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("status") == "success" else 1
 
-def deploy_database():
-    if not LOCAL_DB.exists():
-        print("[!] Local threat-intel.db not found to deploy.")
-        return
-
-    TARGET_DIR.mkdir(parents=True, exist_ok=True)
-    import shutil
-    shutil.copy(LOCAL_DB, TARGET_DB)
-    print(f"[+] Deployed threat database to production path: {TARGET_DB}")
-$targetDir = "$env:ProgramData\STAI\Protection"
-
-if (!(Test-Path $targetDir)) {
-    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-}
-
-# If it was saved with an underscore locally, rename/copy it to a hyphen
-if (Test-Path "threat_intel.db") {
-    Copy-Item "threat_intel.db" "$targetDir\threat-intel.db" -Force
-    Write-Host "[+] Renamed and copied threat_intel.db -> threat-intel.db in $targetDir"
-} elseif (Test-Path "threat-intel.db") {
-    Copy-Item "threat-intel.db" "$targetDir\threat-intel.db" -Force
-    Write-Host "[+] Copied threat-intel.db to $targetDir"
-} else {
-    Write-Host "[!] Local database file not found yet. Make sure your ingestion script outputs to threat-intel.db"
-}
 
 if __name__ == "__main__":
-    # Insert your abuse.ch API key here if you have one, or pass via command line argument
-    api_key = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ABUSE_CH_KEY", None)
-    
-    if download_and_import_malwarebazaar(api_key):
-        deploy_database()
-        print("[*] Threat-intel database ingestion and deployment complete.")
-    else:
-        sys.exit(1)
+    raise SystemExit(main())
