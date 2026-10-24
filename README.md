@@ -2,6 +2,12 @@ HEAD
 # Stai-Project
 CyberAI Security Suite Documentation
 
+## License
+This project is licensed under the GNU Affero General Public License v3.0 only
+(AGPL-3.0-only). See [LICENSE](LICENSE) for the full license text.
+
+Copyright © 2026 Venkat, Shaan, and Sanjay. Venkat is the primary project author.
+
 ## System Overview
 A unified cybersecurity interface integrating:
 - Security tools (100+ scanners/analyzers)
